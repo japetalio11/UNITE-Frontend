@@ -100,7 +100,7 @@ export const Navbar = () => {
         <div className="mt-2 flex flex-col gap-2">
           <Button
             as={Link}
-            href={siteConfig.links.sponsor}
+            href="/auth/signin"
             color="primary"
             variant="faded"
           >
@@ -134,7 +134,7 @@ export const Navbar = () => {
                   {item.label}
                 </span>
                 {index !== array.length - 1 && (
-                  <ChevronRight className="text-default-400" />
+                  <ChevronRight className="text-default-600" />
                 )}
               </Link>
             </NavbarMenuItem>
