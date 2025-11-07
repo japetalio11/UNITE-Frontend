@@ -7,7 +7,8 @@ import {
     Download, 
     Filter, 
     SlidersHorizontal, 
-    Plus 
+    ChevronDown,
+    Ticket,
 } from "lucide-react";
     
 interface CampaignToolbarProps {
@@ -124,22 +125,8 @@ export default function CampaignToolbar({
             {/* Create Event Button */}
             <Button
                 color="default"
-                startContent={<Plus className="w-4 h-4" />}
-                endContent={
-                <svg 
-                    className="w-3 h-3 ml-1" 
-                    fill="none" 
-                    stroke="currentColor" 
-                    viewBox="0 0 24 24"
-                >
-                    <path 
-                    strokeLinecap="round" 
-                    strokeLinejoin="round" 
-                    strokeWidth={2} 
-                    d="M19 9l-7 7-7-7" 
-                    />
-                </svg>
-                }
+                startContent={<Ticket className="w-4 h-4" />}
+                endContent={<ChevronDown className="w-4 h-4" />}
                 onPress={onCreateEvent}
                 className="bg-black text-white font-medium hover:bg-gray-800"
             >
