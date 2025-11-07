@@ -67,10 +67,12 @@ export default function CampaignToolbar({
     };
     
     return (
-        <div className="w-full bg-white border-gray-200">
+        <div className="w-full bg-white">
             <div className="flex items-center justify-between px-6 py-3">
                 {/* Left side - Status Tabs */}
                 <Tabs
+                    radius="md"
+                    size="sm"
                     selectedKey={selectedTab}
                     onSelectionChange={handleTabChange}
                     variant="solid"
@@ -89,8 +91,8 @@ export default function CampaignToolbar({
                         variant="faded"
                         startContent={<Download className="w-4 h-4" />}
                         onPress={onExport}
-                        className="font-medium"
-                        size="md"
+                        radius="md"
+                        size="sm"
                     >
                         Export
                     </Button>
@@ -101,7 +103,8 @@ export default function CampaignToolbar({
                         startContent={<Filter className="w-4 h-4" />}
                         endContent={<ChevronDown className="w-4 h-4"/>}
                         onPress={onQuickFilter}
-                        className="font-medium"
+                        radius="md"
+                        size="sm"
                     >
                         Quick Filter
                     </Button>
@@ -112,17 +115,22 @@ export default function CampaignToolbar({
                         startContent={<SlidersHorizontal className="w-4 h-4" />}
                         endContent={<ChevronDown className="w-4 h-4"/>}
                         onPress={onAdvancedFilter}
-                        className="font-medium"
+                        radius="md"
+                        size="sm"
                     >
                         Advanced Filter
                     </Button>
         
                     {/* Create Event Button Group with Dropdown */}
-                    <ButtonGroup variant="solid">
+                    <ButtonGroup 
+                        variant="solid"
+                        radius="md"
+                        size="sm"
+                    >
                         <Button
                             onPress={handleCreateEvent}
+                            color="primary"
                             startContent={<Ticket className="w-4 h-4" />}
-                            className="bg-black text-white font-medium"
                         >
                             {eventLabelsMap[selectedEventTypeValue]}
                         </Button>
@@ -138,7 +146,7 @@ export default function CampaignToolbar({
                             <DropdownMenu
                                 disallowEmptySelection
                                 aria-label="Event type options"
-                                className="max-w-[300px]"
+                                className="max-w-2xl"
                                 selectedKeys={selectedEventType}
                                 selectionMode="single"
                                 onSelectionChange={setSelectedEventType}

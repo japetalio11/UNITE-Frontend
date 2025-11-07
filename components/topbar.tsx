@@ -95,29 +95,25 @@ export default function Topbar({
     
             {/* Right side - Search Input */}
             <div className="flex-1 max-w-md ml-auto">
-            <Input
-                id="topbar-search"
-                type="text"
-                placeholder="Search files..."
-                value={searchQuery}
-                onChange={handleSearchChange}
-                startContent={
-                <Search className="w-4 h-4 text-gray-400" />
-                }
-                endContent={
-                <div className="flex items-center gap-1">
-                    <Kbd keys={["command"]} className="hidden sm:inline-flex">
-                    K
-                    </Kbd>
-                </div>
-                }
-                classNames={{
-                    base: "w-full",
-                    mainWrapper: "h-full",
-                    input: "text-sm",
-                    inputWrapper: "h-10 bg-gray-50 border-gray-200 hover:bg-gray-100 group-data-[focused=true]:bg-white"
-                }}
-            />
+                <Input
+                    id="topbar-search"
+                    type="text"
+                    placeholder="Search files..."
+                    value={searchQuery}
+                    onChange={handleSearchChange}
+                    startContent={
+                        <Search className="w-4 h-4 text-gray-400" />
+                    }
+                    endContent={
+                        <div className="flex items-center gap-1">
+                            <Kbd keys={["command"]} className="hidden sm:inline-flex">
+                            K
+                            </Kbd>
+                        </div>
+                    }
+                    radius="md"
+                    size="sm"
+                />
             </div>
         </div>
         </div>
