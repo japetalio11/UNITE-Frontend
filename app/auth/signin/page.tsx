@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { useRouter } from "next/navigation";
 import { Input } from "@heroui/input";
 import { Button } from "@heroui/button";
 import { Link } from "@heroui/link";
@@ -14,20 +15,61 @@ export default function SignIn() {
   const [password, setPassword] = useState("");
   const [rememberMe, setRememberMe] = useState(true);
   const [isLoading, setIsLoading] = useState(false);
+  const router = useRouter();
+  const API_URL = process.env.NEXT_PUBLIC_API_URL || "";
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setIsLoading(true);
+    setError("");
+
+    const payload = { email, password };
 
     try {
-      await new Promise((resolve) => setTimeout(resolve, 1000));
-      console.log("Sign in:", { email, password, rememberMe });
-    } catch (error) {
-      console.error("Sign in error:", error);
+      // Try staff/admin/coordinator login first
+  // Note: backend mounts auth routes at /api (not /api/auth)
+  let res = await fetch(`${API_URL}/api/login`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+
+      let body = await res.json().catch(() => ({}));
+
+      // If staff login failed, try stakeholder login
+      if (!res.ok || body.success === false) {
+  res = await fetch(`${API_URL}/api/stakeholders/login`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+        body = await res.json().catch(() => ({}));
+      }
+
+      if (!res.ok || body.success === false) {
+        setError(body.message || "Invalid credentials");
+        setIsLoading(false);
+        return;
+      }
+
+      const { token, data } = body;
+
+      // Persist auth details: token + user
+      const storage = rememberMe ? localStorage : sessionStorage;
+      if (token) storage.setItem("unite_token", token);
+      if (data) storage.setItem("unite_user", JSON.stringify(data));
+
+      // Redirect to dashboard (single landing for all roles)
+      router.push("/dashboard");
+    } catch (err) {
+      console.error("Sign in error:", err);
+      setError("An unexpected error occurred. Please try again.");
     } finally {
       setIsLoading(false);
     }
   };
+
+  const [error, setError] = useState("");
 
   const togglePasswordVisibility = () => setShowPassword(!showPassword);
 
@@ -141,6 +183,12 @@ export default function SignIn() {
               Forgot Password?
             </Link>
           </div>
+
+          {error && (
+            <div className="text-sm text-red-600" role="alert">
+              {error}
+            </div>
+          )}
 
           <div>
             <Button

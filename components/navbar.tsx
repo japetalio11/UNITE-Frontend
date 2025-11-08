@@ -69,10 +69,9 @@ export const Navbar = () => {
       >
         <NavbarItem className="hidden md:flex">
           <Button
-            isExternal
             as={Link}
             color="primary"
-            href={siteConfig.links.sponsor}
+            href="/auth/signin"
             variant="faded"
           >
             Sign In
