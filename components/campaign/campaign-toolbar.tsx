@@ -2,6 +2,7 @@
 
 import React, { useState } from "react";
 import { Input } from "@heroui/input";
+import { DatePicker } from "@heroui/date-picker";
 import { Check } from "lucide-react";
 import { Tabs, Tab } from "@heroui/tabs";
 import { Button, ButtonGroup } from "@heroui/button";
@@ -57,8 +58,7 @@ export default function CampaignToolbar({
     const [isBloodSubmitting, setIsBloodSubmitting] = useState(false);
     const [isAdvocacySubmitting, setIsAdvocacySubmitting] = useState(false);
     const [isAdvancedModalOpen, setIsAdvancedModalOpen] = useState(false);
-    const [advStart, setAdvStart] = useState("");
-    const [advEnd, setAdvEnd] = useState("");
+    const [advStart, setAdvStart] = useState<any>(null);
     const [advCoordinator, setAdvCoordinator] = useState("");
     
     // Event type labels and descriptions
@@ -195,8 +195,15 @@ export default function CampaignToolbar({
                                         const arr = Array.from(keys as Iterable<any>);
                                         const val = arr[0] as string | undefined;
                                         setSelectedQuick(val);
+                                        // apply immediately
+                                        if (val === undefined || val === "") {
+                                            onQuickFilter?.({ category: undefined });
+                                        } else {
+                                            onQuickFilter?.({ category: val });
+                                        }
                                     } catch {
                                         setSelectedQuick(undefined);
+                                        onQuickFilter?.({ category: undefined });
                                     }
                                 }}
                             >
@@ -205,10 +212,6 @@ export default function CampaignToolbar({
                                     <DropdownItem key="Blood Drive">Blood Drive</DropdownItem>
                                     <DropdownItem key="Training">Training</DropdownItem>
                                     <DropdownItem key="Advocacy">Advocacy</DropdownItem>
-                                </DropdownSection>
-                                <DropdownSection>
-                                    <DropdownItem key="apply" onPress={() => onQuickFilter?.({ category: selectedQuick })}>Apply</DropdownItem>
-                                    <DropdownItem key="clear" onPress={() => { setSelectedQuick(undefined); onQuickFilter?.({ category: undefined }); }}>Clear</DropdownItem>
                                 </DropdownSection>
                             </DropdownMenu>
                         </Dropdown>
@@ -317,25 +320,30 @@ export default function CampaignToolbar({
                                     <h3 className="text-lg font-semibold">Advanced Filter</h3>
                                 </ModalHeader>
                                 <ModalBody>
-                                    <div className="space-y-3">
-                                        <div className="flex items-center gap-3">
-                                            <label className="w-20 text-sm">Start</label>
-                                            <input type="date" value={advStart} onChange={(e) => setAdvStart(e.target.value)} className="px-2 py-1 border rounded w-full" />
+                                        <div className="space-y-3">
+                                            <div className="flex items-center gap-3">
+                                                <label className="w-20 text-sm">Date</label>
+                                                <div className="w-full">
+                                                    <DatePicker
+                                                        value={advStart}
+                                                        onChange={setAdvStart}
+                                                        granularity="day"
+                                                        hideTimeZone
+                                                        variant="bordered"
+                                                        classNames={{ base: "w-full", inputWrapper: "border-default-200 hover:border-default-400 h-10", input: "text-sm" }}
+                                                    />
+                                                </div>
+                                            </div>
+                                            <div className="flex items-center gap-3">
+                                                <label className="w-20 text-sm">Coordinator</label>
+                                                <Input placeholder="Coordinator name" value={advCoordinator} onChange={(e) => setAdvCoordinator((e.target as HTMLInputElement).value)} />
+                                            </div>
                                         </div>
-                                        <div className="flex items-center gap-3">
-                                            <label className="w-20 text-sm">End</label>
-                                            <input type="date" value={advEnd} onChange={(e) => setAdvEnd(e.target.value)} className="px-2 py-1 border rounded w-full" />
-                                        </div>
-                                        <div className="flex items-center gap-3">
-                                            <label className="w-20 text-sm">Coordinator</label>
-                                            <Input placeholder="Coordinator name" value={advCoordinator} onChange={(e) => setAdvCoordinator((e.target as HTMLInputElement).value)} />
-                                        </div>
-                                    </div>
-                                </ModalBody>
-                                <ModalFooter>
-                                    <Button variant="bordered" onPress={() => { setIsAdvancedModalOpen(false); }}>Cancel</Button>
-                                    <Button color="primary" onPress={() => { onAdvancedFilter?.({ start: advStart || undefined, end: advEnd || undefined, coordinator: advCoordinator || undefined }); setIsAdvancedModalOpen(false); }} className="ml-2">Apply</Button>
-                                </ModalFooter>
+                                    </ModalBody>
+                                    <ModalFooter>
+                                        <Button variant="bordered" onPress={() => { setIsAdvancedModalOpen(false); }}>Cancel</Button>
+                                        <Button color="primary" onPress={() => { onAdvancedFilter?.({ start: advStart ? (new Date(advStart)).toISOString() : undefined, coordinator: advCoordinator || undefined }); setIsAdvancedModalOpen(false); }} className="ml-2">Apply</Button>
+                                    </ModalFooter>
                             </ModalContent>
                         </Modal>
         </>

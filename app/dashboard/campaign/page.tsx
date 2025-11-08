@@ -6,6 +6,7 @@ import CampaignToolbar from "@/components/campaign/campaign-toolbar";
 import CampaignCalendar from "@/components/campaign/campaign-calendar";
 import EventCard from "@/components/campaign/event-card";
 import EventViewModal from "@/components/campaign/event-view-modal";
+import EditEventModal from "@/components/campaign/event-edit-modal";
 import { Modal } from "@heroui/modal";
 
 /**
@@ -37,6 +38,8 @@ export default function CampaignPage() {
   const [viewModalOpen, setViewModalOpen] = useState(false);
   const [viewRequest, setViewRequest] = useState<any>(null);
   const [viewLoading, setViewLoading] = useState(false);
+  const [editModalOpen, setEditModalOpen] = useState(false);
+  const [editRequest, setEditRequest] = useState<any>(null);
 
   const API_URL = process.env.NEXT_PUBLIC_API_URL || "";
 
@@ -342,6 +345,83 @@ export default function CampaignPage() {
     }
   };
 
+  // Open edit modal: fetch full request details then open edit modal
+  const handleOpenEdit = async (r: any) => {
+    if (!r) return;
+    const requestId = r.Request_ID || r.RequestId || r._id || r.RequestId;
+    if (!requestId) {
+      setEditRequest(r);
+      setEditModalOpen(true);
+      return;
+    }
+
+    try {
+      setViewLoading(true);
+      const token = localStorage.getItem('unite_token') || sessionStorage.getItem('unite_token');
+      const headers: any = { 'Content-Type': 'application/json' };
+      if (token) headers['Authorization'] = `Bearer ${token}`;
+
+      const res = await fetch(`${API_URL}/api/requests/${requestId}`, { headers });
+      const body = await res.json();
+      if (!res.ok) throw new Error(body.message || 'Failed to fetch request details');
+      const data = body.data || body.request || null;
+      setEditRequest(data || body);
+      setEditModalOpen(true);
+    } catch (err: any) {
+      console.error('Failed to load request details for edit', err);
+      setErrorModalMessage(err?.message || 'Failed to load request details');
+      setErrorModalOpen(true);
+    } finally {
+      setViewLoading(false);
+    }
+  };
+
+  // Handle reschedule action coming from EventCard
+  const handleRescheduleEvent = async (reqObj: any, currentDate: string, rescheduledDateISO: string, note: string) => {
+    if (!reqObj) return;
+    const requestId = reqObj.Request_ID || reqObj.RequestId || reqObj._id || reqObj.RequestId;
+    if (!requestId) {
+      setErrorModalMessage('Unable to determine request id for reschedule');
+      setErrorModalOpen(true);
+      return;
+    }
+
+    try {
+      const rawUser = localStorage.getItem('unite_user');
+      const user = rawUser ? JSON.parse(rawUser) : null;
+      const token = localStorage.getItem('unite_token') || sessionStorage.getItem('unite_token');
+      const headers: any = { 'Content-Type': 'application/json' };
+      if (token) headers['Authorization'] = `Bearer ${token}`;
+
+      const body: any = {
+        action: 'Rescheduled',
+        rescheduledDate: rescheduledDateISO,
+        note: note
+      };
+
+      // include admin/coordinator identity if available (server should derive from token ideally)
+      if (user && user.id) body.adminId = user.id;
+      if (user && user.staff_type) body.adminRole = user.staff_type;
+
+      const res = await fetch(`${API_URL}/api/requests/${requestId}/admin-action`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(body)
+      });
+      const resp = await res.json();
+      if (!res.ok) throw new Error(resp.message || 'Failed to reschedule request');
+
+      // refresh requests list to reflect updated date/status
+      await fetchRequests();
+      return resp;
+    } catch (err: any) {
+      console.error('Reschedule error', err);
+      setErrorModalMessage(err?.message || 'Failed to reschedule request');
+      setErrorModalOpen(true);
+      throw err;
+    }
+  };
+
   const filteredRequests = useMemo(() => {
     return requests.filter((req) => {
       const event = req.event || {};
@@ -362,17 +442,12 @@ export default function CampaignPage() {
       if (quickFilterCategory && quickFilterCategory !== '' && quickFilterCategory !== categoryLabel) return false;
 
       // advanced filter: date range
-      if (advancedFilter.start || advancedFilter.end) {
+      // advanced filter: only start date (events on/after the chosen date)
+      if (advancedFilter.start) {
         const startDate = event.Start_Date ? new Date(event.Start_Date) : undefined;
         if (startDate) {
-          if (advancedFilter.start) {
-            const s = new Date(advancedFilter.start);
-            if (startDate < s) return false;
-          }
-          if (advancedFilter.end) {
-            const e = new Date(advancedFilter.end);
-            if (startDate > e) return false;
-          }
+          const s = new Date(advancedFilter.start);
+          if (startDate < s) return false;
         }
       }
 
@@ -547,7 +622,10 @@ export default function CampaignPage() {
                   status={status as any}
                   location={location}
                   date={dateStr}
+                  request={req}
                   onViewEvent={() => handleOpenView(req)}
+                  onEditEvent={() => handleOpenEdit(req)}
+                  onRescheduleEvent={(currentDate: string, newDateISO: string, note: string) => handleRescheduleEvent(req, currentDate, newDateISO, note)}
                 />
               );
             });
@@ -567,6 +645,8 @@ export default function CampaignPage() {
       </Modal>
       {/* Event View Modal (read-only) */}
       <EventViewModal isOpen={viewModalOpen} onClose={() => { setViewModalOpen(false); setViewRequest(null); }} request={viewRequest} />
+  {/* Event Edit Modal */}
+  <EditEventModal isOpen={editModalOpen} onClose={() => { setEditModalOpen(false); setEditRequest(null); }} request={editRequest} onSaved={async () => { await fetchRequests(); }} />
       </div>
     );
   }

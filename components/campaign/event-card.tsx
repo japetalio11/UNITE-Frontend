@@ -1,5 +1,6 @@
 "use client";
 import React, { useState } from "react";
+import { DatePicker } from "@heroui/date-picker";
 import { Card, CardHeader, CardBody, CardFooter } from "@heroui/card";
 import { Chip } from "@heroui/chip";
 import { Avatar } from "@heroui/avatar";
@@ -12,7 +13,7 @@ import {
 } from "@heroui/dropdown";
 import { Button } from "@heroui/button";
 import { Modal, ModalContent, ModalHeader, ModalBody, ModalFooter } from "@heroui/modal";
-import { MoreVertical, Eye, Edit, Clock, Trash2, Check, X } from "lucide-react";
+import { MoreVertical, Eye, Edit, Clock, Trash2, Check, X, Users } from "lucide-react";
 
 interface EventCardProps {
   title: string;
@@ -25,7 +26,12 @@ interface EventCardProps {
   date: string;
   onViewEvent?: () => void;
   onEditEvent?: () => void;
-  onRescheduleEvent?: (startDate: string, endDate: string) => void;
+  // currentDate: the existing event date (display only)
+  // rescheduledDate: the new chosen date (ISO string or date-only)
+  // note: reason for reschedule
+  onRescheduleEvent?: (currentDate: string, rescheduledDate: string, note: string) => void;
+  onManageStaff?: () => void;
+  request?: any;
   onCancelEvent?: () => void;
   onAcceptEvent?: () => void;
   onRejectEvent?: () => void;
@@ -47,6 +53,8 @@ const EventCard: React.FC<EventCardProps> = ({
   onViewEvent,
   onEditEvent,
   onRescheduleEvent,
+  onManageStaff,
+  request,
   onCancelEvent,
   onAcceptEvent,
   onRejectEvent,
@@ -56,18 +64,58 @@ const EventCard: React.FC<EventCardProps> = ({
   const [cancelOpen, setCancelOpen] = useState(false);
   const [rejectOpen, setRejectOpen] = useState(false);
   const [acceptOpen, setAcceptOpen] = useState(false);
+  const [manageStaffOpen, setManageStaffOpen] = useState(false);
+
+  // Manage staff state
+  const [staffMembers, setStaffMembers] = useState<Array<{ FullName: string; Role: string }>>([]);
+  const [newFullName, setNewFullName] = useState('');
+  const [newRole, setNewRole] = useState('');
+  const [staffSaving, setStaffSaving] = useState(false);
+  const [staffError, setStaffError] = useState<string | null>(null);
 
   // Reschedule dialog state
-  const [startDate, setStartDate] = useState("");
-  const [endDate, setEndDate] = useState("");
+  const [rescheduledDate, setRescheduledDate] = useState<any>(null);
+  const [note, setNote] = useState("");
+  const [validationError, setValidationError] = useState<string | null>(null);
 
   const handleReschedule = () => {
-    if (startDate && endDate && onRescheduleEvent) {
-      onRescheduleEvent(startDate, endDate);
-      setRescheduleOpen(false);
-      setStartDate("");
-      setEndDate("");
+    setValidationError(null);
+    if (!rescheduledDate) {
+      setValidationError('Please choose a new date');
+      return;
     }
+    // Ensure rescheduled date is not before today
+    try {
+      const rs = new Date(rescheduledDate);
+      rs.setHours(0,0,0,0);
+      const today = new Date();
+      today.setHours(0,0,0,0);
+      if (rs.getTime() < today.getTime()) {
+        setValidationError('Rescheduled date cannot be before today');
+        return;
+      }
+    } catch (e) {
+      setValidationError('Invalid date selected');
+      return;
+    }
+
+    if (!note || note.trim().length === 0) {
+      setValidationError('Please provide a reason for rescheduling');
+      return;
+    }
+
+    if (onRescheduleEvent) {
+      // pass current displayed date and new date (as ISO date string) and note
+      const current = date || '';
+      const newDateISO = typeof rescheduledDate === 'string' ? new Date(rescheduledDate).toISOString() : (rescheduledDate instanceof Date ? rescheduledDate.toISOString() : new Date(rescheduledDate).toISOString());
+      onRescheduleEvent(current, newDateISO, note.trim());
+    }
+
+    // reset modal state
+    setRescheduleOpen(false);
+    setRescheduledDate(null);
+    setNote("");
+    setValidationError(null);
   };
 
   const handleCancel = () => {
@@ -112,6 +160,18 @@ const EventCard: React.FC<EventCardProps> = ({
           Edit Event
         </DropdownItem>
         <DropdownItem
+          key="manage-staff"
+          description="Manage staff for this event"
+          startContent={<Users />}
+          onPress={() => {
+            // open local manage staff modal and optionally call parent handler
+            setManageStaffOpen(true);
+            if (typeof onManageStaff === 'function') onManageStaff();
+          }}
+        >
+          Manage Staff
+        </DropdownItem>
+        <DropdownItem
           key="reschedule"
           description="Reschedule this event"
           startContent={<Clock />}
@@ -154,6 +214,17 @@ const EventCard: React.FC<EventCardProps> = ({
           onPress={() => setAcceptOpen(true)}
         >
           Accept Event
+        </DropdownItem>
+        <DropdownItem
+          key="manage-staff"
+          description="Manage staff for this event"
+          startContent={<Users />}
+          onPress={() => {
+            setManageStaffOpen(true);
+            if (typeof onManageStaff === 'function') onManageStaff();
+          }}
+        >
+          Manage Staff
         </DropdownItem>
         <DropdownItem
           key="reject"
@@ -275,31 +346,48 @@ const EventCard: React.FC<EventCardProps> = ({
             <span className="text-lg font-semibold">Reschedule Event</span>
           </ModalHeader>
           <ModalBody>
-            <p className="text-sm text-default-600 mb-4">
-              Select new dates for this event.
-            </p>
-            
-            {/* Start Date Picker */}
+            <p className="text-sm text-default-600 mb-4">Select a new date for this event and provide a reason for rescheduling.</p>
+
+            {/* Current Date (read-only) */}
             <div className="space-y-2">
-              <label className="text-sm font-medium text-default-900">Start Date</label>
+              <label className="text-sm font-medium text-default-900">Current Date</label>
               <input
-                type="date"
-                value={startDate}
-                onChange={(e) => setStartDate(e.target.value)}
+                type="text"
+                value={date}
+                readOnly
+                className="w-full px-3 py-2 text-sm border border-default-200 rounded-lg bg-default-100"
+              />
+            </div>
+
+            {/* New Date Picker */}
+            <div className="space-y-2 mt-4">
+              <label className="text-sm font-medium text-default-900">New Date</label>
+              <DatePicker
+                value={rescheduledDate}
+                onChange={setRescheduledDate}
+                granularity="day"
+                hideTimeZone
+                variant="bordered"
+                classNames={{ base: "w-full", inputWrapper: "border-default-200 hover:border-default-400 h-10", input: "text-sm" }}
+              />
+            </div>
+
+            {/* Note */}
+            <div className="space-y-2 mt-4">
+              <label className="text-sm font-medium text-default-900">Reason for rescheduling</label>
+              <textarea
+                value={note}
+                onChange={(e) => setNote((e.target as HTMLTextAreaElement).value)}
+                rows={4}
                 className="w-full px-3 py-2 text-sm border border-default-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent"
               />
             </div>
 
-            {/* End Date Picker */}
-            <div className="space-y-2 mt-4">
-              <label className="text-sm font-medium text-default-900">End Date</label>
-              <input
-                type="date"
-                value={endDate}
-                onChange={(e) => setEndDate(e.target.value)}
-                className="w-full px-3 py-2 text-sm border border-default-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent"
-              />
-            </div>
+            {validationError && (
+              <div className="mt-3 p-3 bg-warning-50 border border-warning-200 rounded">
+                <p className="text-xs text-warning-700">{validationError}</p>
+              </div>
+            )}
           </ModalBody>
           <ModalFooter>
             <Button
@@ -313,10 +401,96 @@ const EventCard: React.FC<EventCardProps> = ({
               color="default"
               onPress={handleReschedule}
               className="bg-black text-white font-medium"
-              isDisabled={!startDate || !endDate}
+              isDisabled={!rescheduledDate || !note}
             >
               Reschedule
             </Button>
+          </ModalFooter>
+        </ModalContent>
+      </Modal>
+
+      {/* Manage Staff Dialog */}
+      <Modal isOpen={manageStaffOpen} onClose={() => setManageStaffOpen(false)} size="lg" placement="center">
+        <ModalContent>
+          <ModalHeader className="flex items-center gap-2">
+            <div className="flex items-center justify-center w-10 h-10 rounded-full bg-default-100">
+              <Users className="w-5 h-5 text-default-600" />
+            </div>
+            <span className="text-lg font-semibold">Manage Staff</span>
+          </ModalHeader>
+          <ModalBody>
+            <p className="text-sm text-default-600 mb-4">Add or remove staff assignments for this event.</p>
+
+            {/* Existing staff list */}
+            <div className="space-y-2 mb-4">
+              {staffMembers.length === 0 && (
+                <div className="text-sm text-default-600">No staff assigned yet.</div>
+              )}
+              {staffMembers.map((s, idx) => (
+                <div key={idx} className="flex items-center gap-2">
+                  <div className="flex-1 text-sm">{s.FullName} <span className="text-default-500">({s.Role})</span></div>
+                  <button className="text-sm text-danger" onClick={() => setStaffMembers(staffMembers.filter((_, i) => i !== idx))}>Remove</button>
+                </div>
+              ))}
+            </div>
+
+            {/* Add new staff (wider name field, smaller role field) */}
+            <div className="grid grid-cols-3 gap-2 mb-3">
+              <input value={newFullName} onChange={(e) => setNewFullName((e.target as HTMLInputElement).value)} placeholder="Full name" className="col-span-2 px-3 py-2 border border-default-200 rounded" />
+              <input value={newRole} onChange={(e) => setNewRole((e.target as HTMLInputElement).value)} placeholder="Role" className="px-3 py-2 border border-default-200 rounded" />
+            </div>
+            <div className="flex gap-2 mb-2">
+              <button className="px-3 py-1 bg-default-100 rounded" onClick={() => {
+                if (!newFullName || !newRole) return setStaffError('Name and role are required');
+                setStaffError(null);
+                setStaffMembers([...staffMembers, { FullName: newFullName.trim(), Role: newRole.trim() }]);
+                setNewFullName(''); setNewRole('');
+              }}>Add</button>
+              <button className="px-3 py-1 border rounded" onClick={() => { setNewFullName(''); setNewRole(''); setStaffError(null); }}>Clear</button>
+            </div>
+
+            {staffError && <div className="text-sm text-danger mb-2">{staffError}</div>}
+
+            {/** Save status */}
+            {staffSaving && <div className="text-sm text-default-600">Saving...</div>}
+          </ModalBody>
+          <ModalFooter>
+            <Button variant="bordered" onPress={() => setManageStaffOpen(false)} className="font-medium">Close</Button>
+            <Button color="default" className="bg-black text-white font-medium" onPress={async () => {
+              // perform API call to assign staff
+              if (!request || !request.Request_ID) {
+                setStaffError('Request info not available');
+                return;
+              }
+              try {
+                setStaffSaving(true);
+                setStaffError(null);
+                const rawUser = localStorage.getItem('unite_user');
+                const user = rawUser ? JSON.parse(rawUser) : null;
+                const token = localStorage.getItem('unite_token') || sessionStorage.getItem('unite_token');
+                const headers: any = { 'Content-Type': 'application/json' };
+                if (token) headers['Authorization'] = `Bearer ${token}`;
+
+                const body: any = {
+                  adminId: user?.id || user?.Admin_ID || null,
+                  eventId: request.Event_ID || (request.event && request.event.Event_ID) || null,
+                  staffMembers
+                };
+
+                const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || ''}/api/requests/${request.Request_ID}/staff`, {
+                  method: 'POST', headers, body: JSON.stringify(body)
+                });
+                const resp = await res.json();
+                if (!res.ok) throw new Error(resp.message || 'Failed to assign staff');
+
+                // success — close modal
+                setManageStaffOpen(false);
+              } catch (e: any) {
+                setStaffError(e?.message || 'Failed to save staff');
+              } finally {
+                setStaffSaving(false);
+              }
+            }}>Save</Button>
           </ModalFooter>
         </ModalContent>
       </Modal>

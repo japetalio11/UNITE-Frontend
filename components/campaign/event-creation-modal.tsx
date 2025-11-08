@@ -142,6 +142,19 @@ export const CreateTrainingEventModal: React.FC<CreateTrainingEventModalProps> =
   }, [isOpen]);
 
   const handleCreate = () => {
+    // Prevent selecting a past date
+    if (date) {
+      const selected = new Date(date);
+      selected.setHours(0,0,0,0);
+      const today = new Date();
+      today.setHours(0,0,0,0);
+      if (selected.getTime() < today.getTime()) {
+        // Simple UI feedback for now
+        alert('Event date cannot be in the past');
+        return;
+      }
+    }
+
     // Build ISO datetime strings if date and times are provided
     let startISO = "";
     let endISO = "";
