@@ -165,7 +165,6 @@ const EventCard: React.FC<EventCardProps> = ({
 
   return (
     <Card className="w-full max-w-md h-60 rounded-xl border border-gray-200 shadow-none bg-white">
-      {/* Header Section */}
       <CardHeader className="flex justify-between items-center">
         {/* Avatar Section*/}
         <div className="flex items-center gap-3">
@@ -175,7 +174,6 @@ const EventCard: React.FC<EventCardProps> = ({
             <p className="text-xs text-default-800">{organizationType}</p>
           </div>
         </div>
-        {/* Dropdown Section */}
         <Dropdown>
           <DropdownTrigger>
             <Button
@@ -190,7 +188,6 @@ const EventCard: React.FC<EventCardProps> = ({
           {getMenuByStatus()}
         </Dropdown>
       </CardHeader>
-      {/* Body Section */}
       <CardBody>
         <div className="flex justify-between items-center mb-2">
           <p className="text-xs">District</p>
@@ -216,7 +213,6 @@ const EventCard: React.FC<EventCardProps> = ({
           </Chip>
         </div>
       </CardBody>
-      {/* Footer Section */}
       <CardFooter className="flex flex-col items-start gap-2 text-xs">
         <div className="flex justify-between w-full">
           <span className="">Location</span>
