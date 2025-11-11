@@ -27,9 +27,9 @@ export default function Sidebar({ role, userInfo }: SidebarProps) {
     
     const links = [
         { href: "/dashboard/campaign", icon: Ticket },
-    { href: "/dashboard/calendar", icon: Calendar },
-        { href: "/requests", icon: UsersRound },
-        { href: "/campaign", icon: ContactRound },
+        { href: "/dashboard/calendar", icon: Calendar },
+        { href: "/dashboard/coordinator-management", icon: UsersRound },
+        { href: "/dashboard/stakeholder-management", icon: ContactRound },
     ];
     
     const bottomLinks = [{ href: "/notifications", icon: Bell }];
