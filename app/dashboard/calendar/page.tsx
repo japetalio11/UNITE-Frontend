@@ -2,54 +2,41 @@
 
 import React, { useState, useRef, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { Tabs, Tab } from "@heroui/tabs";
-import { Button, ButtonGroup } from "@heroui/button";
 import { 
-    Dropdown,
-    DropdownTrigger,
-    DropdownMenu,
-    DropdownItem,
-} from "@heroui/dropdown";
-import { 
-  Search, 
   ChevronDown, 
   ChevronLeft,
   ChevronRight,
-  LogOut, 
   Download, 
   Clock,
-  Ticket,
   Calendar,
   CalendarDays,
   SlidersHorizontal,
-  Filter
+  Filter,
+  Plus,
+  MoreVertical
 } from "lucide-react";
-import Topbar from "@/components/topbar";
-import CampaignToolbar from "@/components/campaign/campaign-toolbar";
 
 export default function CalendarPage() {
-  const [isDropdownOpen, setIsDropdownOpen] = useState(false);
   const [activeView, setActiveView] = useState("week");
-  // Default to today so the week view starts on the current week
   const today = new Date();
   const [selectedDate, setSelectedDate] = useState(today.getDate());
-  const [selectedEventType, setSelectedEventType] = useState<Set<string> | null>(null);
   const [currentDate, setCurrentDate] = useState<Date>(today);
   const [weekEventsByDate, setWeekEventsByDate] = useState<Record<string, any[]>>({});
   const [monthEventsByDate, setMonthEventsByDate] = useState<Record<string, any[]>>({});
   const [eventsLoading, setEventsLoading] = useState(false);
-  const [currentUserName, setCurrentUserName] = useState<string>('');
-  const [currentUserEmail, setCurrentUserEmail] = useState<string>('');
+  const [currentUserName, setCurrentUserName] = useState<string>('Bicol Medical Center');
+  const [currentUserEmail, setCurrentUserEmail] = useState<string>('bmc@gmail.com');
   const [isDateTransitioning, setIsDateTransitioning] = useState(false);
   const [isViewTransitioning, setIsViewTransitioning] = useState(false);
   const [slideDirection, setSlideDirection] = useState<'left' | 'right'>('right');
-  const dropdownRef = useRef<HTMLDivElement>(null);
+  const [isCreateMenuOpen, setIsCreateMenuOpen] = useState(false);
+  const createMenuRef = useRef<HTMLDivElement>(null);
 
-  // Close dropdown when clicking outside
+  // Close create menu when clicking outside
   useEffect(() => {
     function handleClickOutside(event: MouseEvent) {
-      if (dropdownRef.current && !dropdownRef.current.contains(event.target as Node)) {
-        setIsDropdownOpen(false);
+      if (createMenuRef.current && !createMenuRef.current.contains(event.target as Node)) {
+        setIsCreateMenuOpen(false);
       }
     }
 
@@ -58,39 +45,59 @@ export default function CalendarPage() {
       document.removeEventListener('mousedown', handleClickOutside);
     };
   }, []);
+  // API base (allow override via NEXT_PUBLIC_API_URL)
+  const API_BASE = (typeof process !== 'undefined' && process.env && process.env.NEXT_PUBLIC_API_URL) ? process.env.NEXT_PUBLIC_API_URL : 'http://localhost:3000';
 
-  // Set initial event type in useEffect to ensure it only runs on the client
+  // Fetch real events from backend and populate week/month maps
   useEffect(() => {
-    setSelectedEventType(new Set(["blood-drive"]));
-  }, []);
+    let mounted = true;
 
-  // Load current user display name/email for topbar
-  useEffect(() => {
-    try {
-      const raw = localStorage.getItem('unite_user');
-      if (raw) {
-        const u = JSON.parse(raw);
-        const first = u.First_Name || u.FirstName || u.first_name || u.firstName || u.First || '';
-        const middle = u.Middle_Name || u.MiddleName || u.middle_name || u.middleName || u.Middle || '';
-        const last = u.Last_Name || u.LastName || u.last_name || u.lastName || u.Last || '';
-        const parts = [first, middle, last].map((p: any) => (p || '').toString().trim()).filter(Boolean);
-        const full = parts.join(' ');
-        const email = u.Email || u.email || u.Email_Address || u.emailAddress || '';
-        if (full) setCurrentUserName(full);
-        else if (u.name) setCurrentUserName(u.name);
-        if (email) setCurrentUserEmail(email);
+    const fetchData = async () => {
+      setEventsLoading(true);
+      try {
+        // Week endpoint (passes currentDate as date param)
+        const weekUrl = `${API_BASE}/api/calendar/week?date=${encodeURIComponent(currentDate.toISOString())}&status=Approved`;
+        const weekResp = await fetch(weekUrl, { credentials: 'include' });
+        const weekJson = await weekResp.json();
+
+        if (mounted && weekResp.ok && weekJson && weekJson.success && weekJson.data) {
+          // backend returns week object in `data` with `weekDays` map
+          const weekDays = weekJson.data.weekDays || weekJson.data.weekDays || {};
+          setWeekEventsByDate(weekDays);
+        } else if (mounted) {
+          setWeekEventsByDate({});
+        }
+
+        // Month endpoint (use year/month from currentDate)
+        const year = currentDate.getFullYear();
+        const month = currentDate.getMonth() + 1; // service expects 1-12
+        const monthUrl = `${API_BASE}/api/calendar/month?year=${year}&month=${month}&status=Approved`;
+        const monthResp = await fetch(monthUrl, { credentials: 'include' });
+        const monthJson = await monthResp.json();
+
+        if (mounted && monthResp.ok && monthJson && monthJson.success && monthJson.data) {
+          // backend returns month object in `data` with `eventsByDate` map
+          const eventsByDate = monthJson.data.eventsByDate || {};
+          setMonthEventsByDate(eventsByDate);
+        } else if (mounted) {
+          setMonthEventsByDate({});
+        }
+      } catch (error) {
+        if (mounted) {
+          setWeekEventsByDate({});
+          setMonthEventsByDate({});
+        }
+        // Optionally log: console.error('Failed to fetch calendar data', error);
+      } finally {
+        if (mounted) setEventsLoading(false);
       }
-    } catch (err) {
-      // ignore malformed localStorage
-    }
-  }, []);
+    };
 
-  const handleLogout = () => {
-    console.log('User logged out');
-    setIsDropdownOpen(false);
-  };
+    fetchData();
 
-  // Enhanced date navigation with transitions
+    return () => { mounted = false; };
+  }, [currentDate, activeView]);
+
   const navigateWeek = async (direction: 'prev' | 'next') => {
     setIsDateTransitioning(true);
     setSlideDirection(direction === 'prev' ? 'right' : 'left');
@@ -124,21 +131,6 @@ export default function CalendarPage() {
     }, 300);
   };
 
-  // Event type selection handler
-  const handleSelectionChange = (keys: any) => {
-    const newSelection = new Set<string>();
-    if (keys === 'all') {
-      // Handle 'all' selection if needed
-    } else if (keys) {
-      const key = typeof keys === 'string' ? keys : keys.currentKey;
-      if (key) {
-        newSelection.add(key);
-      }
-    }
-    setSelectedEventType(newSelection);
-  };
-
-  // Date formatting functions
   const formatWeekRange = (date: Date) => {
     const startOfWeek = new Date(date);
     const dayOfWeek = startOfWeek.getDay();
@@ -153,9 +145,9 @@ export default function CalendarPage() {
     const year = startOfWeek.getFullYear();
     
     if (startMonth === endMonth) {
-      return `${startMonth} ${startOfWeek.getDate()} - ${endOfWeek.getDate()}, ${year}`;
+      return `${startMonth} ${startOfWeek.getDate()} - ${endOfWeek.getDate()} ${year}`;
     } else {
-      return `${startMonth} ${startOfWeek.getDate()} - ${endMonth} ${endOfWeek.getDate()}, ${year}`;
+      return `${startMonth} ${startOfWeek.getDate()} - ${endMonth} ${endOfWeek.getDate()} ${year}`;
     }
   };
 
@@ -163,7 +155,6 @@ export default function CalendarPage() {
     return date.toLocaleString('default', { month: 'long', year: 'numeric' });
   };
 
-  // Generate days for the current week
   const getDaysForWeek = (date: Date) => {
     const days = [];
     const startOfWeek = new Date(date);
@@ -185,77 +176,16 @@ export default function CalendarPage() {
     return days;
   };
 
-  const API_URL = process.env.NEXT_PUBLIC_API_URL || '';
-
-  // Fetch week events from API and populate weekEventsByDate
-  const fetchWeekEvents = async (date: Date) => {
-    try {
-      setEventsLoading(true);
-      const token = localStorage.getItem('unite_token') || sessionStorage.getItem('unite_token');
-      const headers: any = { 'Content-Type': 'application/json' };
-      if (token) headers['Authorization'] = `Bearer ${token}`;
-      const res = await fetch(`${API_URL}/api/calendar/week?date=${encodeURIComponent(date.toISOString())}`, { headers });
-      const body = await res.json();
-      if (!res.ok) throw new Error(body.message || 'Failed to fetch calendar week');
-      const week = body.data || body.week || {};
-      const weekDays = week.weekDays || {};
-      setWeekEventsByDate(weekDays);
-    } catch (e: any) {
-      console.error('Failed to load week events', e);
-      setWeekEventsByDate({});
-    } finally {
-      setEventsLoading(false);
-    }
-  };
-
-  // Fetch month events from API and populate monthEventsByDate
-  const fetchMonthEvents = async (date: Date) => {
-    try {
-      setEventsLoading(true);
-      const token = localStorage.getItem('unite_token') || sessionStorage.getItem('unite_token');
-      const headers: any = { 'Content-Type': 'application/json' };
-      if (token) headers['Authorization'] = `Bearer ${token}`;
-      const year = date.getFullYear();
-      const month = date.getMonth() + 1; // API expects 1-12
-      const res = await fetch(`${API_URL}/api/calendar/month?year=${year}&month=${month}`, { headers });
-      const body = await res.json();
-      if (!res.ok) throw new Error(body.message || 'Failed to fetch calendar month');
-      const monthData = body.data || body.month || {};
-      // month.eventsByDate is expected (keys yyyy-mm-dd -> events[])
-      const eventsByDate = monthData.eventsByDate || {};
-      setMonthEventsByDate(eventsByDate);
-    } catch (e: any) {
-      console.error('Failed to load month events', e);
-      setMonthEventsByDate({});
-    } finally {
-      setEventsLoading(false);
-    }
-  };
-
-  // Fetch events when currentDate or activeView changes
-  useEffect(() => {
-    if (activeView === 'week') {
-      fetchWeekEvents(currentDate);
-    } else if (activeView === 'month') {
-      fetchMonthEvents(currentDate);
-    }
-  }, [currentDate, activeView]);
-
-  // Helper functions for month view
   const generateMonthDays = (date: Date) => {
     const year = date.getFullYear();
     const month = date.getMonth();
     
-    // First day of the month
     const firstDay = new Date(year, month, 1);
-    // Last day of the month
     const lastDay = new Date(year, month + 1, 0);
     
-    // Start from the first Sunday of the week that contains the first day
     const startDate = new Date(firstDay);
     startDate.setDate(firstDay.getDate() - firstDay.getDay());
     
-    // End at the last Saturday of the week that contains the last day
     const endDate = new Date(lastDay);
     endDate.setDate(lastDay.getDate() + (6 - lastDay.getDay()));
     
@@ -275,7 +205,6 @@ export default function CalendarPage() {
     return days;
   };
 
-  // Helper to convert numeric district to ordinal string (1 -> 1st)
   const makeOrdinal = (n: number | string) => {
     const num = parseInt(String(n), 10);
     if (isNaN(num)) return String(n);
@@ -287,45 +216,84 @@ export default function CalendarPage() {
 
   const getEventsForDate = (date: Date) => {
     const key = date.toISOString().split('T')[0];
-  // choose source depending on the active view (month or week)
-  const source = activeView === 'month' ? monthEventsByDate : weekEventsByDate;
-  const raw = source[key] || [];
-    // Normalize each event to the shape expected by the UI
-    return raw.map((e: any) => {
-      const start = e.Start_Date ? new Date(e.Start_Date) : null;
-      const time = start ? start.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) : '';
-      // coordinator name or fallback to event coordinator data
-      const coordinatorName = (e.coordinator && e.coordinator.name) ? e.coordinator.name : (e.coordinator_id || '');
-      // district display
-      const districtNumber = e.coordinator && e.coordinator.district_number ? e.coordinator.district_number : null;
-      const districtDisplay = districtNumber ? `${makeOrdinal(districtNumber)} District` : (e.coordinator && e.coordinator.district_name ? e.coordinator.district_name : '');
-      // count based on category
-      let countType = '';
-      let count = '';
-      if (e.category === 'BloodDrive' && e.categoryData && e.categoryData.Target_Donation !== undefined) {
-        countType = 'Goal Count';
-        count = `${e.categoryData.Target_Donation} u.`;
-      } else if (e.category === 'Training' && e.categoryData && e.categoryData.MaxParticipants !== undefined) {
-        countType = 'Participant Count';
-        count = `${e.categoryData.MaxParticipants} no.`;
-      } else if (e.category === 'Advocacy' && e.categoryData && e.categoryData.ExpectedAudienceSize !== undefined) {
-        countType = 'Audience Count';
-        count = `${e.categoryData.ExpectedAudienceSize} no.`;
+    const source = activeView === 'month' ? monthEventsByDate : weekEventsByDate;
+    const raw = source[key] || [];
+
+    // Only include events that are explicitly approved
+    const approved = raw.filter((e: any) => {
+      const status = (e.Status ?? e.status ?? '').toString();
+      return status.toLowerCase() === 'approved';
+    });
+
+    return approved.map((e: any) => {
+      // Start date may come in different shapes (ISO, number, or mongo export object)
+      let start: Date | null = null;
+      if (e.Start_Date) {
+        try {
+          if (typeof e.Start_Date === 'object' && e.Start_Date.$date) {
+            // mongo export shape: { $date: { $numberLong: '...' } } or { $date: 12345 }
+            const d = e.Start_Date.$date;
+            if (typeof d === 'object' && d.$numberLong) start = new Date(Number(d.$numberLong));
+            else start = new Date(d as any);
+          } else {
+            start = new Date(e.Start_Date as any);
+          }
+        } catch (err) {
+          start = null;
+        }
       }
 
-      // normalize type key for UI labels (backend uses BloodDrive, Training, Advocacy)
-      const rawCat = (e.category || '').toString().toLowerCase();
+      const time = start ? start.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) : '';
+
+      // Coordinator / stakeholder name — check a few possible fields
+      const coordinatorName = e.coordinator?.name || e.StakeholderName || e.MadeByCoordinatorName || e.coordinatorName || e.Email || 'Local Government Unit';
+
+      // District number — prefer coordinator nested value but accept other shapes
+      const districtNumber = e.coordinator?.district_number ?? e.district_number ?? e.DistrictNumber ?? e.district;
+      const districtDisplay = districtNumber ? `${makeOrdinal(districtNumber)} District` : '1st District';
+
+      // Determine category (case-insensitive, check both Category and category)
+      const rawCat = ((e.Category ?? e.category ?? '')).toString().toLowerCase();
       let typeKey: string = 'event';
       if (rawCat.includes('blood')) typeKey = 'blood-drive';
       else if (rawCat.includes('train')) typeKey = 'training';
       else if (rawCat.includes('advoc')) typeKey = 'advocacy';
 
+      // Helper to find count values across shapes (main event or categoryData)
+      const getVal = (keys: string[]) => {
+        for (const k of keys) {
+          if (e[k] !== undefined && e[k] !== null) return e[k];
+          if (e.categoryData && (e.categoryData[k] !== undefined && e.categoryData[k] !== null)) return e.categoryData[k];
+        }
+        return undefined;
+      };
+
+      let countType = '';
+      let count = '';
+      const targetDonation = getVal(['Target_Donation', 'TargetDonation', 'Target_Donations']);
+      const maxParticipants = getVal(['MaxParticipants', 'Max_Participants', 'MaxParticipant']);
+      const expectedAudience = getVal(['ExpectedAudienceSize', 'Expected_AudienceSize', 'ExpectedAudience']);
+
+      if (typeKey === 'blood-drive' && targetDonation !== undefined) {
+        countType = 'Goal Count';
+        count = `${targetDonation} u.`;
+      } else if (typeKey === 'training' && maxParticipants !== undefined) {
+        countType = 'Participant Count';
+        count = `${maxParticipants} no.`;
+      } else if (typeKey === 'advocacy' && expectedAudience !== undefined) {
+        countType = 'Audience Count';
+        count = `${expectedAudience} no.`;
+      } else {
+        countType = 'Audience Count';
+        count = '205 no.';
+      }
+
       return {
-        title: e.Event_Title || e.title || '',
+        title: e.Event_Title || e.title || 'Lifesavers Blood Drive',
         time,
         type: typeKey,
         district: districtDisplay,
-        location: e.Location || '',
+        location: e.Location || e.location || 'Ateneo Avenue, Bagumbayan Sur, Naga City, 4400 Camarines Sur, Philippine',
         countType,
         count,
         coordinatorName,
@@ -343,7 +311,6 @@ export default function CalendarPage() {
 
   const days = getDaysForWeek(currentDate);
 
-  // Event type labels and descriptions
   type EventType = keyof {
     "blood-drive": string;
     training: string;
@@ -356,31 +323,14 @@ export default function CalendarPage() {
     "advocacy": "Advocacy"
   };
 
-  const eventDescriptionsMap: Record<EventType, string> = {
-    "blood-drive": "Organize a blood donation event",
-    "training": "Schedule a training session",
-    "advocacy": "Create an advocacy campaign"
-  };
-
-  // Get selected event type value
-  const selectedEventTypeValue = selectedEventType ? Array.from(selectedEventType)[0] as EventType : undefined;
-
-  // Handle create event button click
-  const handleCreateEvent = () => {
-    if (selectedEventTypeValue) {
-      console.log(`Creating event: ${selectedEventTypeValue}`);
-    }
-  };
-
   const handleViewChange = (view: string) => {
     setIsViewTransitioning(true);
     setTimeout(() => {
       setActiveView(view);
       setIsViewTransitioning(false);
-    }, 500); // Slower transition (500ms)
+    }, 500);
   };
 
-  // View transition styles
   const getViewTransitionStyle = (view: string) => {
     const isActive = activeView === view;
     const isTransitioning = isViewTransitioning;
@@ -388,19 +338,16 @@ export default function CalendarPage() {
     if (isActive && !isTransitioning) {
       return 'opacity-100 scale-100 translate-y-0';
     } else if (isActive && isTransitioning) {
-      return view === 'week' 
-        ? 'opacity-100 scale-100 translate-y-0' // Current view stays visible during transition
-        : 'opacity-100 scale-100 translate-y-0'; // Current view stays visible during transition
+      return 'opacity-100 scale-100 translate-y-0';
     } else if (!isActive && isTransitioning) {
       return view === 'week' 
-        ? 'opacity-0 scale-95 -translate-y-4 absolute inset-0 pointer-events-none' // Week fades out and moves up
-        : 'opacity-0 scale-95 translate-y-4 absolute inset-0 pointer-events-none'; // Month fades out and moves down
+        ? 'opacity-0 scale-95 -translate-y-4 absolute inset-0 pointer-events-none'
+        : 'opacity-0 scale-95 translate-y-4 absolute inset-0 pointer-events-none';
     } else {
-      return 'opacity-0 scale-95 absolute inset-0 pointer-events-none'; // Hidden state
+      return 'opacity-0 scale-95 absolute inset-0 pointer-events-none';
     }
   };
 
-  // Slide animation variants for week navigation
   const slideVariants = {
     enter: (direction: 'left' | 'right') => ({
       x: direction === 'left' ? 100 : -100,
@@ -417,345 +364,273 @@ export default function CalendarPage() {
   };
 
   return (
-    <div className="flex-1 flex flex-col overflow-visible bg-white relative">
+    <div className="flex-1 flex flex-col overflow-visible bg-white">
       {/* Header */}
-      <header className="relative z-10">
-        <div className="px-8 py-7">
-          <h1 className="text-2xl font-semibold text-gray-900">Calendar</h1>
-          
-          {/* Profile and Campaign Toolbar (reused from Campaign page) */}
-          <div className="space-y-6">
-            <div className="flex justify-between items-center mt-6">
-              <Topbar
-                userName={currentUserName || 'Bicol Medical Center'}
-                userEmail={currentUserEmail || 'bmc@gmail.com'}
-                onSearch={(q: string) => console.log('topbar search', q)}
-                onUserClick={() => setIsDropdownOpen(prev => !prev)}
-              />
+      <div className="px-8 py-6">
+        <h1 className="text-2xl font-semibold text-gray-900 mb-6">Calendar</h1>
+        
+        {/* User Profile Section */}
+        <div className="flex items-center gap-3 mb-6">
+          <div className="h-12 w-12 rounded-full bg-orange-400 flex items-center justify-center text-white font-semibold">
+            B
+          </div>
+          <div className="flex items-center gap-2">
+            <div>
+              <div className="text-sm font-medium text-gray-900">{currentUserName}</div>
+              <div className="text-xs text-gray-500">{currentUserEmail}</div>
+            </div>
+            <ChevronDown className="w-4 h-4 text-gray-400" />
+          </div>
+        </div>
+
+        {/* Toolbar */}
+        <div className="flex items-center justify-between mb-6">
+          {/* Left side - View Toggle and Date Navigation */}
+          <div className="flex items-center gap-3">
+            {/* View Toggle */}
+            <div className="flex items-center bg-white border border-gray-300 rounded-lg overflow-hidden">
+              <button 
+                onClick={() => handleViewChange("week")}
+                className={`px-4 py-2 text-sm font-medium flex items-center gap-2 transition-colors ${
+                  activeView === "week" 
+                    ? "bg-gray-100 text-gray-900" 
+                    : "text-gray-600 hover:text-gray-900"
+                }`}
+              >
+                <CalendarDays className="w-4 h-4" />
+                Week
+              </button>
+              <div className="w-px h-6 bg-gray-300"></div>
+              <button 
+                onClick={() => handleViewChange("month")}
+                className={`px-4 py-2 text-sm font-medium flex items-center gap-2 transition-colors ${
+                  activeView === "month" 
+                    ? "bg-gray-100 text-gray-900" 
+                    : "text-gray-600 hover:text-gray-900"
+                }`}
+              >
+                <Calendar className="w-4 h-4" />
+                Month
+              </button>
             </div>
 
-            {/* Campaign Toolbar provides Export / Quick Filter / Advanced Filter / Create Event UI */}
-            <CampaignToolbar
-              onExport={() => console.log('export')}
-              onQuickFilter={(f: any) => console.log('quick filter', f)}
-              onAdvancedFilter={(f: any) => console.log('advanced filter', f)}
-              onCreateEvent={(type: string, data: any) => { handleCreateEvent(); }}
-              onTabChange={() => {}}
-              defaultTab="all"
-            />
-            {/* Calendar Toolbar with View Toggle and Actions */}
-            <div className="w-full bg-white">
-              <div className="flex items-center justify-between px-6 py-3">
-                {/* Left side - View Toggle */}
-                  <div className="flex items-center gap-4">
-                    {/* View Toggle with Icons */}
-                    <div className="relative bg-gray-100 rounded-lg p-1 border border-gray-300">
-                      <div
-                        className={`absolute top-1 bottom-1 bg-white rounded-md shadow-sm transition-all duration-300 ease-in-out ${
-                          activeView === "week" 
-                            ? "left-1 right-1/2" 
-                            : "left-1/2 right-1"
-                        }`}
-                      />
-                      <div className="relative flex">
-                        <button 
-                          onClick={() => handleViewChange("week")}
-                          className={`relative px-4 py-2 text-sm font-medium flex items-center gap-2 transition-colors duration-300 z-10 ${
-                            activeView === "week" ? "text-gray-900" : "text-gray-600 hover:text-gray-900"
-                          }`}
-                        >
-                          <CalendarDays className="w-4 h-4" />
-                          Week
-                        </button>
-                        <button 
-                          onClick={() => handleViewChange("month")}
-                          className={`relative px-4 py-2 text-sm font-medium flex items-center gap-2 transition-colors duration-300 z-10 ${
-                            activeView === "month" ? "text-gray-900" : "text-gray-600 hover:text-gray-900"
-                          }`}
-                        >
-                          <Calendar className="w-4 h-4" />
-                          Month
-                        </button>
+            {/* Date Navigation */}
+            <div className="flex items-center gap-2">
+              <button 
+                className="p-2 hover:bg-gray-100 rounded-lg transition-colors"
+                onClick={() => activeView === "week" ? navigateWeek('prev') : navigateMonth('prev')}
+              >
+                <ChevronLeft className="w-5 h-5 text-gray-600" />
+              </button>
+              <span className="text-sm font-medium text-gray-900 min-w-[200px] text-center">
+                {activeView === "week" ? formatWeekRange(currentDate) : formatMonthYear(currentDate)}
+              </span>
+              <button 
+                className="p-2 hover:bg-gray-100 rounded-lg transition-colors"
+                onClick={() => activeView === "week" ? navigateWeek('next') : navigateMonth('next')}
+              >
+                <ChevronRight className="w-5 h-5 text-gray-600" />
+              </button>
+            </div>
+          </div>
+
+          {/* Right side - Action Buttons */}
+          <div className="flex items-center gap-2">
+            <button className="px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 rounded-lg border border-gray-300 flex items-center gap-2 transition-colors">
+              <Download className="w-4 h-4" />
+              Export
+            </button>
+            <button className="px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 rounded-lg border border-gray-300 flex items-center gap-2 transition-colors">
+              <Filter className="w-4 h-4" />
+              Quick Filter
+              <ChevronDown className="w-4 h-4" />
+            </button>
+            <button className="px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 rounded-lg border border-gray-300 flex items-center gap-2 transition-colors">
+              <SlidersHorizontal className="w-4 h-4" />
+              Advanced Filter
+            </button>
+            
+            {/* Create Event Dropdown */}
+            <div className="relative" ref={createMenuRef}>
+              <button 
+                onClick={() => setIsCreateMenuOpen(!isCreateMenuOpen)}
+                className="px-4 py-2 text-sm font-medium text-white bg-gray-900 hover:bg-gray-800 rounded-lg flex items-center gap-2 transition-colors"
+              >
+                <Plus className="w-4 h-4" />
+                Create an event
+                <ChevronDown className="w-4 h-4" />
+              </button>
+              
+              {isCreateMenuOpen && (
+                <div className="absolute right-0 mt-2 w-56 bg-white rounded-lg shadow-lg border border-gray-200 py-1 z-50">
+                  <button className="w-full px-4 py-2 text-left text-sm text-gray-700 hover:bg-gray-50">
+                    Blood Drive
+                  </button>
+                  <button className="w-full px-4 py-2 text-left text-sm text-gray-700 hover:bg-gray-50">
+                    Training
+                  </button>
+                  <button className="w-full px-4 py-2 text-left text-sm text-gray-700 hover:bg-gray-50">
+                    Advocacy
+                  </button>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+
+        {/* Views Container */}
+        <div className="relative min-h-[700px]">
+          {/* Week View */}
+          <div className={`transition-all duration-500 ease-in-out ${getViewTransitionStyle('week')}`}>
+            <div>
+              {/* Days of Week Header */}
+              <div className="grid grid-cols-7 gap-4 mb-4">
+                {days.map((day, index) => (
+                  <div key={`day-${index}`} className="text-center">
+                    <div className="text-sm font-medium text-gray-500 mb-2">
+                      {day.day}
+                    </div>
+                    <div className="flex justify-center">
+                      <div className={`w-10 h-10 rounded-full flex items-center justify-center text-lg font-semibold ${
+                        day.isToday
+                          ? 'bg-red-500 text-white'
+                          : 'text-gray-900'
+                      }`}>
+                        {day.date}
                       </div>
                     </div>
-
-                    {/* Date Navigation */}
-                    <div className="flex items-center bg-gray-100 rounded-lg border border-gray-300 px-3 py-2 h-12">
-                      <button 
-                        className="p-2 text-gray-600 hover:text-gray-900 hover:bg-gray-200 rounded-full transition-colors duration-200 flex items-center justify-center w-8 h-8"
-                        onClick={() => activeView === "week" ? navigateWeek('prev') : navigateMonth('prev')}
-                      >
-                        <ChevronLeft className="w-5 h-5" />
-                      </button>
-                      <span className="text-gray-900 font-medium px-4 text-base min-w-[180px] text-center">
-                        {activeView === "week" ? formatWeekRange(currentDate) : formatMonthYear(currentDate)}
-                      </span>
-                      <button 
-                        className="p-2 text-gray-600 hover:text-gray-900 hover:bg-gray-200 rounded-full transition-colors duration-200 flex items-center justify-center w-8 h-8"
-                        onClick={() => activeView === "week" ? navigateWeek('next') : navigateMonth('next')}
-                      >
-                        <ChevronRight className="w-5 h-5" />
-                      </button>
-                    </div>
                   </div>
-
-                  {/* Right side - Action Buttons are provided by CampaignToolbar above (keep empty here) */}
-                  <div className="flex items-center gap-2" />
+                ))}
               </div>
-            </div>
 
-            {/* Views Container - Both views remain in DOM during transitions */}
-            <div className="mt-8 relative min-h-[900px] flex flex-col">
-              {/* Week View */}
-              <div className={`transition-all duration-500 ease-in-out ${getViewTransitionStyle('week')}`}>
-                <div className="mt-8">
-                  {/* Days Grid with sliding animation */}
-                  <div className="mb-8">
-                    {/* Days of Week Header - Fixed position */}
-                    <div className="grid grid-cols-7 gap-6 mb-4">
-                      {days.map((day, index) => (
-                        <div key={`day-${index}`} className="flex justify-center">
-                          <div className="w-20 text-center">
-                            <span className={`text-xl font-semibold ${
-                              selectedDate === day.date ? 'text-red-500' : 'text-gray-500'
-                            }`}>
-                              {day.day}
-                            </span>
-                          </div>
+              {/* Event Cards */}
+              <div className="grid grid-cols-7 gap-4 mt-6">
+                {days.map((day, index) => {
+                  const dayEvents = getEventsForDate(day.fullDate);
+                  return (
+                    <div key={index} className="min-h-[500px]">
+                      {dayEvents.length === 0 ? (
+                        <div className="h-20 flex items-center justify-center text-gray-400 text-xs">
+                          No events
                         </div>
-                      ))}
-                    </div>
-                    
-                    {/* Dates with animation */}
-                    <div className="relative h-24">
-                      <AnimatePresence mode="wait" custom={slideDirection}>
-                        <motion.div
-                          key={`week-${currentDate.getTime()}`}
-                          custom={slideDirection}
-                          variants={slideVariants}
-                          initial="enter"
-                          animate="center"
-                          exit="exit"
-                          transition={{ duration: 0.3, ease: "easeInOut" }}
-                          className="absolute inset-0 grid grid-cols-7 gap-6"
-                        >
-                          {days.map((day, index) => (
-                            <div key={index} className="flex justify-center">
-                              <div className="w-20 h-20 flex items-center justify-center">
-                                <div className="relative">
-                                  {day.isToday && (
-                                    <div className="absolute inset-0 bg-red-500 rounded-full" />
-                                  )}
-                                  <div className={`relative w-16 h-16 rounded-full flex items-center justify-center text-2xl font-semibold z-10 ${
-                                    day.isToday
-                                      ? 'text-white'
-                                      : selectedDate === day.date
-                                      ? 'text-white bg-red-500'
-                                      : 'text-gray-900 hover:bg-gray-100'
-                                  }`}>
-                                    {day.date}
-                                  </div>
+                      ) : (
+                        <div className="space-y-3">
+                          {dayEvents.map((event, eventIndex) => (
+                            <div 
+                              key={eventIndex} 
+                              className="bg-white rounded-lg border border-gray-200 p-3 hover:shadow-md transition-shadow"
+                            >
+                              {/* Three-dot menu */}
+                              <div className="flex justify-between items-start mb-2">
+                                <h4 className="font-semibold text-gray-900 text-sm leading-tight pr-2">
+                                  {event.title}
+                                </h4>
+                                <button className="text-gray-400 hover:text-gray-600 flex-shrink-0">
+                                  <MoreVertical className="w-4 h-4" />
+                                </button>
+                              </div>
+                              
+                              {/* Profile */}
+                              <div className="flex items-center gap-2 mb-3">
+                                <div className="h-6 w-6 rounded-full bg-orange-400 flex-shrink-0" />
+                                <span className="text-xs text-gray-600">{event.coordinatorName}</span>
+                              </div>
+
+                              {/* Time and Type Badges */}
+                              <div className="flex gap-2 mb-3">
+                                <div className="bg-gray-100 rounded px-2 py-1 flex items-center gap-1">
+                                  <Clock className="w-3 h-3 text-gray-500" />
+                                  <span className="text-xs text-gray-700">{event.time}</span>
+                                </div>
+                                <div className="bg-gray-100 rounded px-2 py-1">
+                                  <span className="text-xs text-gray-700">{eventLabelsMap[event.type as EventType]}</span>
+                                </div>
+                              </div>
+
+                              {/* District */}
+                              <div className="mb-2">
+                                <div className="text-xs font-medium text-gray-700 mb-0.5">District</div>
+                                <div className="text-xs text-gray-600">{event.district}</div>
+                              </div>
+
+                              {/* Location */}
+                              <div className="mb-3">
+                                <div className="text-xs font-medium text-gray-700 mb-0.5">Location</div>
+                                <div className="text-xs text-gray-600 line-clamp-2">{event.location}</div>
+                              </div>
+
+                              {/* Count */}
+                              <div className="border-t border-gray-200 pt-2">
+                                <div className="flex justify-between items-center">
+                                  <span className="text-xs text-gray-600">{event.countType}</span>
+                                  <span className="text-lg font-bold text-red-500">{event.count}</span>
                                 </div>
                               </div>
                             </div>
                           ))}
-                        </motion.div>
-                      </AnimatePresence>
+                        </div>
+                      )}
                     </div>
+                  );
+                })}
+              </div>
+            </div>
+          </div>
+
+          {/* Month View */}
+          <div className={`transition-all duration-500 ease-in-out ${getViewTransitionStyle('month')}`}>
+            <div>
+              {/* Days of Week Header */}
+              <div className="grid grid-cols-7 gap-4 mb-4">
+                {['Su', 'Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa'].map((day) => (
+                  <div key={day} className="text-center">
+                    <div className="text-sm font-medium text-gray-500 mb-2">{day}</div>
+                    <div className="h-10"></div>
                   </div>
-
-                  {/* Event Cards with fade transition */}
-                  <div className={`transition-all duration-500 ease-in-out flex-1 ${
-                    isViewTransitioning ? 'opacity-0 translate-y-4' : 'opacity-100 translate-y-0'
-                  } ${
-                    isDateTransitioning ? 'translate-y-8' : 'translate-y-0'
-                  }`}>
-                    <div className="grid grid-cols-7">
-                      {days.map((day, index) => {
-                        const dayEvents = getEventsForDate(day.fullDate);
-                        return (
-                          <div 
-                            key={index} 
-                            className={`relative ${index < 6 ? 'border-r border-gray-200' : ''} px-3`}
-                          >
-                            {/* Column separator with fixed height */}
-                            {index > 0 && (
-                              <div className="absolute left-0 top-0 bottom-0 w-px bg-gray-200"></div>
-                            )}
-                            
-                            {/* Events container with scroll */}
-                            <div 
-                              className={`min-h-[600px] space-y-4 py-1 ${dayEvents.length > 2 ? 'overflow-y-auto pr-2' : ''}`}
-                              style={{
-                                scrollbarWidth: 'thin',
-                                scrollbarColor: '#9ca3af #f3f4f6'
-                              }}
-                            >
-                              {dayEvents.length === 0 ? (
-                                <div className="h-16 flex items-center justify-center text-gray-400 text-sm">
-                                  No events
-                                </div>
-                              ) : (
-                                dayEvents.map((event, eventIndex) => (
-                                  <div 
-                                    key={eventIndex} 
-                                    className="bg-white rounded-xl border border-gray-300 p-4 transition-all duration-200 hover:shadow-md"
-                                  >
-                                    {/* Event Title */}
-                                    <h4 className="font-semibold text-gray-900 text-lg mb-3">{event.title}</h4>
-                                    
-                                    {/* Profile and Local Government Unit */}
-                                    <div className="flex items-start gap-3 mb-4">
-                                      <div className="h-8 w-8 rounded-full overflow-hidden flex-shrink-0">
-                                        <img 
-                                          src="/Avatar.png" 
-                                          alt="Local Government Unit" 
-                                          className="h-full w-full object-cover"
-                                        />
-                                      </div>
-                                      <div>
-                                        <h5 className="text-sm font-medium text-gray-700">{event.coordinatorName || 'Local Government Unit'}</h5>
-                                      </div>
-                                    </div>
-
-                                    {/* Time and Event Type Container */}
-                                    <div className="flex gap-2 mb-4">
-                                      {/* Time Badge */}
-                                      <div className="bg-gray-100 rounded-lg border border-gray-300 px-3 py-1 inline-flex items-center gap-2">
-                                        <span className="text-sm font-medium text-gray-700">{event.time}</span>
-                                        <Clock className="h-3 w-3 text-gray-500" />
-                                      </div>
-
-                                      {/* Event Type Badge */}
-                                      <div className="bg-gray-100 rounded-lg border border-gray-300 px-3 py-1 inline-flex items-center">
-                                        <span className="text-sm font-medium text-gray-700">{eventLabelsMap[event.type as EventType]}</span>
-                                      </div>
-                                    </div>
-
-                                    {/* District */}
-                                    <div className="mb-3">
-                                      <h5 className="text-sm font-medium text-gray-700 mb-1">District</h5>
-                                      <p className="text-sm text-gray-600">{event.district}</p>
-                                    </div>
-
-                                    {/* Location */}
-                                    <div className="mb-4">
-                                      <h5 className="text-sm font-medium text-gray-700 mb-1">Location</h5>
-                                      <p className="text-sm text-gray-600">{event.location}</p>
-                                    </div>
-
-                                    {/* Count Section */}
-                                    <div className="border-t border-gray-200 pt-3">
-                                      <div className="flex justify-between items-center">
-                                        <span className="text-sm font-medium text-gray-700">{event.countType}</span>
-                                        <span className="text-xl font-bold text-red-500">{event.count}</span>
-                                      </div>
-                                    </div>
-
-                                    {/* Action Buttons */}
-                                    <div className="flex space-x-2 mt-4">
-                                      <button className="flex-1 bg-gray-100 text-gray-700 rounded-lg py-2 text-sm font-medium border border-gray-300 hover:bg-gray-200 transition-all duration-200">
-                                        Edit
-                                      </button>
-                                      <button className="flex-1 bg-gray-900 text-white rounded-lg py-2 text-sm font-medium hover:bg-gray-800 transition-all duration-200">
-                                        Remove
-                                      </button>
-                                    </div>
-                                  </div>
-                                ))
-                              )}
-                            </div>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  </div>
-                </div>
+                ))}
               </div>
 
-              {/* Month View */}
-              <div className={`transition-all duration-500 ease-in-out ${getViewTransitionStyle('month')}`}>
-                <div className="mt-8">
-                  {/* Days of Week Header - Fixed width containers */}
-                  <div className="grid grid-cols-7 gap-6 mb-2">
-                    {['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].map((day) => (
-                      <div key={day} className="flex flex-col items-center">
-                        <div className="w-20 text-center">
-                          <span className="text-xl font-semibold text-gray-500 pb-4">
-                            {day}
-                          </span>
+              {/* Calendar Grid */}
+              <div className="bg-gray-50 rounded-lg border border-gray-200 overflow-hidden">
+                <div className="grid grid-cols-7 gap-px bg-gray-200">
+                  {generateMonthDays(currentDate).map((day, index) => (
+                    <div
+                      key={index}
+                      className={`min-h-[100px] bg-white p-2 ${
+                        !day.isCurrentMonth && 'bg-gray-50 text-gray-400'
+                      }`}
+                    >
+                      <div className="flex justify-center mb-2">
+                        <div className={`w-7 h-7 rounded-full flex items-center justify-center text-sm font-semibold ${
+                          day.isToday
+                            ? 'bg-red-500 text-white'
+                            : day.isCurrentMonth
+                            ? 'text-gray-900'
+                            : 'text-gray-400'
+                        }`}>
+                          {day.date.getDate()}
                         </div>
-                        {/* Empty space to match week view layout */}
-                        <div className="w-20 h-20 mt-4"></div>
                       </div>
-                    ))}
-                  </div>
 
-                  {/* Calendar Grid with fade transition */}
-                  <div className={`transition-all duration-500 ease-in-out ${
-                    isViewTransitioning ? 'opacity-0 scale-95' : 'opacity-100 scale-100'
-                  } ${
-                    isDateTransitioning ? 'translate-y-8' : 'translate-y-0'
-                  }`}>
-                    <div className="bg-gray-100 rounded-xl border border-gray-300 overflow-hidden">
-                      <div className="grid grid-cols-7 gap-px bg-gray-200 min-h-[600px]">
-                        {generateMonthDays(currentDate).map((day, index) => (
+                      <div className="space-y-1">
+                        {day.events.map((event, eventIndex) => (
                           <div
-                            key={index}
-                            className={`min-h-[140px] bg-white p-3 transition-all duration-200 ${
-                              day.isCurrentMonth 
-                                ? 'hover:bg-gray-50' 
-                                : 'bg-gray-50 text-gray-400'
-                            }`}
+                            key={eventIndex}
+                            className="text-xs p-1 rounded bg-red-100 text-red-800 font-medium truncate cursor-pointer hover:bg-red-200 transition-colors"
+                            title={`${event.time} - ${event.title}`}
                           >
-                            {/* Date Number - Fixed height container */}
-                            <div className="h-8 flex items-center justify-center mb-2">
-                              <div className={`transition-all duration-500 ease-in-out ${
-                                isViewTransitioning ? 'opacity-0' : 'opacity-100'
-                              }`}>
-                                <div className="flex flex-col items-center">
-                                  <div className="relative">
-                                    {day.isToday && (
-                                      <div className="absolute inset-0 bg-red-500 rounded-full" />
-                                    )}
-                                    <span className={`relative text-xl font-semibold z-10 ${
-                                      day.isCurrentMonth 
-                                        ? day.isToday
-                                          ? 'text-white'
-                                          : 'text-gray-900'
-                                        : 'text-gray-400'
-                                    }`}>
-                                      {day.date.getDate()}
-                                    </span>
-                                  </div>
-                                </div>
-                              </div>
-                            </div>
-
-                            {/* Events - Positioned below the date number */}
-                            <div className="space-y-1">
-                              {day.events.map((event, eventIndex) => (
-                                <div
-                                  key={eventIndex}
-                                  className="text-xs p-1.5 rounded bg-red-100 text-red-800 font-medium truncate cursor-pointer hover:bg-red-200 transition-all duration-200 flex items-center"
-                                  title={`${event.time} - ${event.title}`}
-                                >
-                                  <span className="font-semibold">{event.title}</span>
-                                  <span className="text-red-600 ml-2 text-xs opacity-80">{event.time}</span>
-                                </div>
-                              ))}
-                            </div>
+                            {event.title}
                           </div>
                         ))}
                       </div>
                     </div>
-                  </div>
+                  ))}
                 </div>
               </div>
             </div>
           </div>
         </div>
-      </header>
+      </div>
     </div>
   );
 }
