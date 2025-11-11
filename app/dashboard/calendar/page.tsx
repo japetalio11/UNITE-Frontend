@@ -1,20 +1,40 @@
 "use client";
 
 import React, { useState, useRef, useEffect } from "react";
+import { useRouter } from 'next/navigation';
 import { motion, AnimatePresence } from "framer-motion";
 import { 
   ChevronDown, 
   ChevronLeft,
   ChevronRight,
   Download, 
-  Clock,
+  Clock as ClockIcon,
   Calendar,
   CalendarDays,
   SlidersHorizontal,
   Filter,
   Plus,
-  MoreVertical
+  MoreVertical,
+  Eye,
+  Edit,
+  Users,
+  Trash2,
+  Check,
+  X
 } from "lucide-react";
+import {
+  Dropdown,
+  DropdownTrigger,
+  DropdownMenu,
+  DropdownSection,
+  DropdownItem
+} from '@heroui/dropdown';
+import { Button } from '@heroui/button';
+import { Modal, ModalContent, ModalHeader, ModalBody, ModalFooter } from '@heroui/modal';
+import { DatePicker } from '@heroui/date-picker';
+import { Avatar } from '@heroui/avatar';
+import EventViewModal from '@/components/campaign/event-view-modal';
+import EditEventModal from '@/components/campaign/event-edit-modal';
 
 export default function CalendarPage() {
   const [activeView, setActiveView] = useState("week");
@@ -31,6 +51,21 @@ export default function CalendarPage() {
   const [slideDirection, setSlideDirection] = useState<'left' | 'right'>('right');
   const [isCreateMenuOpen, setIsCreateMenuOpen] = useState(false);
   const createMenuRef = useRef<HTMLDivElement>(null);
+  const router = useRouter();
+  // Action modal states keyed by Event_ID
+  const [rescheduleOpenId, setRescheduleOpenId] = useState<string | null>(null);
+  const [cancelOpenId, setCancelOpenId] = useState<string | null>(null);
+  const [manageStaffOpenId, setManageStaffOpenId] = useState<string | null>(null);
+  const [acceptOpenId, setAcceptOpenId] = useState<string | null>(null);
+  const [rejectOpenId, setRejectOpenId] = useState<string | null>(null);
+
+  // Reschedule state per event
+  const [rescheduledDateMap, setRescheduledDateMap] = useState<Record<string, any>>({});
+  const [rescheduleNoteMap, setRescheduleNoteMap] = useState<Record<string, string>>({});
+
+  // Manage staff simple state
+  const [staffMap, setStaffMap] = useState<Record<string, Array<{ FullName: string; Role: string }>>>({});
+  const [staffLoading, setStaffLoading] = useState(false);
 
   // Close create menu when clicking outside
   useEffect(() => {
@@ -48,24 +83,110 @@ export default function CalendarPage() {
   // API base (allow override via NEXT_PUBLIC_API_URL)
   const API_BASE = (typeof process !== 'undefined' && process.env && process.env.NEXT_PUBLIC_API_URL) ? process.env.NEXT_PUBLIC_API_URL : 'http://localhost:3000';
 
+  // Helpers to normalize date keys (use local date YYYY-MM-DD)
+  const pad = (n: number) => n.toString().padStart(2, '0');
+  const dateToLocalKey = (d: Date) => {
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+  };
+
+  const normalizeEventsMap = (input: Record<string, any> | undefined): Record<string, any[]> => {
+    const out: Record<string, any[]> = {};
+    if (!input) return out;
+    try {
+      // Helper: recursively search an object for the first array of event-like objects
+      const findArrayInObject = (val: any, depth = 0): any[] | null => {
+        if (!val || depth > 6) return null; // limit depth
+        if (Array.isArray(val)) return val;
+        if (typeof val !== 'object') return null;
+        const commonKeys = ['events', 'data', 'eventsByDate', 'weekDays'];
+        for (const k of commonKeys) {
+          if (Array.isArray(val[k])) return val[k];
+        }
+        for (const k of Object.keys(val)) {
+          try {
+            const found = findArrayInObject(val[k], depth + 1);
+            if (found && Array.isArray(found)) return found;
+          } catch (e) {
+            // ignore
+          }
+        }
+        return null;
+      };
+
+      Object.keys(input).forEach((rawKey) => {
+        // Attempt to parse rawKey into a Date. If parsing fails, keep as-is.
+        const parsed = new Date(rawKey);
+        let localKey = rawKey;
+        if (!isNaN(parsed.getTime())) {
+          localKey = dateToLocalKey(parsed);
+        }
+
+        const rawVal = input[rawKey];
+        let vals: any[] = [];
+
+        const found = findArrayInObject(rawVal);
+        if (found && Array.isArray(found)) vals = found;
+        else if (Array.isArray(rawVal)) vals = rawVal;
+        else if (rawVal && typeof rawVal === 'object') vals = [rawVal];
+        else if (rawVal !== undefined && rawVal !== null) vals = [rawVal];
+
+        if (!out[localKey]) out[localKey] = [];
+        out[localKey] = out[localKey].concat(vals);
+      });
+
+      // Deduplicate events per date (prefer Event_ID / EventId when available)
+      Object.keys(out).forEach((k) => {
+        const seen = new Set<string>();
+        out[k] = out[k].filter((ev) => {
+          const id = (ev && (ev.Event_ID || ev.EventId || ev.id)) ? String(ev.Event_ID ?? ev.EventId ?? ev.id) : JSON.stringify(ev);
+          if (seen.has(id)) return false;
+          seen.add(id);
+          return true;
+        });
+      });
+    } catch (e) {
+      return input as Record<string, any[]>;
+    }
+    return out;
+  };
+
   // Fetch real events from backend and populate week/month maps
   useEffect(() => {
     let mounted = true;
 
     const fetchData = async () => {
       setEventsLoading(true);
+      // prepare holders so we can merge month multi-day events into week view if needed
+      let normalizedWeek: Record<string, any[]> = {};
+      let normalizedMonth: Record<string, any[]> = {};
       try {
         // Week endpoint (passes currentDate as date param)
         const weekUrl = `${API_BASE}/api/calendar/week?date=${encodeURIComponent(currentDate.toISOString())}&status=Approved`;
         const weekResp = await fetch(weekUrl, { credentials: 'include' });
         const weekJson = await weekResp.json();
+        // Debug: log raw week response and status
+        if (mounted) console.log('Calendar week response', { ok: weekResp.ok, status: weekResp.status, body: weekJson });
 
         if (mounted && weekResp.ok && weekJson && weekJson.success && weekJson.data) {
           // backend returns week object in `data` with `weekDays` map
-          const weekDays = weekJson.data.weekDays || weekJson.data.weekDays || {};
-          setWeekEventsByDate(weekDays);
+          const weekDaysRaw = weekJson.data.weekDays || {};
+          // Debug: show raw weekDays structure and per-key shapes
+          try {
+            if (mounted) console.log('Raw weekDaysRaw keys/shape', Object.keys(weekDaysRaw).map(k => ({ key: k, type: Array.isArray(weekDaysRaw[k]) ? 'array' : typeof weekDaysRaw[k], len: Array.isArray(weekDaysRaw[k]) ? weekDaysRaw[k].length : (weekDaysRaw[k] && typeof weekDaysRaw[k] === 'object' ? Object.keys(weekDaysRaw[k]).length : 0) })));
+          } catch (e) {
+            if (mounted) console.log('Could not stringify weekDaysRaw', e);
+          }
+
+          // Normalize keys to local YYYY-MM-DD so lookups match the frontend dates
+          normalizedWeek = normalizeEventsMap(weekDaysRaw);
+          setWeekEventsByDate(normalizedWeek);
+          if (mounted) {
+            const summary = Object.keys(normalizedWeek).map(k => ({ key: k, len: normalizedWeek[k]?.length || 0, ids: (normalizedWeek[k] || []).map((ev: any) => ev?.Event_ID ?? ev?.EventId ?? ev?._id ?? null) }));
+            console.log('Normalized weekEventsByDate summary', { keys: Object.keys(normalizedWeek).slice(0,20), totalCount: summary.reduce((acc, s) => acc + s.len, 0), summary });
+          }
         } else if (mounted) {
           setWeekEventsByDate({});
+          if (mounted) console.log('Week fetch returned no data or not ok', { ok: weekResp.ok, status: weekResp.status, body: weekJson });
         }
 
         // Month endpoint (use year/month from currentDate)
@@ -74,13 +195,84 @@ export default function CalendarPage() {
         const monthUrl = `${API_BASE}/api/calendar/month?year=${year}&month=${month}&status=Approved`;
         const monthResp = await fetch(monthUrl, { credentials: 'include' });
         const monthJson = await monthResp.json();
+        // Debug: log raw month response and status
+        if (mounted) console.log('Calendar month response', { ok: monthResp.ok, status: monthResp.status, body: monthJson });
 
         if (mounted && monthResp.ok && monthJson && monthJson.success && monthJson.data) {
           // backend returns month object in `data` with `eventsByDate` map
-          const eventsByDate = monthJson.data.eventsByDate || {};
-          setMonthEventsByDate(eventsByDate);
+          const eventsByDateRaw = monthJson.data.eventsByDate || {};
+          // Normalize keys to local YYYY-MM-DD so lookups match the frontend dates
+          normalizedMonth = normalizeEventsMap(eventsByDateRaw);
+          setMonthEventsByDate(normalizedMonth);
+          if (mounted) console.log('Normalized monthEventsByDate', { keys: Object.keys(normalizedMonth).slice(0,20), counts: Object.keys(normalizedMonth).reduce((acc, k) => (acc + (normalizedMonth[k]?.length || 0)), 0), sample: normalizedMonth[Object.keys(normalizedMonth)[0]] });
         } else if (mounted) {
           setMonthEventsByDate({});
+          if (mounted) console.log('Month fetch returned no data or not ok', { ok: monthResp.ok, status: monthResp.status, body: monthJson });
+        }
+
+        // If the week data is sparse (multi-day events not expanded), merge month multi-day events into the week view.
+        try {
+          // Compute week range
+          const wkStart = new Date(currentDate);
+          const dayOfWeek = wkStart.getDay();
+          wkStart.setDate(wkStart.getDate() - dayOfWeek);
+          wkStart.setHours(0,0,0,0);
+          const wkEnd = new Date(wkStart);
+          wkEnd.setDate(wkStart.getDate() + 6);
+
+          // copy normalizedWeek into merged
+          const merged: Record<string, any[]> = {};
+          Object.keys(normalizedWeek || {}).forEach(k => { merged[k] = Array.isArray(normalizedWeek[k]) ? [...normalizedWeek[k]] : []; });
+
+          const addEventToDate = (localKey: string, ev: any) => {
+            if (!merged[localKey]) merged[localKey] = [];
+            // avoid duplicates by Event_ID
+            const id = ev?.Event_ID ?? ev?.EventId ?? ev?._id ?? JSON.stringify(ev);
+            if (!merged[localKey].some(x => (x?.Event_ID ?? x?.EventId ?? x?._id ?? JSON.stringify(x)) === id)) {
+              merged[localKey].push(ev);
+            }
+          };
+
+          // iterate month events, expand multi-day events and add to merged if they overlap the week
+          Object.keys(normalizedMonth || {}).forEach(k => {
+            const arr = normalizedMonth[k] || [];
+            for (const ev of arr) {
+              // parse start and end
+              let start: Date | null = null;
+              let end: Date | null = null;
+              try {
+                if (ev.Start_Date) start = (typeof ev.Start_Date === 'string') ? new Date(ev.Start_Date) : (ev.Start_Date.$date ? new Date(ev.Start_Date.$date) : new Date(ev.Start_Date));
+              } catch (e) { start = null; }
+              try {
+                if (ev.End_Date) end = (typeof ev.End_Date === 'string') ? new Date(ev.End_Date) : (ev.End_Date.$date ? new Date(ev.End_Date.$date) : new Date(ev.End_Date));
+              } catch (e) { end = null; }
+
+              if (!start) continue;
+              if (!end) end = start;
+
+              // iterate dates from start to end inclusive
+              const cur = new Date(start);
+              cur.setHours(0,0,0,0);
+              while (cur <= end) {
+                if (cur >= wkStart && cur <= wkEnd) {
+                  const localKey = dateToLocalKey(new Date(cur));
+                  addEventToDate(localKey, ev);
+                }
+                cur.setDate(cur.getDate() + 1);
+              }
+            }
+          });
+
+          // If merged contains more events than original normalizedWeek, update state
+          const mergedCount = Object.keys(merged).reduce((acc, k) => acc + (merged[k]?.length || 0), 0);
+          const origCount = Object.keys(normalizedWeek || {}).reduce((acc, k) => acc + ((normalizedWeek[k] || []).length || 0), 0);
+          if (mergedCount > origCount) {
+            setWeekEventsByDate(merged);
+            if (mounted) console.log('Merged month multi-day events into week view', { origCount, mergedCount });
+          }
+        } catch (e) {
+          // ignore merge errors
+          if (mounted) console.log('Failed to merge month events into week view', e);
         }
       } catch (error) {
         if (mounted) {
@@ -215,17 +407,62 @@ export default function CalendarPage() {
   };
 
   const getEventsForDate = (date: Date) => {
-    const key = date.toISOString().split('T')[0];
+    const key = dateToLocalKey(date);
     const source = activeView === 'month' ? monthEventsByDate : weekEventsByDate;
-    const raw = source[key] || [];
+    // Prefer normalized local key; fallback to ISO UTC key or raw date string if present
+    const isoKey = date.toISOString().split('T')[0];
+    let raw: any = source[key] || source[isoKey] || source[date.toString()] || [];
+
+    // If backend returned a container object for this date, try to extract the array
+    if (raw && !Array.isArray(raw) && typeof raw === 'object') {
+      if (Array.isArray(raw.events)) raw = raw.events;
+      else if (Array.isArray(raw.data)) raw = raw.data;
+      else raw = [raw];
+    }
+
+    raw = Array.isArray(raw) ? raw : [];
 
     // Only include events that are explicitly approved
     const approved = raw.filter((e: any) => {
-      const status = (e.Status ?? e.status ?? '').toString();
+      const status = (e && (e.Status ?? e.status ?? '')).toString ? (e.Status ?? e.status ?? '').toString() : '';
       return status.toLowerCase() === 'approved';
     });
 
-    return approved.map((e: any) => {
+    // Deduplicate approved list just in case
+    const deduped: any[] = [];
+    const seenIds = new Set<string>();
+    for (const e of approved) {
+      const id = e?.Event_ID ?? e?.EventId ?? JSON.stringify(e);
+      const sid = String(id);
+      if (seenIds.has(sid)) continue;
+      seenIds.add(sid);
+      deduped.push(e);
+    }
+
+    // For month view, avoid showing multi-day events on every day: only show on the event Start_Date
+    const filterByStartDateForMonth = (ev: any) => {
+      if (activeView !== 'month') return true;
+      let start: Date | null = null;
+      try {
+        if (ev.Start_Date) {
+          if (typeof ev.Start_Date === 'object' && ev.Start_Date.$date) {
+            const d = ev.Start_Date.$date;
+            if (typeof d === 'object' && d.$numberLong) start = new Date(Number(d.$numberLong));
+            else start = new Date(d as any);
+          } else {
+            start = new Date(ev.Start_Date as any);
+          }
+        }
+      } catch (err) {
+        start = null;
+      }
+      if (!start) return false;
+      return dateToLocalKey(start) === key;
+    };
+
+    const finalList = deduped.filter(filterByStartDateForMonth);
+
+  return finalList.map((e: any) => {
       // Start date may come in different shapes (ISO, number, or mongo export object)
       let start: Date | null = null;
       if (e.Start_Date) {
@@ -302,6 +539,26 @@ export default function CalendarPage() {
     });
   };
 
+  // Profile helpers: initial and deterministic color per user
+  const getProfileInitial = (name?: string) => {
+    if (!name) return 'U';
+    const trimmed = String(name).trim();
+    return trimmed.length > 0 ? trimmed.charAt(0).toUpperCase() : 'U';
+  };
+
+  const getProfileColor = (name?: string) => {
+    const s = (name || 'unknown').toString();
+    // simple hash to hue
+    let hash = 0;
+    for (let i = 0; i < s.length; i++) {
+      hash = s.charCodeAt(i) + ((hash << 5) - hash);
+      hash = hash & hash; // keep in 32-bit int
+    }
+    const hue = Math.abs(hash) % 360;
+    // return an HSL color string; use moderate saturation/lightness for good contrast
+    return `hsl(${hue}deg 65% 40%)`;
+  };
+
   const isToday = (date: Date) => {
     const today = new Date();
     return date.getDate() === today.getDate() &&
@@ -361,6 +618,114 @@ export default function CalendarPage() {
       x: direction === 'left' ? -100 : 100,
       opacity: 0
     })
+  };
+
+  // Build dropdown menus matching campaign design
+  const getMenuByStatus = (event: any) => {
+    const statusRaw = event.raw?.Status || event.raw?.status || '';
+    const status = (statusRaw || '').toString().toLowerCase().includes('approve') ? 'Approved' : ((statusRaw || '').toString().toLowerCase().includes('reject') ? 'Rejected' : 'Pending');
+
+    const approvedMenu = (
+      <DropdownMenu aria-label="Event actions menu" variant="faded">
+        <DropdownSection showDivider title="Actions">
+          <DropdownItem key="view" description="View this event" startContent={<Eye />} onPress={() => handleOpenViewEvent(event.raw)}>View Event</DropdownItem>
+          <DropdownItem key="edit" description="Edit an event" startContent={<Edit />} onPress={() => handleOpenEditEvent(event.raw)}>Edit Event</DropdownItem>
+          <DropdownItem key="manage-staff" description="Manage staff for this event" startContent={<Users />} onPress={() => setManageStaffOpenId(event.raw.Event_ID)}>Manage Staff</DropdownItem>
+          <DropdownItem key="reschedule" description="Reschedule this event" startContent={<ClockIcon />} onPress={() => setRescheduleOpenId(event.raw.Event_ID)}>Reschedule Event</DropdownItem>
+        </DropdownSection>
+        <DropdownSection title="Danger zone">
+          <DropdownItem key="cancel" className="text-danger" color="danger" description="Cancel an event" startContent={<Trash2 className="text-xl text-danger pointer-events-none shrink-0" />} onPress={() => setCancelOpenId(event.raw.Event_ID)}>Cancel</DropdownItem>
+        </DropdownSection>
+      </DropdownMenu>
+    );
+
+    const pendingMenu = (
+      <DropdownMenu aria-label="Event actions menu" variant="faded">
+        <DropdownSection title="Actions">
+          <DropdownItem key="view" description="View this event" startContent={<Eye />} onPress={() => handleOpenViewEvent(event.raw)}>View Event</DropdownItem>
+          <DropdownItem key="accept" description="Accept this event" startContent={<Check />} onPress={() => setAcceptOpenId(event.raw.Event_ID)}>Accept Event</DropdownItem>
+          <DropdownItem key="manage-staff" description="Manage staff for this event" startContent={<Users />} onPress={() => setManageStaffOpenId(event.raw.Event_ID)}>Manage Staff</DropdownItem>
+          <DropdownItem key="reject" description="Reject this event" startContent={<X />} onPress={() => setRejectOpenId(event.raw.Event_ID)}>Reject Event</DropdownItem>
+          <DropdownItem key="reschedule" description="Reschedule this event" startContent={<ClockIcon />} onPress={() => setRescheduleOpenId(event.raw.Event_ID)}>Reschedule Event</DropdownItem>
+        </DropdownSection>
+      </DropdownMenu>
+    );
+
+    const defaultMenu = (
+      <DropdownMenu aria-label="Event actions menu" variant="faded">
+        <DropdownSection title="Actions">
+          <DropdownItem key="view" description="View this event" startContent={<Eye />} onPress={() => router.push(`/dashboard/events/${event.raw.Event_ID}`)}>View Event</DropdownItem>
+        </DropdownSection>
+      </DropdownMenu>
+    );
+
+    if (status === 'Approved') return approvedMenu;
+    if (status === 'Pending') return pendingMenu;
+    return defaultMenu;
+  };
+
+  // View/Edit handlers: open campaign modals with fetched event details
+  const [viewModalOpen, setViewModalOpen] = useState(false);
+  const [viewRequest, setViewRequest] = useState<any>(null);
+  const [viewLoading, setViewLoading] = useState(false);
+
+  const [editModalOpen, setEditModalOpen] = useState(false);
+  const [editRequest, setEditRequest] = useState<any>(null);
+
+  const handleOpenViewEvent = async (rawEvent: any) => {
+    if (!rawEvent) return;
+    const eventId = rawEvent.Event_ID || rawEvent.EventId || rawEvent.EventId || rawEvent.Event_ID;
+    if (!eventId) {
+      setViewRequest(rawEvent);
+      setViewModalOpen(true);
+      return;
+    }
+
+    setViewLoading(true);
+    try {
+      const token = localStorage.getItem('unite_token') || sessionStorage.getItem('unite_token');
+      const headers: any = { 'Content-Type': 'application/json' };
+      if (token) headers['Authorization'] = `Bearer ${token}`;
+      const res = await fetch(`${API_BASE}/api/events/${encodeURIComponent(eventId)}`, { headers });
+      const body = await res.json();
+      if (!res.ok) throw new Error(body.message || 'Failed to fetch event details');
+      const data = body.data || body.event || body;
+      setViewRequest(data || rawEvent);
+      setViewModalOpen(true);
+    } catch (err: any) {
+      console.error('Failed to load event details', err);
+      // fallback to opening with rawEvent
+      setViewRequest(rawEvent);
+      setViewModalOpen(true);
+    } finally {
+      setViewLoading(false);
+    }
+  };
+
+  const handleOpenEditEvent = async (rawEvent: any) => {
+    if (!rawEvent) return;
+    const eventId = rawEvent.Event_ID || rawEvent.EventId || rawEvent.EventId || rawEvent.Event_ID;
+    if (!eventId) {
+      setEditRequest(rawEvent);
+      setEditModalOpen(true);
+      return;
+    }
+
+    try {
+      const token = localStorage.getItem('unite_token') || sessionStorage.getItem('unite_token');
+      const headers: any = { 'Content-Type': 'application/json' };
+      if (token) headers['Authorization'] = `Bearer ${token}`;
+      const res = await fetch(`${API_BASE}/api/events/${encodeURIComponent(eventId)}`, { headers });
+      const body = await res.json();
+      if (!res.ok) throw new Error(body.message || 'Failed to fetch event for edit');
+      const data = body.data || body.event || body;
+      setEditRequest(data || rawEvent);
+      setEditModalOpen(true);
+    } catch (err: any) {
+      console.error('Failed to load event for edit', err);
+      setEditRequest(rawEvent);
+      setEditModalOpen(true);
+    }
   };
 
   return (
@@ -525,21 +890,31 @@ export default function CalendarPage() {
                                 <h4 className="font-semibold text-gray-900 text-sm leading-tight pr-2">
                                   {event.title}
                                 </h4>
-                                <button className="text-gray-400 hover:text-gray-600 flex-shrink-0">
-                                  <MoreVertical className="w-4 h-4" />
-                                </button>
+                                <Dropdown>
+                                  <DropdownTrigger>
+                                    <Button isIconOnly variant="light" className="hover:text-default-800" aria-label="Event actions">
+                                      <MoreVertical className="w-5 h-5" />
+                                    </Button>
+                                  </DropdownTrigger>
+                                  {getMenuByStatus(event)}
+                                </Dropdown>
                               </div>
                               
                               {/* Profile */}
                               <div className="flex items-center gap-2 mb-3">
-                                <div className="h-6 w-6 rounded-full bg-orange-400 flex-shrink-0" />
+                                <div
+                                  className="h-6 w-6 rounded-full flex-shrink-0 flex items-center justify-center text-xs font-semibold"
+                                  style={{ backgroundColor: getProfileColor(event.coordinatorName) }}
+                                >
+                                  <span className="text-white">{getProfileInitial(event.coordinatorName)}</span>
+                                </div>
                                 <span className="text-xs text-gray-600">{event.coordinatorName}</span>
                               </div>
 
                               {/* Time and Type Badges */}
                               <div className="flex gap-2 mb-3">
                                 <div className="bg-gray-100 rounded px-2 py-1 flex items-center gap-1">
-                                  <Clock className="w-3 h-3 text-gray-500" />
+                                  <ClockIcon className="w-3 h-3 text-gray-500" />
                                   <span className="text-xs text-gray-700">{event.time}</span>
                                 </div>
                                 <div className="bg-gray-100 rounded px-2 py-1">
@@ -631,6 +1006,32 @@ export default function CalendarPage() {
           </div>
         </div>
       </div>
+      {/* Event View & Edit Modals (reuse campaign components) */}
+      <EventViewModal isOpen={viewModalOpen} onClose={() => { setViewModalOpen(false); setViewRequest(null); }} request={viewRequest} />
+      <EditEventModal
+        isOpen={editModalOpen}
+        onClose={() => { setEditModalOpen(false); setEditRequest(null); }}
+        request={editRequest}
+        onSaved={async () => {
+          // refresh calendar after edit
+          setViewModalOpen(false);
+          setEditModalOpen(false);
+          const year = currentDate.getFullYear();
+          const month = currentDate.getMonth() + 1;
+          try {
+            const weekUrl = `${API_BASE}/api/calendar/week?date=${encodeURIComponent(currentDate.toISOString())}&status=Approved`;
+            const w = await fetch(weekUrl, { credentials: 'include' });
+            const wj = await w.json();
+            setWeekEventsByDate(wj?.data?.weekDays || {});
+            const monthUrl = `${API_BASE}/api/calendar/month?year=${year}&month=${month}&status=Approved`;
+            const m = await fetch(monthUrl, { credentials: 'include' });
+            const mj = await m.json();
+            setMonthEventsByDate(mj?.data?.eventsByDate || {});
+          } catch (e) {
+            console.error(e);
+          }
+        }}
+      />
     </div>
   );
 }

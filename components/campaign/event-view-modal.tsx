@@ -81,7 +81,6 @@ export const EventViewModal: React.FC<EventViewModalProps> = ({ isOpen, onClose,
 
   // debug output to help trace missing fields (useful during development)
   // eslint-disable-next-line no-console
-  console.log('[EventViewModal] request.category:', request?.category, 'event:', event);
 
   return (
     <Modal isOpen={isOpen} onClose={onClose} size="2xl" placement="center" scrollBehavior="inside">
