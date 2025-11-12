@@ -32,11 +32,12 @@ import {
 import { Button } from '@heroui/button';
 import { Modal, ModalContent, ModalHeader, ModalBody, ModalFooter } from '@heroui/modal';
 import { DatePicker } from '@heroui/date-picker';
-import { Avatar } from '@heroui/avatar';
+import { User } from '@heroui/user';
 import EventViewModal from '@/components/calendar/event-view-modal';
 import EditEventModal from '@/components/calendar/event-edit-modal';
 import EventManageStaffModal from '@/components/calendar/event-manage-staff-modal';
 import EventRescheduleModal from '@/components/calendar/event-reschedule-modal';
+import CalendarToolbar from '@/components/calendar/calendar-toolbar';
 
 export default function CalendarPage() {
   const [activeView, setActiveView] = useState("week");
@@ -48,11 +49,33 @@ export default function CalendarPage() {
   const [eventsLoading, setEventsLoading] = useState(false);
   const [currentUserName, setCurrentUserName] = useState<string>('Bicol Medical Center');
   const [currentUserEmail, setCurrentUserEmail] = useState<string>('bmc@gmail.com');
+  // Initialize displayed user name/email from localStorage (match campaign page logic)
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem('unite_user');
+      if (raw) {
+        const u = JSON.parse(raw);
+        const first = u.First_Name || u.FirstName || u.first_name || u.firstName || u.First || '';
+        const middle = u.Middle_Name || u.MiddleName || u.middle_name || u.middleName || u.Middle || '';
+        const last = u.Last_Name || u.LastName || u.last_name || u.lastName || u.Last || '';
+        const parts = [first, middle, last].map((p: any) => (p || '').toString().trim()).filter(Boolean);
+        const full = parts.join(' ');
+        const email = u.Email || u.email || u.Email_Address || u.emailAddress || '';
+        if (full) setCurrentUserName(full);
+        else if (u.name) setCurrentUserName(u.name);
+        if (email) setCurrentUserEmail(email);
+      }
+    } catch (err) {
+      // ignore malformed localStorage entry
+    }
+  }, []);
   const [isDateTransitioning, setIsDateTransitioning] = useState(false);
   const [isViewTransitioning, setIsViewTransitioning] = useState(false);
   const [slideDirection, setSlideDirection] = useState<'left' | 'right'>('right');
   const [isCreateMenuOpen, setIsCreateMenuOpen] = useState(false);
   const createMenuRef = useRef<HTMLDivElement>(null);
+  const [quickFilterCategory, setQuickFilterCategory] = useState<string | undefined>(undefined);
+  const [advancedFilter, setAdvancedFilter] = useState<{ start?: string; coordinator?: string }>({});
   const router = useRouter();
   // Action modal states keyed by Event_ID
   const [rescheduleOpenId, setRescheduleOpenId] = useState<string | null>(null);
@@ -502,7 +525,36 @@ export default function CalendarPage() {
 
     const finalList = deduped.filter(filterByStartDateForMonth);
 
-  return finalList.map((e: any) => {
+    // Apply quick / advanced filters
+    const afterQuick = finalList.filter((ev: any) => {
+      if (!quickFilterCategory) return true;
+      const rawCat = ((ev.Category ?? ev.category ?? '')).toString().toLowerCase();
+      let categoryLabel = 'Event';
+      if (rawCat.includes('blood')) categoryLabel = 'Blood Drive';
+      else if (rawCat.includes('training')) categoryLabel = 'Training';
+      else if (rawCat.includes('advocacy')) categoryLabel = 'Advocacy';
+      return quickFilterCategory === '' || quickFilterCategory === undefined || quickFilterCategory === categoryLabel;
+    }).filter((ev: any) => {
+      // advanced filter: start date (only events on or after)
+      if (advancedFilter.start) {
+        let start: Date | null = null;
+        try {
+          if (ev.Start_Date) start = (typeof ev.Start_Date === 'string') ? new Date(ev.Start_Date) : (ev.Start_Date.$date ? new Date(ev.Start_Date.$date) : new Date(ev.Start_Date));
+        } catch (err) { start = null; }
+        if (start) {
+          const s = new Date(advancedFilter.start);
+          if (start < s) return false;
+        }
+      }
+      if (advancedFilter.coordinator && advancedFilter.coordinator.trim()) {
+        const coordQ = advancedFilter.coordinator.trim().toLowerCase();
+        const coordinatorName = (ev.coordinator?.name || ev.StakeholderName || ev.MadeByCoordinatorName || ev.coordinatorName || ev.Email || '').toString().toLowerCase();
+        if (!coordinatorName.includes(coordQ)) return false;
+      }
+      return true;
+    });
+
+  return afterQuick.map((e: any) => {
       // Start date may come in different shapes (ISO, number, or mongo export object)
       let start: Date | null = null;
       if (e.Start_Date) {
@@ -520,7 +572,7 @@ export default function CalendarPage() {
         }
       }
 
-      const time = start ? start.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) : '';
+  const time = start ? start.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) : '';
 
       // Coordinator / stakeholder name — check a few possible fields
       const coordinatorName = e.coordinator?.name || e.StakeholderName || e.MadeByCoordinatorName || e.coordinatorName || e.Email || 'Local Government Unit';
@@ -565,8 +617,16 @@ export default function CalendarPage() {
         count = '205 no.';
       }
 
+      const baseTitle = e.Event_Title || e.title || 'Lifesavers Blood Drive';
+      // For month view, include the start time after the title
+      const displayTitle = activeView === 'month' ? `${baseTitle}${time ? ` - ${time}` : ''}` : baseTitle;
+      // color codes: blood-drive -> red, advocacy -> yellow, training -> blue
+      let color = '#3b82f6'; // default blue (training)
+      if (typeKey === 'blood-drive') color = '#ef4444';
+      else if (typeKey === 'advocacy') color = '#f59e0b';
+
       return {
-        title: e.Event_Title || e.title || 'Lifesavers Blood Drive',
+        title: displayTitle,
         time,
         type: typeKey,
         district: districtDisplay,
@@ -574,9 +634,119 @@ export default function CalendarPage() {
         countType,
         count,
         coordinatorName,
-        raw: e
+        raw: e,
+        color
       };
     });
+  };
+
+  // Handlers for toolbar actions
+  const handleExport = async () => {
+    try {
+      const year = currentDate.getFullYear();
+      const month = currentDate.getMonth() + 1;
+      const url = `${API_BASE}/api/calendar/month?year=${year}&month=${month}&status=Approved`;
+      const res = await fetch(url, { credentials: 'include' });
+      const body = await res.json();
+      const blob = new Blob([JSON.stringify(body, null, 2)], { type: 'application/json' });
+      const href = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = href;
+      a.download = `calendar-${year}-${month}.json`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(href);
+    } catch (e) {
+      // ignore export failures silently
+    }
+  };
+
+  const handleQuickFilter = (f?: any) => {
+    if (f && Object.prototype.hasOwnProperty.call(f, 'category')) setQuickFilterCategory(f.category);
+    else setQuickFilterCategory(undefined);
+  };
+
+  const handleAdvancedFilter = (f?: { start?: string; end?: string; coordinator?: string }) => {
+    if (f) setAdvancedFilter({ start: f.start, coordinator: f.coordinator });
+    else setAdvancedFilter({});
+  };
+
+  const refreshCalendarData = async () => {
+    const year = currentDate.getFullYear();
+    const month = currentDate.getMonth() + 1;
+    try {
+      const weekUrl = `${API_BASE}/api/calendar/week?date=${encodeURIComponent(currentDate.toISOString())}&status=Approved`;
+      const w = await fetch(weekUrl, { credentials: 'include' });
+      const wj = await w.json();
+      const normalizedWeek = normalizeEventsMap(wj?.data?.weekDays || {});
+
+      const monthUrl = `${API_BASE}/api/calendar/month?year=${year}&month=${month}&status=Approved`;
+      const m = await fetch(monthUrl, { credentials: 'include' });
+      const mj = await m.json();
+      const normalizedMonth = normalizeEventsMap(mj?.data?.eventsByDate || {});
+
+      setMonthEventsByDate(normalizedMonth);
+      setWeekEventsByDate(mergeWeekWithMonth(normalizedWeek, normalizedMonth, currentDate));
+    } catch (e) {
+      // ignore
+    }
+  };
+
+  const handleCreateEvent = async (eventType: string, data: any) => {
+    try {
+      const rawUser = localStorage.getItem('unite_user');
+      const user = rawUser ? JSON.parse(rawUser) : null;
+      const token = localStorage.getItem('unite_token') || sessionStorage.getItem('unite_token');
+      const headers: any = { 'Content-Type': 'application/json' };
+      if (token) headers['Authorization'] = `Bearer ${token}`;
+
+      const eventPayload: any = {
+        Event_Title: data.eventTitle || data.eventDescription || `${eventType} event`,
+        Location: data.location || '',
+        Event_Description: data.eventDescription || undefined,
+        Start_Date: data.startTime || (data.date ? new Date(data.date).toISOString() : undefined),
+        End_Date: data.endTime || undefined,
+        Email: data.email || undefined,
+        Phone_Number: data.contactNumber || undefined,
+        categoryType: eventType === 'blood-drive' ? 'BloodDrive' : (eventType === 'training' ? 'Training' : 'Advocacy')
+      };
+
+      if (eventPayload.categoryType === 'Training') {
+        eventPayload.MaxParticipants = data.numberOfParticipants ? parseInt(data.numberOfParticipants, 10) : undefined;
+        eventPayload.TrainingType = data.trainingType || undefined;
+      } else if (eventPayload.categoryType === 'BloodDrive') {
+        eventPayload.Target_Donation = data.goalCount ? parseInt(data.goalCount, 10) : undefined;
+        eventPayload.VenueType = data.venueType || undefined;
+      } else if (eventPayload.categoryType === 'Advocacy') {
+        eventPayload.TargetAudience = data.audienceType || data.targetAudience || undefined;
+        eventPayload.Topic = data.topic || undefined;
+        eventPayload.ExpectedAudienceSize = data.numberOfParticipants ? parseInt(data.numberOfParticipants, 10) : undefined;
+      }
+
+      if (data.coordinator) eventPayload.MadeByCoordinatorID = data.coordinator;
+
+      if (user && (user.staff_type === 'Admin' || user.staff_type === 'Coordinator')) {
+        const body = { creatorId: user.id, creatorRole: user.staff_type, ...eventPayload };
+        const res = await fetch(`${API_BASE}/api/events/direct`, { method: 'POST', headers, body: JSON.stringify(body) });
+        const resp = await res.json();
+        if (!res.ok) throw new Error(resp.message || 'Failed to create event');
+        await refreshCalendarData();
+        return resp;
+      } else {
+        if (!data.coordinator) throw new Error('Coordinator is required for requests');
+        const stakeholderId = user?.Stakeholder_ID || user?.StakeholderId || user?.id || null;
+        const body = { coordinatorId: data.coordinator, MadeByStakeholderID: stakeholderId, ...eventPayload };
+        const res = await fetch(`${API_BASE}/api/requests`, { method: 'POST', headers, body: JSON.stringify(body) });
+        const resp = await res.json();
+        if (!res.ok) throw new Error(resp.message || 'Failed to create request');
+        await refreshCalendarData();
+        return resp;
+      }
+    } catch (err: any) {
+      try { alert(err?.message || 'Failed to create event'); } catch { }
+      throw err;
+    }
   };
 
   // Profile helpers: initial and deterministic color per user
@@ -784,18 +954,30 @@ export default function CalendarPage() {
       <div className="px-8 py-6">
         <h1 className="text-2xl font-semibold text-gray-900 mb-6">Calendar</h1>
         
-        {/* User Profile Section */}
+        {/* User Profile Section (use HeroUI User like campaign Topbar) */}
         <div className="flex items-center gap-3 mb-6">
-          <div className="h-12 w-12 rounded-full bg-orange-400 flex items-center justify-center text-white font-semibold">
-            B
-          </div>
-          <div className="flex items-center gap-2">
-            <div>
-              <div className="text-sm font-medium text-gray-900">{currentUserName}</div>
-              <div className="text-xs text-gray-500">{currentUserEmail}</div>
-            </div>
+          <User
+            name={currentUserName}
+            description={currentUserEmail}
+            avatarProps={{
+              src: '',
+              size: 'md',
+              className: 'bg-orange-400 text-white'
+            }}
+            classNames={{
+              base: 'cursor-pointer',
+              name: 'font-semibold text-gray-900 text-sm',
+              description: 'text-gray-500 text-xs'
+            }}
+            onClick={() => {}}
+          />
+          <button
+            onClick={() => {}}
+            className="text-gray-400 hover:text-gray-600 transition-colors"
+            aria-label="User menu"
+          >
             <ChevronDown className="w-4 h-4 text-gray-400" />
-          </div>
+          </button>
         </div>
 
         {/* Toolbar */}
@@ -849,47 +1031,14 @@ export default function CalendarPage() {
             </div>
           </div>
 
-          {/* Right side - Action Buttons */}
-          <div className="flex items-center gap-2">
-            <button className="px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 rounded-lg border border-gray-300 flex items-center gap-2 transition-colors">
-              <Download className="w-4 h-4" />
-              Export
-            </button>
-            <button className="px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 rounded-lg border border-gray-300 flex items-center gap-2 transition-colors">
-              <Filter className="w-4 h-4" />
-              Quick Filter
-              <ChevronDown className="w-4 h-4" />
-            </button>
-            <button className="px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 rounded-lg border border-gray-300 flex items-center gap-2 transition-colors">
-              <SlidersHorizontal className="w-4 h-4" />
-              Advanced Filter
-            </button>
-            
-            {/* Create Event Dropdown */}
-            <div className="relative" ref={createMenuRef}>
-              <button 
-                onClick={() => setIsCreateMenuOpen(!isCreateMenuOpen)}
-                className="px-4 py-2 text-sm font-medium text-white bg-gray-900 hover:bg-gray-800 rounded-lg flex items-center gap-2 transition-colors"
-              >
-                <Plus className="w-4 h-4" />
-                Create an event
-                <ChevronDown className="w-4 h-4" />
-              </button>
-              
-              {isCreateMenuOpen && (
-                <div className="absolute right-0 mt-2 w-56 bg-white rounded-lg shadow-lg border border-gray-200 py-1 z-50">
-                  <button className="w-full px-4 py-2 text-left text-sm text-gray-700 hover:bg-gray-50">
-                    Blood Drive
-                  </button>
-                  <button className="w-full px-4 py-2 text-left text-sm text-gray-700 hover:bg-gray-50">
-                    Training
-                  </button>
-                  <button className="w-full px-4 py-2 text-left text-sm text-gray-700 hover:bg-gray-50">
-                    Advocacy
-                  </button>
-                </div>
-              )}
-            </div>
+          {/* Right side - Action Buttons (calendar toolbar copied from campaign) */}
+          <div>
+            <CalendarToolbar
+              onExport={handleExport}
+              onQuickFilter={handleQuickFilter}
+              onAdvancedFilter={handleAdvancedFilter}
+              onCreateEvent={handleCreateEvent}
+            />
           </div>
         </div>
 
@@ -1041,8 +1190,9 @@ export default function CalendarPage() {
                         {day.events.map((event, eventIndex) => (
                           <div
                             key={eventIndex}
-                            className="text-xs p-1 rounded bg-red-100 text-red-800 font-medium truncate cursor-pointer hover:bg-red-200 transition-colors"
+                            className="text-xs p-1 rounded font-medium truncate cursor-pointer transition-colors"
                             title={`${event.time} - ${event.title}`}
+                            style={{ backgroundColor: `${event.color}22`, color: event.color }}
                           >
                             {event.title}
                           </div>
