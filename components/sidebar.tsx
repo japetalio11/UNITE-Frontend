@@ -256,7 +256,11 @@ export default function Sidebar({ role, userInfo, initialShowCoordinator, initia
         { href: "/dashboard/coordinator-management", icon: UsersRound, key: "coordinator", visible: showCoordinatorLink },
     ];
     
-    const bottomLinks = [{ href: "/dashboard/notification", icon: Bell }];
+    const bottomLinks = [
+        { href: "/dashboard/notification", icon: Bell },
+        // direct settings link so the sidebar navigates to the settings page
+        { href: "/dashboard/settings", icon: Settings },
+    ];
     const [unreadCount, setUnreadCount] = useState<number | null>(null);
 
     const loadUnreadCount = useCallback(async () => {
@@ -385,29 +389,7 @@ export default function Sidebar({ role, userInfo, initialShowCoordinator, initia
             }
             return renderButton(href, icon, `bottom-${href}`)
             })}
-            <Popover placement="right">
-            <PopoverTrigger>
-                {/* Native button here keeps attributes stable between SSR and CSR */}
-                <button
-                type="button"
-                aria-hidden={'false'}
-                tabIndex={0}
-                className="w-10 h-10 !p-0 flex items-center justify-center rounded-full text-black border border-default-300 hover:bg-gray-100"
-                data-slot="trigger"
-                aria-haspopup="dialog"
-                aria-expanded={false}
-                >
-                <Settings size={16} strokeWidth={2} className="-translate-y-[0.5px]" />
-                </button>
-            </PopoverTrigger>
-            <PopoverContent className="p-2">
-                <div className="flex flex-col gap-1 min-w-[140px]">
-                <button type="button" onClick={handleLogout} aria-hidden={'false'} tabIndex={0} className="justify-start text-left w-full px-2 py-1 rounded hover:bg-gray-100">
-                    Log out
-                </button>
-                </div>
-            </PopoverContent>
-            </Popover>
+            {/* Settings popover removed to avoid duplicate settings icon; use /dashboard/settings page for settings and logout */}
         </div>
         </div>
     );
