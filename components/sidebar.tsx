@@ -18,10 +18,10 @@ export default function Sidebar() {
     const router = useRouter();
     
     const links = [
-        { href: "/dashboard/sysadmin/campaign", icon: Ticket },
-        { href: "/inventory", icon: Calendar },
-        { href: "/requests", icon: UsersRound },
-        { href: "/campaign", icon: ContactRound },
+        { href: "/dashboard/campaign", icon: Ticket },
+        { href: "/dashboard/calendar", icon: Calendar },
+        { href: "/dashboard/coordinator-management", icon: UsersRound },
+        { href: "/dashboard/stakeholder-management", icon: ContactRound },
     ];
     
     const bottomLinks = [{ href: "/notifications", icon: Bell }];
