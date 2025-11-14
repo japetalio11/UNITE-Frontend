@@ -37,10 +37,12 @@ export default function CampaignPage() {
   const [currentUserName, setCurrentUserName] = useState<string>('');
   const [currentUserEmail, setCurrentUserEmail] = useState<string>('');
   const [quickFilterCategory, setQuickFilterCategory] = useState<string | undefined>(undefined);
-  const [advancedFilter, setAdvancedFilter] = useState<{ start?: string; end?: string; coordinator?: string }>({});
+  const [advancedFilter, setAdvancedFilter] = useState<{ start?: string; end?: string; title?: string; requester?: string }>({});
   const [errorModalOpen, setErrorModalOpen] = useState(false);
   const [errorModalMessage, setErrorModalMessage] = useState("");
   const [requests, setRequests] = useState<any[]>([]);
+  const [totalRequestsCount, setTotalRequestsCount] = useState<number>(0);
+  const [isServerPaged, setIsServerPaged] = useState<boolean>(false);
   const [publicEvents, setPublicEvents] = useState<any[]>([]);
   const [isLoadingRequests, setIsLoadingRequests] = useState(false);
   const [requestsError, setRequestsError] = useState("");
@@ -51,6 +53,41 @@ export default function CampaignPage() {
   const [editRequest, setEditRequest] = useState<any>(null);
 
   const API_URL = process.env.NEXT_PUBLIC_API_URL || "";
+
+  // Helper to parse a variety of date shapes (ISO string, ms timestamp,
+  // and Mongo Extended JSON like { $date: { $numberLong: '...' } }).
+  const parseDate = (v: any): Date | null => {
+    if (!v && v !== 0) return null;
+    try {
+      if (typeof v === 'string' || typeof v === 'number') {
+        const d = new Date(v);
+        if (!isNaN(d.getTime())) return d;
+      }
+      if (typeof v === 'object') {
+        // handle { $date: { $numberLong: '...' } } or { $date: '2025-..' }
+        if (v.$date) {
+          const inner = v.$date.$numberLong || v.$date;
+          const n = typeof inner === 'string' ? Number(inner) : inner;
+          const d = new Date(Number(n));
+          if (!isNaN(d.getTime())) return d;
+        }
+        // handle { $numberLong: '...' }
+        if (v.$numberLong) {
+          const d = new Date(Number(v.$numberLong));
+          if (!isNaN(d.getTime())) return d;
+        }
+        // handle plain number-like objects
+        const maybeNum = Number(v);
+        if (!isNaN(maybeNum)) {
+          const d = new Date(maybeNum);
+          if (!isNaN(d.getTime())) return d;
+        }
+      }
+    } catch (e) {
+      // fall through
+    }
+    return null;
+  };
 
   // Extracted fetchRequests so we can reuse after creating events
   const fetchRequests = async () => {
@@ -67,25 +104,47 @@ export default function CampaignPage() {
       params.set('page', String(currentPage));
       params.set('limit', String(pageSize));
       if (searchQuery && searchQuery.trim()) params.set('search', searchQuery.trim());
-      if (selectedTab && selectedTab !== 'all') {
-        // map UI tabs to server status values
-        if (selectedTab === 'approved') params.set('status', 'Completed');
-        else if (selectedTab === 'pending') params.set('status', 'Pending_Admin_Review');
-        else if (selectedTab === 'rejected') params.set('status', 'Rejected');
-      }
-      if (advancedFilter && advancedFilter.start) params.set('date_from', advancedFilter.start);
-      if (advancedFilter && advancedFilter.end) params.set('date_to', advancedFilter.end);
-      if (advancedFilter && advancedFilter.coordinator) params.set('coordinator', advancedFilter.coordinator);
+      // NOTE: Do not send `status` to the server here. Backend status tokens
+      // vary and returning server-filtered lists causes mismatches and empty
+      // results. We fetch the page(s) and apply a deterministic client-side
+      // filter based on `event.Status` to ensure tabs show the expected items.
+      // Do not send date_from/date_to to server; advanced date filtering is
+      // performed client-side against the event's Start_Date to avoid server
+      // timezone/format mismatches.
       if (quickFilterCategory) params.set('category', quickFilterCategory);
 
       const url = `${API_URL}/api/requests/me?${params.toString()}`;
-      const res = await fetch(url, { headers });
+      // Request fresh data (avoid cached 304 responses) so client-side filters
+      // are applied to a current payload.
+      const res = await fetch(url, { headers, cache: 'no-store' });
       const body = await res.json();
       if (!res.ok) throw new Error(body.message || 'Failed to fetch requests');
 
       // body.data is array of requests (controllers return { success, data, pagination })
       const data = body.data || [];
-      setRequests(Array.isArray(data) ? data : []);
+      const list = Array.isArray(data) ? data : [];
+      setRequests(list);
+      // Determine total count from server pagination metadata if present
+      let total = Array.isArray(data) ? data.length : 0;
+      if (body.pagination) {
+        total = body.pagination.total || body.pagination.totalDocs || body.pagination.totalCount || total;
+      } else if (body.total !== undefined && body.total !== null) {
+        total = body.total;
+      } else if (body.count !== undefined && body.count !== null) {
+        total = body.count;
+      } else if (body.meta && (body.meta.total !== undefined)) {
+        total = body.meta.total;
+      }
+      setTotalRequestsCount(Number(total || 0));
+      // mark whether the server returned paged results (i.e. returned only one page)
+      const serverPaged = !!(body.pagination || (Number(total || 0) > list.length));
+      setIsServerPaged(serverPaged);
+      // If current page is out of range because server returned fewer pages, clamp and re-fetch
+      const pages = Math.max(1, Math.ceil((Number(total || 0)) / pageSize));
+      if (currentPage > pages) {
+        setCurrentPage(1);
+        return;
+      }
       // if server returned pagination, update UI page data (optional)
       // You can store pagination in state if needed (not implemented here)
     } catch (err: any) {
@@ -257,8 +316,8 @@ export default function CampaignPage() {
     }
   };
   
-  // Handler for advanced filter
-  const handleAdvancedFilter = (filter?: { start?: string; end?: string; coordinator?: string }) => {
+  // Handler for advanced filter (expects { start?, title?, requester? })
+  const handleAdvancedFilter = (filter?: { start?: string; end?: string; title?: string; requester?: string }) => {
     if (filter) setAdvancedFilter(filter);
     else setAdvancedFilter({});
   };
@@ -471,8 +530,124 @@ export default function CampaignPage() {
     }
   };
 
-  // Since filtering/pagination is moved server-side, `requests` is already filtered
-  const filteredRequests = requests;
+  // Normalize status for a request and filter client-side to ensure tab
+  // selection reliably matches regardless of backend inconsistencies.
+  // Normalize status, preferring the event-level Status field when present.
+  // Many backend shapes place the canonical status on `event.Status` so rely on
+  // that first to make tab filtering deterministic.
+  const normalizeStatus = (r: any) => {
+    try {
+      const ev = r.event || {};
+      const evStatusRaw = ev.Status || ev.status || '';
+      const evStatus = String(evStatusRaw || '').toLowerCase();
+      if (evStatus) {
+        if (evStatus.includes('reject')) return 'Rejected';
+        if (evStatus.includes('approve') || evStatus.includes('complete') || evStatus.includes('completed')) return 'Approved';
+        if (evStatus.includes('pending') || evStatus.includes('waiting') || evStatus.includes('awaiting')) return 'Pending';
+        // If event.Status exists but is an unfamiliar token, map common aliases
+        if (evStatus === 'completed' || evStatus === 'done') return 'Approved';
+      }
+    } catch (e) {
+      // ignore and fall through to other fields
+    }
+
+    // Fallback: inspect request-level fields when event.Status is absent
+    const candidates: string[] = [];
+    try {
+      if (r.Status) candidates.push(String(r.Status));
+      if (r.status) candidates.push(String(r.status));
+      if (r.AdminAction) candidates.push(String(r.AdminAction));
+      if (r.CoordinatorFinalAction) candidates.push(String(r.CoordinatorFinalAction));
+    } catch (e) {}
+    const joined = candidates.join(' ').toLowerCase();
+    if (joined.includes('reject')) return 'Rejected';
+    if (joined.includes('approve') || joined.includes('complete') || joined.includes('completed')) return 'Approved';
+    if (joined.includes('pending') || joined.includes('waiting') || joined.includes('awaiting')) return 'Pending';
+
+    return 'Pending';
+  };
+
+  const filteredRequests = requests.filter((r: any) => {
+    // Tab/status filter (using event.Status preferred)
+    if (selectedTab && selectedTab !== 'all') {
+      const s = normalizeStatus(r);
+      if (selectedTab === 'approved' && s !== 'Approved') return false;
+      if (selectedTab === 'pending' && s !== 'Pending') return false;
+      if (selectedTab === 'rejected' && s !== 'Rejected') return false;
+    }
+
+    // Quick filter: category (from toolbar)
+    if (quickFilterCategory) {
+      const ev = r.event || {};
+      const rawCategory = (ev.Category || ev.categoryType || ev.category || '');
+      const catKey = String(rawCategory || '').toLowerCase();
+      let categoryLabel = 'Event';
+      if (catKey.includes('blood')) categoryLabel = 'Blood Drive';
+      else if (catKey.includes('training')) categoryLabel = 'Training';
+      else if (catKey.includes('advocacy')) categoryLabel = 'Advocacy';
+      if (categoryLabel !== quickFilterCategory) return false;
+    }
+
+    // Search query (global search box) - match title or requester or coordinator
+    if (searchQuery && searchQuery.trim()) {
+      const q = searchQuery.trim().toLowerCase();
+      const ev = r.event || {};
+      const title = (ev.Event_Title || ev.title || '').toString().toLowerCase();
+      // requester name
+      let requestee = '';
+      if (r.coordinator && r.coordinator.staff) {
+        const s = r.coordinator.staff;
+        requestee = `${s.First_Name || ''} ${s.Last_Name || ''}`.trim().toLowerCase();
+      } else if (r.MadeByStakeholderID || ev.MadeByStakeholderID) {
+        requestee = (r.MadeByStakeholderID || ev.MadeByStakeholderID).toString().toLowerCase();
+      }
+      if (!(title.includes(q) || requestee.includes(q))) return false;
+    }
+
+    // Advanced filter: title, requester, date
+    if (advancedFilter) {
+      const ev = r.event || {};
+      if (advancedFilter.title) {
+        const t = (ev.Event_Title || ev.title || '').toString().toLowerCase();
+        if (!t.includes(String(advancedFilter.title).toLowerCase())) return false;
+      }
+      if (advancedFilter.requester) {
+        let requestee = '';
+        if (r.coordinator && r.coordinator.staff) {
+          const s = r.coordinator.staff;
+          requestee = `${s.First_Name || ''} ${s.Last_Name || ''}`.trim().toLowerCase();
+        } else if (r.MadeByStakeholderID || ev.MadeByStakeholderID) {
+          requestee = (r.MadeByStakeholderID || ev.MadeByStakeholderID).toString().toLowerCase();
+        }
+        if (!requestee.includes(String(advancedFilter.requester).toLowerCase())) return false;
+      }
+      if (advancedFilter.start) {
+        try {
+          const filterDate = parseDate(advancedFilter.start);
+          const evStart = parseDate(ev.Start_Date);
+          if (!evStart || !filterDate) return false;
+          if (!(evStart.getFullYear() === filterDate.getFullYear() && evStart.getMonth() === filterDate.getMonth() && evStart.getDate() === filterDate.getDate())) return false;
+        } catch (e) {
+          // ignore malformed date filter
+        }
+      }
+    }
+
+    return true;
+  });
+
+  // Client-side pagination calculations
+  // When server returns paged results, use server's total count; otherwise
+  // base totals on the client-filtered list.
+  const totalRequests = isServerPaged ? totalRequestsCount : filteredRequests.length;
+  const totalPages = Math.max(1, Math.ceil(totalRequests / pageSize));
+  const paginatedRequests = useMemo(() => {
+    if (isServerPaged) return filteredRequests; // server provided a page (we still apply the client filter to be safe)
+    const startIndex = (currentPage - 1) * pageSize;
+    return filteredRequests.slice(startIndex, startIndex + pageSize);
+  }, [filteredRequests, currentPage, pageSize, isServerPaged]);
+
+  // Developer overlay removed in production
 
   // derive approved events for the calendar (only events with Approved status)
   // approved events are loaded from public API into React state by fetch effect above
@@ -517,19 +692,13 @@ export default function CampaignPage() {
           {/* Scrollable content is nested so overlay can be absolutely positioned and centered
               relative to this wrapper (keeps overlay fixed in the visible viewport while
               the inner content scrolls). */}
-          <div className="overflow-y-auto h-full">
-            <div className="grid grid-cols-2 gap-4 h-full">
+          <div className="overflow-y-auto h-full pb-12">
+            <div className="grid grid-cols-2 gap-4">
                 {requestsError && <div className="col-span-2 text-sm text-danger">{requestsError}</div>}
 
                 {/* Quick/Advanced filters are shown via toolbar dropdowns */}
 
-            {(() => {
-              const total = filteredRequests.length;
-              const totalPages = Math.max(1, Math.ceil(total / pageSize));
-              const startIndex = (currentPage - 1) * pageSize;
-              const paginatedRequests = filteredRequests.slice(startIndex, startIndex + pageSize);
-
-              return paginatedRequests.map((req, index) => {
+            {paginatedRequests.map((req, index) => {
               const event = req.event || {};
               const title = event.Event_Title || event.title || 'Untitled';
               // Requestee name: prefer coordinator staff name, else stakeholder id
@@ -614,7 +783,7 @@ export default function CampaignPage() {
                 <EventCard
                   key={index}
                   title={title}
-                      organization={requestee}
+                  organization={requestee}
                   organizationType={req.coordinator ? req.coordinator.District_Name || req.coordinator.District_Number || '' : ''}
                   district={displayDistrict}
                   category={category}
@@ -627,9 +796,38 @@ export default function CampaignPage() {
                   onRescheduleEvent={(currentDate: string, newDateISO: string, note: string) => handleRescheduleEvent(req, currentDate, newDateISO, note)}
                 />
               );
-            });
-          })()}
+            })}
             </div>
+
+            {/* Pagination controls (render after cards inside the scroll area) */}
+            {totalPages > 1 && (
+              <div className="col-span-2 mt-4">
+                <div className="bg-white/90 border-t border-default-200 py-3">
+                  <div className="max-w-full px-2 mx-auto flex items-center justify-between">
+                    <div className="text-sm text-default-600">Showing {(currentPage - 1) * pageSize + 1} - {Math.min(currentPage * pageSize, totalRequests)} of {totalRequests}</div>
+                    <div className="flex items-center gap-2">
+                      <button
+                        onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
+                        disabled={currentPage === 1}
+                        className="px-3 py-1 border border-default-200 rounded shadow-sm hover:shadow focus:outline-none focus:ring-2 focus:ring-default-200 focus:ring-offset-0 disabled:opacity-50"
+                      >Prev</button>
+                      {Array.from({ length: totalPages }).map((_, i) => (
+                        <button
+                          key={i}
+                          onClick={() => setCurrentPage(i + 1)}
+                          className={`px-3 py-1 border border-default-200 rounded shadow-sm hover:shadow focus:outline-none focus:ring-2 focus:ring-default-200 focus:ring-offset-0 ${currentPage === i + 1 ? 'bg-default-800 text-white border-transparent' : 'bg-white text-default-600'}`}
+                        >{i + 1}</button>
+                      ))}
+                      <button
+                        onClick={() => setCurrentPage((p) => Math.min(totalPages, p + 1))}
+                        disabled={currentPage === totalPages}
+                        className="px-3 py-1 border border-default-200 rounded shadow-sm hover:shadow focus:outline-none focus:ring-2 focus:ring-default-200 focus:ring-offset-0 disabled:opacity-50"
+                      >Next</button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
 
           {/* Overlay area positioned relative to wrapper. This keeps spinner / no-results

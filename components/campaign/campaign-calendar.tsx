@@ -48,7 +48,9 @@ interface CampaignCalendarProps {
             if (!ev) return;
             const d = ev.Start_Date ? new Date(ev.Start_Date) : undefined;
             if (!d || isNaN(d.getTime())) return;
-            const key = d.toISOString().slice(0, 10);
+            // Use local date components to build the key so events land on the
+            // same calendar day the user expects (avoid UTC-based toISOString())
+            const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
             if (!map[key]) map[key] = [];
             map[key].push(ev);
         });
@@ -233,7 +235,8 @@ interface CampaignCalendarProps {
             {calendarDays.map((dayInfo, index) => {
                 const today = isToday(dayInfo.date);
                 const selected = isSelected(dayInfo.date);
-                const dateKey = dayInfo.date.toISOString().slice(0,10);
+                // use local date key consistent with eventsByDate above
+                const dateKey = `${dayInfo.date.getFullYear()}-${String(dayInfo.date.getMonth() + 1).padStart(2, '0')}-${String(dayInfo.date.getDate()).padStart(2, '0')}`;
                 const dayEvents = eventsByDate[dateKey] || [];
 
                 return (

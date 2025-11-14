@@ -63,7 +63,8 @@ export default function CampaignToolbar({
     const [advocacyError, setAdvocacyError] = useState<string | null>(null);
     const [isAdvancedModalOpen, setIsAdvancedModalOpen] = useState(false);
     const [advStart, setAdvStart] = useState<any>(null);
-    const [advCoordinator, setAdvCoordinator] = useState("");
+    const [advTitle, setAdvTitle] = useState("");
+    const [advRequester, setAdvRequester] = useState("");
     
     // Event type labels and descriptions
     const eventLabelsMap = {
@@ -366,14 +367,19 @@ export default function CampaignToolbar({
                                                 </div>
                                             </div>
                                             <div className="flex items-center gap-3">
-                                                <label className="w-20 text-sm">Coordinator</label>
-                                                <Input placeholder="Coordinator name" value={advCoordinator} onChange={(e) => setAdvCoordinator((e.target as HTMLInputElement).value)} />
+                                                <label className="w-20 text-sm">Title</label>
+                                                <Input placeholder="Event title" value={advTitle} onChange={(e) => setAdvTitle((e.target as HTMLInputElement).value)} />
+                                            </div>
+                                            <div className="flex items-center gap-3">
+                                                <label className="w-20 text-sm">Requester</label>
+                                                <Input placeholder="Requester name" value={advRequester} onChange={(e) => setAdvRequester((e.target as HTMLInputElement).value)} />
                                             </div>
                                         </div>
                                     </ModalBody>
                                     <ModalFooter>
                                         <Button variant="bordered" onPress={() => { setIsAdvancedModalOpen(false); }}>Cancel</Button>
-                                        <Button color="primary" onPress={() => { onAdvancedFilter?.({ start: advStart ? (new Date(advStart)).toISOString() : undefined, coordinator: advCoordinator || undefined }); setIsAdvancedModalOpen(false); }} className="ml-2">Apply</Button>
+                                        <Button variant="bordered" onPress={() => { setAdvStart(null); setAdvTitle(''); setAdvRequester(''); onAdvancedFilter?.(); }} className="ml-2">Clear</Button>
+                                        <Button color="primary" onPress={() => { onAdvancedFilter?.({ start: advStart ? (new Date(advStart)).toISOString() : undefined, title: advTitle || undefined, requester: advRequester || undefined }); setIsAdvancedModalOpen(false); }} className="ml-2">Apply</Button>
                                     </ModalFooter>
                             </ModalContent>
                         </Modal>
