@@ -575,8 +575,9 @@ export default function CalendarPage() {
 
   const time = start ? start.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) : '';
 
-      // Coordinator / stakeholder name — check a few possible fields
-      const coordinatorName = e.coordinator?.name || e.StakeholderName || e.MadeByCoordinatorName || e.coordinatorName || e.Email || 'Local Government Unit';
+      // Coordinator / stakeholder name — prefer createdByName from backend (stakeholder),
+      // then fall back to other fields used previously.
+      const coordinatorName = (e.createdByName || e.raw?.createdByName) || e.coordinator?.name || e.StakeholderName || e.MadeByCoordinatorName || e.coordinatorName || e.Email || 'Local Government Unit';
 
       // District number — prefer coordinator nested value but accept other shapes
       const districtNumber = e.coordinator?.district_number ?? e.district_number ?? e.DistrictNumber ?? e.district;
@@ -860,16 +861,32 @@ export default function CalendarPage() {
     const statusRaw = event.raw?.Status || event.raw?.status || '';
     const status = (statusRaw || '').toString().toLowerCase().includes('approve') ? 'Approved' : ((statusRaw || '').toString().toLowerCase().includes('reject') ? 'Rejected' : 'Pending');
 
+    // Helper: derive boolean flag from either explicit boolean (e.g., canEdit)
+    // or fallback to allowedActions list (e.g., 'edit').
+    const flagFor = (flagName: string, actionName?: string) => {
+      try {
+        // event may have top-level flags (e.g., event.canEdit) or raw flags (event.raw.canEdit)
+        const explicit = (event && (event as any)[flagName]) ?? (event && event.raw && event.raw[flagName]);
+        if (explicit !== undefined && explicit !== null) return Boolean(explicit);
+        // fallback to allowedActions array
+        const allowed = (event && event.allowedActions) || (event && event.raw && event.raw.allowedActions) || (event && event.raw && event.raw.allowedActions) || null;
+        if (Array.isArray(allowed) && actionName) return allowed.includes(actionName);
+        return false;
+      } catch (e) {
+        return false;
+      }
+    };
+
     const approvedMenu = (
       <DropdownMenu aria-label="Event actions menu" variant="faded">
         <DropdownSection showDivider title="Actions">
-          <DropdownItem key="view" description="View this event" startContent={<Eye />} onPress={() => handleOpenViewEvent(event.raw)}>View Event</DropdownItem>
-          <DropdownItem key="edit" description="Edit an event" startContent={<Edit />} onPress={() => handleOpenEditEvent(event.raw)}>Edit Event</DropdownItem>
-          <DropdownItem key="manage-staff" description="Manage staff for this event" startContent={<Users />} onPress={() => setManageStaffOpenId(event.raw.Event_ID)}>Manage Staff</DropdownItem>
-          <DropdownItem key="reschedule" description="Reschedule this event" startContent={<ClockIcon />} onPress={() => setRescheduleOpenId(event.raw.Event_ID)}>Reschedule Event</DropdownItem>
+          {flagFor('canView', 'view') ? <DropdownItem key="view" description="View this event" startContent={<Eye />} onPress={() => handleOpenViewEvent(event.raw)}>View Event</DropdownItem> : null}
+          {flagFor('canEdit', 'edit') ? <DropdownItem key="edit" description="Edit an event" startContent={<Edit />} onPress={() => handleOpenEditEvent(event.raw)}>Edit Event</DropdownItem> : null}
+          {flagFor('canManageStaff', 'manage-staff') ? <DropdownItem key="manage-staff" description="Manage staff for this event" startContent={<Users />} onPress={() => setManageStaffOpenId(event.raw.Event_ID)}>Manage Staff</DropdownItem> : null}
+          {flagFor('canReschedule', 'resched') ? <DropdownItem key="reschedule" description="Reschedule this event" startContent={<ClockIcon />} onPress={() => setRescheduleOpenId(event.raw.Event_ID)}>Reschedule Event</DropdownItem> : null}
         </DropdownSection>
         <DropdownSection title="Danger zone">
-          <DropdownItem key="cancel" className="text-danger" color="danger" description="Cancel an event" startContent={<Trash2 className="text-xl text-danger pointer-events-none shrink-0" />} onPress={() => setCancelOpenId(event.raw.Event_ID)}>Cancel</DropdownItem>
+          {flagFor('canAdminAction', 'cancel') ? <DropdownItem key="cancel" className="text-danger" color="danger" description="Cancel an event" startContent={<Trash2 className="text-xl text-danger pointer-events-none shrink-0" />} onPress={() => setCancelOpenId(event.raw.Event_ID)}>Cancel</DropdownItem> : null}
         </DropdownSection>
       </DropdownMenu>
     );
@@ -877,11 +894,11 @@ export default function CalendarPage() {
     const pendingMenu = (
       <DropdownMenu aria-label="Event actions menu" variant="faded">
         <DropdownSection title="Actions">
-          <DropdownItem key="view" description="View this event" startContent={<Eye />} onPress={() => handleOpenViewEvent(event.raw)}>View Event</DropdownItem>
-          <DropdownItem key="accept" description="Accept this event" startContent={<Check />} onPress={() => setAcceptOpenId(event.raw.Event_ID)}>Accept Event</DropdownItem>
-          <DropdownItem key="manage-staff" description="Manage staff for this event" startContent={<Users />} onPress={() => setManageStaffOpenId(event.raw.Event_ID)}>Manage Staff</DropdownItem>
-          <DropdownItem key="reject" description="Reject this event" startContent={<X />} onPress={() => setRejectOpenId(event.raw.Event_ID)}>Reject Event</DropdownItem>
-          <DropdownItem key="reschedule" description="Reschedule this event" startContent={<ClockIcon />} onPress={() => setRescheduleOpenId(event.raw.Event_ID)}>Reschedule Event</DropdownItem>
+          {flagFor('canView', 'view') ? <DropdownItem key="view" description="View this event" startContent={<Eye />} onPress={() => handleOpenViewEvent(event.raw)}>View Event</DropdownItem> : null}
+          {flagFor('canAccept', 'accept') ? <DropdownItem key="accept" description="Accept this event" startContent={<Check />} onPress={() => setAcceptOpenId(event.raw.Event_ID)}>Accept Event</DropdownItem> : null}
+          {flagFor('canManageStaff', 'manage-staff') ? <DropdownItem key="manage-staff" description="Manage staff for this event" startContent={<Users />} onPress={() => setManageStaffOpenId(event.raw.Event_ID)}>Manage Staff</DropdownItem> : null}
+          {flagFor('canReject', 'reject') ? <DropdownItem key="reject" description="Reject this event" startContent={<X />} onPress={() => setRejectOpenId(event.raw.Event_ID)}>Reject Event</DropdownItem> : null}
+          {flagFor('canReschedule', 'resched') ? <DropdownItem key="reschedule" description="Reschedule this event" startContent={<ClockIcon />} onPress={() => setRescheduleOpenId(event.raw.Event_ID)}>Reschedule Event</DropdownItem> : null}
         </DropdownSection>
       </DropdownMenu>
     );

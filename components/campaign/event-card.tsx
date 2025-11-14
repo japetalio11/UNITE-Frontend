@@ -138,57 +138,40 @@ const EventCard: React.FC<EventCardProps> = ({
   };
 
   // Menu for Approved status
+  // Helper to derive flags from request/event or fallback to allowedActions
+  const flagFor = (flagName: string, actionName?: string) => {
+    try {
+      const r = request || {};
+      const explicit = (r && (r as any)[flagName]) ?? (r && r.event && r.event[flagName]);
+      if (explicit !== undefined && explicit !== null) return Boolean(explicit);
+      const allowed = (r && r.allowedActions) || (r && r.event && r.event.allowedActions) || null;
+      if (Array.isArray(allowed) && actionName) return allowed.includes(actionName);
+      return false;
+    } catch (e) {
+      return false;
+    }
+  };
+
   const approvedMenu = (
     <DropdownMenu aria-label="Event actions menu" variant="faded">
       <DropdownSection showDivider title="Actions">
-        <DropdownItem
-          key="view"
-          description="View this event"
-          startContent={<Eye />}
-          onPress={onViewEvent}
-        >
-          View Event
-        </DropdownItem>
-        <DropdownItem
-          key="edit"
-          description="Edit an event"
-          startContent={<Edit />}
-          onPress={onEditEvent}
-        >
-          Edit Event
-        </DropdownItem>
-        <DropdownItem
-          key="manage-staff"
-          description="Manage staff for this event"
-          startContent={<Users />}
-          onPress={() => {
-            // open the shared ManageStaffModal; it will load staff itself
-            setManageStaffOpen(true);
-            if (typeof onManageStaff === 'function') onManageStaff();
-          }}
-        >
-          Manage Staff
-        </DropdownItem>
-        <DropdownItem
-          key="reschedule"
-          description="Reschedule this event"
-          startContent={<Clock />}
-          onPress={() => setRescheduleOpen(true)}
-        >
-          Reschedule Event
-        </DropdownItem>
+        {flagFor('canView', 'view') ? (
+          <DropdownItem key="view" description="View this event" startContent={<Eye />} onPress={onViewEvent}>View Event</DropdownItem>
+        ) : null}
+        {flagFor('canEdit', 'edit') ? (
+          <DropdownItem key="edit" description="Edit an event" startContent={<Edit />} onPress={onEditEvent}>Edit Event</DropdownItem>
+        ) : null}
+        {flagFor('canManageStaff', 'manage-staff') ? (
+          <DropdownItem key="manage-staff" description="Manage staff for this event" startContent={<Users />} onPress={() => { setManageStaffOpen(true); if (typeof onManageStaff === 'function') onManageStaff(); }}>Manage Staff</DropdownItem>
+        ) : null}
+        {flagFor('canReschedule', 'resched') ? (
+          <DropdownItem key="reschedule" description="Reschedule this event" startContent={<Clock />} onPress={() => setRescheduleOpen(true)}>Reschedule Event</DropdownItem>
+        ) : null}
       </DropdownSection>
       <DropdownSection title="Danger zone">
-        <DropdownItem
-          key="cancel"
-          className="text-danger"
-          color="danger"
-          description="Cancel an event"
-          startContent={<Trash2 className="text-xl text-danger pointer-events-none shrink-0" />}
-          onPress={() => setCancelOpen(true)}
-        >
-          Cancel
-        </DropdownItem>
+        {flagFor('canAdminAction', 'cancel') ? (
+          <DropdownItem key="cancel" className="text-danger" color="danger" description="Cancel an event" startContent={<Trash2 className="text-xl text-danger pointer-events-none shrink-0" />} onPress={() => setCancelOpen(true)}>Cancel</DropdownItem>
+        ) : null}
       </DropdownSection>
     </DropdownMenu>
   );
@@ -197,49 +180,11 @@ const EventCard: React.FC<EventCardProps> = ({
   const pendingMenu = (
     <DropdownMenu aria-label="Event actions menu" variant="faded">
       <DropdownSection title="Actions">
-        <DropdownItem
-          key="view"
-          description="View this event"
-          startContent={<Eye />}
-          onPress={onViewEvent}
-        >
-          View Event
-        </DropdownItem>
-        <DropdownItem
-          key="accept"
-          description="Accept this event"
-          startContent={<Check />}
-          onPress={() => setAcceptOpen(true)}
-        >
-          Accept Event
-        </DropdownItem>
-        <DropdownItem
-          key="manage-staff"
-          description="Manage staff for this event"
-          startContent={<Users />}
-          onPress={() => {
-            setManageStaffOpen(true);
-            if (typeof onManageStaff === 'function') onManageStaff();
-          }}
-        >
-          Manage Staff
-        </DropdownItem>
-        <DropdownItem
-          key="reject"
-          description="Reject this event"
-          startContent={<X />}
-          onPress={() => setRejectOpen(true)}
-        >
-          Reject Event
-        </DropdownItem>
-        <DropdownItem
-          key="reschedule"
-          description="Reschedule this event"
-          startContent={<Clock />}
-          onPress={() => setRescheduleOpen(true)}
-        >
-          Reschedule Event
-        </DropdownItem>
+        {flagFor('canView', 'view') ? <DropdownItem key="view" description="View this event" startContent={<Eye />} onPress={onViewEvent}>View Event</DropdownItem> : null}
+        {flagFor('canAccept', 'accept') ? <DropdownItem key="accept" description="Accept this event" startContent={<Check />} onPress={() => setAcceptOpen(true)}>Accept Event</DropdownItem> : null}
+        {flagFor('canManageStaff', 'manage-staff') ? <DropdownItem key="manage-staff" description="Manage staff for this event" startContent={<Users />} onPress={() => { setManageStaffOpen(true); if (typeof onManageStaff === 'function') onManageStaff(); }}>Manage Staff</DropdownItem> : null}
+        {flagFor('canReject', 'reject') ? <DropdownItem key="reject" description="Reject this event" startContent={<X />} onPress={() => setRejectOpen(true)}>Reject Event</DropdownItem> : null}
+        {flagFor('canReschedule', 'resched') ? <DropdownItem key="reschedule" description="Reschedule this event" startContent={<Clock />} onPress={() => setRescheduleOpen(true)}>Reschedule Event</DropdownItem> : null}
       </DropdownSection>
     </DropdownMenu>
   );
@@ -279,8 +224,8 @@ const EventCard: React.FC<EventCardProps> = ({
             <Avatar />
             <div>
                 <h3 className="text-sm font-semibold">{title}</h3>
-                {/* Show coordinator/stakeholder full name when available; fall back to organizationType */}
-                <p className="text-xs text-default-800">{organization || organizationType}</p>
+                {/* Show stakeholder full name when available; fall back to organization/coordinator */}
+                <p className="text-xs text-default-800">{(request && (request.createdByName || (request.event && request.event.createdByName))) || organization || organizationType}</p>
             </div>
           </div>
           <Dropdown>
