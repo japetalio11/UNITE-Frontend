@@ -30,14 +30,11 @@ export default function NotificationPage() {
   const getRecipientId = () => {
     const parsed = user.raw || null;
     if (!parsed) return null;
+    // Prefer stakeholder id if present, otherwise coordinator id, then fall back
     return (
-      parsed?.Coordinator_ID ||
-      parsed?.CoordinatorId ||
-      parsed?.id ||
-      parsed?.ID ||
-      parsed?.user_id ||
-      parsed?.UserID ||
-      parsed?.User_Id ||
+      parsed?.Stakeholder_ID || parsed?.StakeholderId || parsed?.stakeholder_id || parsed?.stakeholderId ||
+      parsed?.Coordinator_ID || parsed?.CoordinatorId || parsed?.coordinator_id || parsed?.coordinatorId ||
+      parsed?.id || parsed?.ID || parsed?.user_id || parsed?.UserID || parsed?.User_Id ||
       null
     );
   };
@@ -45,11 +42,66 @@ export default function NotificationPage() {
   const getRecipientType = () => {
     if (user.isAdmin) return "Admin";
     const role = (user.role || "").toLowerCase();
+    // explicit role strings
     if (role.includes("coordinator")) return "Coordinator";
+    if (role.includes("stakeholder")) return "Stakeholder";
+    // fallback to raw fields
     const rawStaff = user.raw?.StaffType || user.raw?.Staff_Type || user.raw?.staff_type || user.raw?.staffType || null;
     if (rawStaff && String(rawStaff).toLowerCase() === "coordinator") return "Coordinator";
-    return "Coordinator";
+    if (rawStaff && String(rawStaff).toLowerCase() === "stakeholder") return "Stakeholder";
+    // if the stored user object contains a Stakeholder id prefer Stakeholder
+    const parsed = user.raw || null;
+    if (parsed) {
+      if (parsed.Stakeholder_ID || parsed.StakeholderId || parsed.stakeholder_id || parsed.stakeholderId) return 'Stakeholder';
+      if (parsed.Coordinator_ID || parsed.CoordinatorId || parsed.coordinator_id || parsed.coordinatorId) return 'Coordinator';
+    }
+    // Try a best-effort detection: scan the raw stored object for 'stakeholder' keyword
+    try {
+      const s = parsed ? JSON.stringify(parsed).toLowerCase() : (typeof window !== 'undefined' ? (localStorage.getItem('unite_user') || '').toLowerCase() : '');
+      if (s && s.includes('stakeholder')) return 'Stakeholder';
+      if (s && s.includes('coordinator')) return 'Coordinator';
+    } catch (e) {
+      // ignore
+    }
+    // Try a best-effort detection: scan the raw stored object for 'stakeholder' keyword
+    try {
+      const s = parsed ? JSON.stringify(parsed).toLowerCase() : (typeof window !== 'undefined' ? (localStorage.getItem('unite_user') || '').toLowerCase() : '');
+      if (s && s.includes('stakeholder')) return 'Stakeholder';
+      if (s && s.includes('coordinator')) return 'Coordinator';
+    } catch (e) {
+      // ignore
+    }
+    // unknown: return null so caller can detect missing info
+    return null;
   };
+
+  // Developer debug: show a small overlay when URL has ?debugUser=1 so we can inspect
+  // the parsed stored user and the derived recipient id/type at runtime.
+  const showUserDebug = (typeof window !== 'undefined') ? (new URLSearchParams(window.location.search).get('debugUser') === '1') : false;
+
+  useEffect(() => {
+    if (!showUserDebug) return;
+    try {
+      const parsed = user.raw || null;
+      const recipientId = (function() {
+        if (!parsed) return null;
+        return (
+          parsed?.Stakeholder_ID || parsed?.StakeholderId || parsed?.stakeholder_id || parsed?.stakeholderId ||
+          parsed?.Coordinator_ID || parsed?.CoordinatorId || parsed?.coordinator_id || parsed?.coordinatorId ||
+          parsed?.id || parsed?.ID || parsed?.user_id || parsed?.UserID || parsed?.User_Id ||
+          null
+        );
+      })();
+      const recipientType = getRecipientType();
+      console.groupCollapsed('NotificationPage: debugUser');
+      console.log('raw stored user:', parsed);
+      console.log('detected recipientId:', recipientId);
+      console.log('detected recipientType:', recipientType);
+      console.groupEnd();
+    } catch (e) {
+      console.error('Failed to compute debug user info', e);
+    }
+  }, [showUserDebug, user]);
 
   const recipientId = getRecipientId();
   const recipientType = getRecipientType();
@@ -198,6 +250,29 @@ export default function NotificationPage() {
             </div>
           </div>
         </div>
+
+        {showUserDebug && (
+          <div className="mb-6 p-4 rounded-lg bg-gray-50 border border-gray-200">
+            <div className="flex items-center justify-between mb-2">
+              <div className="text-sm font-medium">Debug: stored user & detection</div>
+              <div className="text-xs text-gray-500">dev only (add ?debugUser=1)</div>
+            </div>
+            <div className="text-xs text-gray-700">
+              <pre className="whitespace-pre-wrap text-xs">
+{`stored user (localStorage.unite_user): ${(() => { try { return JSON.stringify(user.raw || {}, null, 2); } catch (e) { return String(user.raw); } })()}`}
+              </pre>
+              <div className="mt-2 text-xs text-gray-600">
+                Detected Recipient ID: <strong>{(() => {
+                  try {
+                    const p = user.raw || null;
+                    return p ? (p.Stakeholder_ID || p.StakeholderId || p.Coordinator_ID || p.CoordinatorId || p.id || p.ID || 'none') : 'none';
+                  } catch (e) { return 'error'; }
+                })()}</strong>
+              </div>
+              <div className="mt-1 text-xs text-gray-600">Detected Recipient Type: <strong>{getRecipientType() || 'unknown'}</strong></div>
+            </div>
+          </div>
+        )}
 
         {/* Notifications List */}
         <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">

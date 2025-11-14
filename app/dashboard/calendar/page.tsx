@@ -85,6 +85,14 @@ export default function CalendarPage() {
   const [acceptOpenId, setAcceptOpenId] = useState<string | null>(null);
   const [rejectOpenId, setRejectOpenId] = useState<string | null>(null);
 
+  const [acceptNote, setAcceptNote] = useState<string>('');
+  const [acceptSaving, setAcceptSaving] = useState<boolean>(false);
+  const [acceptError, setAcceptError] = useState<string | null>(null);
+
+  const [rejectNote, setRejectNote] = useState<string>('');
+  const [rejectSaving, setRejectSaving] = useState<boolean>(false);
+  const [rejectError, setRejectError] = useState<string | null>(null);
+
   // Reschedule state per event
   const [rescheduledDateMap, setRescheduledDateMap] = useState<Record<string, any>>({});
   const [rescheduleNoteMap, setRescheduleNoteMap] = useState<Record<string, string>>({});
@@ -113,6 +121,33 @@ export default function CalendarPage() {
   const pad = (n: number) => n.toString().padStart(2, '0');
   const dateToLocalKey = (d: Date) => {
     return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+  };
+
+  // Parse server-provided dates robustly.
+  // If backend sends a date-only string like '2025-11-17' treat it as local date
+  // to avoid timezone shifts from UTC parsing.
+  const parseServerDate = (raw: any): Date | null => {
+    if (!raw && raw !== 0) return null;
+    try {
+      if (typeof raw === 'string') {
+        const m = raw.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+        if (m) {
+          const y = Number(m[1]);
+          const mo = Number(m[2]) - 1;
+          const d = Number(m[3]);
+          return new Date(y, mo, d);
+        }
+        return new Date(raw);
+      }
+      if (typeof raw === 'object' && raw.$date) {
+        const d = raw.$date;
+        if (typeof d === 'object' && d.$numberLong) return new Date(Number(d.$numberLong));
+        return new Date(d as any);
+      }
+      return new Date(raw as any);
+    } catch (e) {
+      return null;
+    }
   };
 
   const normalizeEventsMap = (input: Record<string, any> | undefined): Record<string, any[]> => {
@@ -202,12 +237,8 @@ export default function CalendarPage() {
         for (const ev of arr) {
           let start: Date | null = null;
           let end: Date | null = null;
-          try {
-            if (ev.Start_Date) start = (typeof ev.Start_Date === 'string') ? new Date(ev.Start_Date) : (ev.Start_Date.$date ? new Date(ev.Start_Date.$date) : new Date(ev.Start_Date));
-          } catch (e) { start = null; }
-          try {
-            if (ev.End_Date) end = (typeof ev.End_Date === 'string') ? new Date(ev.End_Date) : (ev.End_Date.$date ? new Date(ev.End_Date.$date) : new Date(ev.End_Date));
-          } catch (e) { end = null; }
+          try { if (ev.Start_Date) start = parseServerDate(ev.Start_Date); } catch (e) { start = null; }
+          try { if (ev.End_Date) end = parseServerDate(ev.End_Date); } catch (e) { end = null; }
 
           if (!start) continue;
           if (!end) end = start;
@@ -306,12 +337,8 @@ export default function CalendarPage() {
               // parse start and end
               let start: Date | null = null;
               let end: Date | null = null;
-              try {
-                if (ev.Start_Date) start = (typeof ev.Start_Date === 'string') ? new Date(ev.Start_Date) : (ev.Start_Date.$date ? new Date(ev.Start_Date.$date) : new Date(ev.Start_Date));
-              } catch (e) { start = null; }
-              try {
-                if (ev.End_Date) end = (typeof ev.End_Date === 'string') ? new Date(ev.End_Date) : (ev.End_Date.$date ? new Date(ev.End_Date.$date) : new Date(ev.End_Date));
-              } catch (e) { end = null; }
+              try { if (ev.Start_Date) start = parseServerDate(ev.Start_Date); } catch (e) { start = null; }
+              try { if (ev.End_Date) end = parseServerDate(ev.End_Date); } catch (e) { end = null; }
 
               if (!start) continue;
               if (!end) end = start;
@@ -507,19 +534,7 @@ export default function CalendarPage() {
     const filterByStartDateForMonth = (ev: any) => {
       if (activeView !== 'month') return true;
       let start: Date | null = null;
-      try {
-        if (ev.Start_Date) {
-          if (typeof ev.Start_Date === 'object' && ev.Start_Date.$date) {
-            const d = ev.Start_Date.$date;
-            if (typeof d === 'object' && d.$numberLong) start = new Date(Number(d.$numberLong));
-            else start = new Date(d as any);
-          } else {
-            start = new Date(ev.Start_Date as any);
-          }
-        }
-      } catch (err) {
-        start = null;
-      }
+      try { if (ev.Start_Date) start = parseServerDate(ev.Start_Date); } catch (err) { start = null; }
       if (!start) return false;
       return dateToLocalKey(start) === key;
     };
@@ -693,6 +708,41 @@ export default function CalendarPage() {
     } catch (e) {
       // ignore
     }
+  };
+
+  // Perform an admin action (Accepted/Rejected/Rescheduled) given an Event_ID.
+  // This will fetch the event to determine the linked request id, then call
+  // the admin-action endpoint on the request.
+  const performAdminActionByEventId = async (eventId: string, action: string, note?: string, rescheduledDate?: string) => {
+    if (!eventId) throw new Error('Missing event id');
+    // fetch event details to find request id
+    const headers: any = { 'Content-Type': 'application/json' };
+    const rawUser = typeof window !== 'undefined' ? localStorage.getItem('unite_user') : null;
+    const user = rawUser ? JSON.parse(rawUser as string) : null;
+    const token = typeof window !== 'undefined' ? (localStorage.getItem('unite_token') || sessionStorage.getItem('unite_token')) : null;
+    if (token) headers['Authorization'] = `Bearer ${token}`;
+
+    // load event to resolve request id
+    const evRes = await fetch(`${API_BASE}/api/events/${encodeURIComponent(eventId)}`, token ? { headers } : { headers, credentials: 'include' });
+    const evBody = await evRes.json();
+    if (!evRes.ok) throw new Error(evBody.message || 'Failed to fetch event details');
+    const evData = evBody.data || evBody.event || evBody;
+    const requestId = evData?.request?.Request_ID || evData?.Request_ID || evData?.requestId || evData?.request?.RequestId || null;
+    if (!requestId) throw new Error('Unable to determine request id for action');
+
+    const body: any = { action, note: note ? note.trim() : undefined };
+    if (rescheduledDate) body.rescheduledDate = rescheduledDate;
+
+    let res;
+    if (token) {
+      res = await fetchWithAuth(`${API_BASE}/api/requests/${encodeURIComponent(requestId)}/admin-action`, { method: 'POST', body: JSON.stringify(body) });
+    } else {
+      const legacyBody = { adminId: user?.id || user?.Admin_ID || null, ...body };
+      res = await fetch(`${API_BASE}/api/requests/${encodeURIComponent(requestId)}/admin-action`, { method: 'POST', headers, body: JSON.stringify(legacyBody), credentials: 'include' });
+    }
+    const resp = await res.json();
+    if (!res.ok) throw new Error(resp.message || 'Failed to perform admin action');
+    return resp;
   };
 
   const handleCreateEvent = async (eventType: string, data: any) => {
@@ -1327,6 +1377,82 @@ export default function CalendarPage() {
             }
         }}
       />
+      {/* Accept confirmation modal */}
+      <Modal isOpen={!!acceptOpenId} onClose={() => { setAcceptOpenId(null); setAcceptNote(''); setAcceptError(null); }} size="sm" placement="center">
+        <ModalContent>
+          <ModalHeader className="flex items-center gap-2">
+            <div className="flex items-center justify-center w-10 h-10 rounded-full bg-default-100">
+              <Check className="w-5 h-5 text-default-600" />
+            </div>
+            <span className="text-lg font-semibold">Accept Event</span>
+          </ModalHeader>
+          <ModalBody>
+            <p className="text-sm text-default-600 mb-4">Optionally add a note to record when accepting this request.</p>
+            <div className="space-y-2">
+              <label className="text-sm font-medium text-default-900">Note (optional)</label>
+              <textarea value={acceptNote} onChange={(e) => setAcceptNote((e.target as HTMLTextAreaElement).value)} rows={4} className="w-full px-3 py-2 text-sm border border-default-300 rounded-lg" />
+            </div>
+            {acceptError && (<div className="mt-3 p-3 bg-warning-50 border border-warning-200 rounded"><p className="text-xs text-warning-700">{acceptError}</p></div>)}
+          </ModalBody>
+          <ModalFooter>
+            <Button variant="bordered" onPress={() => { setAcceptOpenId(null); setAcceptNote(''); setAcceptError(null); }} className="font-medium">Cancel</Button>
+            <Button color="default" onPress={async () => {
+              setAcceptError(null);
+              if (!acceptOpenId) return setAcceptError('No event selected');
+              try {
+                setAcceptSaving(true);
+                await performAdminActionByEventId(acceptOpenId, 'Accepted', acceptNote || undefined);
+                await refreshCalendarData();
+                setAcceptOpenId(null);
+                setAcceptNote('');
+              } catch (err: any) {
+                setAcceptError(err?.message || 'Failed to accept request');
+              } finally {
+                setAcceptSaving(false);
+              }
+            }} className="bg-black text-white font-medium">{acceptSaving ? 'Accepting...' : 'Accept'}</Button>
+          </ModalFooter>
+        </ModalContent>
+      </Modal>
+
+      {/* Reject confirmation modal */}
+      <Modal isOpen={!!rejectOpenId} onClose={() => { setRejectOpenId(null); setRejectNote(''); setRejectError(null); }} size="sm" placement="center">
+        <ModalContent>
+          <ModalHeader className="flex items-center gap-2">
+            <div className="flex items-center justify-center w-10 h-10 rounded-full bg-default-100">
+              <X className="w-5 h-5 text-default-600" />
+            </div>
+            <span className="text-lg font-semibold">Reject Event</span>
+          </ModalHeader>
+          <ModalBody>
+            <p className="text-sm text-default-600 mb-4">Provide a reason for rejecting this request. This will be recorded in the request history.</p>
+            <div className="space-y-2">
+              <label className="text-sm font-medium text-default-900">Reason</label>
+              <textarea value={rejectNote} onChange={(e) => setRejectNote((e.target as HTMLTextAreaElement).value)} rows={4} className="w-full px-3 py-2 text-sm border border-default-300 rounded-lg" />
+            </div>
+            {rejectError && (<div className="mt-3 p-3 bg-warning-50 border border-warning-200 rounded"><p className="text-xs text-warning-700">{rejectError}</p></div>)}
+          </ModalBody>
+          <ModalFooter>
+            <Button variant="bordered" onPress={() => { setRejectOpenId(null); setRejectNote(''); setRejectError(null); }} className="font-medium">Cancel</Button>
+            <Button color="danger" onPress={async () => {
+              setRejectError(null);
+              if (!rejectOpenId) return setRejectError('No event selected');
+              if (!rejectNote || rejectNote.trim().length === 0) return setRejectError('Please provide a reason for rejection');
+              try {
+                setRejectSaving(true);
+                await performAdminActionByEventId(rejectOpenId, 'Rejected', rejectNote);
+                await refreshCalendarData();
+                setRejectOpenId(null);
+                setRejectNote('');
+              } catch (err: any) {
+                setRejectError(err?.message || 'Failed to reject request');
+              } finally {
+                setRejectSaving(false);
+              }
+            }} className="bg-red-600 text-white font-medium">{rejectSaving ? 'Rejecting...' : 'Reject'}</Button>
+          </ModalFooter>
+        </ModalContent>
+      </Modal>
     </div>
   );
 }

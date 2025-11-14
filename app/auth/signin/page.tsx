@@ -67,7 +67,10 @@ export default function SignIn() {
       // hydration even when the app used sessionStorage or a different key.
       try {
         const legacy = {
-          role: data?.staff_type || data?.role || null,
+          role:
+            data?.staff_type ||
+            data?.role ||
+            (data?.Stakeholder_ID || data?.stakeholder_id || data?.Coordinator_ID ? "Stakeholder" : null),
           isAdmin:
             !!data?.isAdmin ||
             String(data?.staff_type || "").toLowerCase().includes("admin") ||
@@ -75,7 +78,15 @@ export default function SignIn() {
               String(data?.role || "").toLowerCase().includes("admin")),
           First_Name: data?.First_Name || data?.first_name || null,
           email: data?.Email || data?.email || null,
-          id: data?.id || data?.ID || null,
+          id:
+            data?.id ||
+            data?.ID ||
+            data?._id ||
+            data?.Stakeholder_ID ||
+            data?.StakeholderId ||
+            data?.stakeholder_id ||
+            data?.user_id ||
+            null,
         };
         if (typeof window !== "undefined") localStorage.setItem("unite_user", JSON.stringify(legacy));
       } catch (e) {

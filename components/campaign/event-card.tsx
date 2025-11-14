@@ -215,6 +215,20 @@ const EventCard: React.FC<EventCardProps> = ({
     return defaultMenu;
   };
 
+  // Determine a human-friendly pending-stage label for Pending requests
+  const getPendingStageLabel = (): string | null => {
+    if (status !== "Pending") return null;
+    const r = request || (request && (request as any).event) || {};
+    const adminAction = (r as any).AdminAction ?? (r as any).adminAction ?? null;
+    const stakeholderAction = (r as any).StakeholderFinalAction ?? (r as any).stakeholderFinalAction ?? null;
+    const coordinatorAction = (r as any).CoordinatorFinalAction ?? (r as any).coordinatorFinalAction ?? null;
+
+    if (!adminAction) return 'Waiting for admin review';
+    if (!stakeholderAction) return 'Waiting for stakeholder confirmation';
+    if (!coordinatorAction) return 'Waiting for coordinator confirmation';
+    return null;
+  };
+
   return (
     <>
       <Card className="w-full max-w-md h-60 rounded-xl border border-gray-200 shadow-none bg-white">
@@ -226,6 +240,9 @@ const EventCard: React.FC<EventCardProps> = ({
                 <h3 className="text-sm font-semibold">{title}</h3>
                 {/* Show stakeholder full name when available; fall back to organization/coordinator */}
                 <p className="text-xs text-default-800">{(request && (request.createdByName || (request.event && request.event.createdByName))) || organization || organizationType}</p>
+                {getPendingStageLabel() ? (
+                  <p className="text-xs text-default-500 mt-1">{getPendingStageLabel()}</p>
+                ) : null}
             </div>
           </div>
           <Dropdown>
