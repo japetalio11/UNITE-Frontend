@@ -39,8 +39,12 @@ import EventManageStaffModal from '@/components/calendar/event-manage-staff-moda
 import EventRescheduleModal from '@/components/calendar/event-reschedule-modal';
 import CalendarToolbar from '@/components/calendar/calendar-toolbar';
 import { fetchWithAuth } from '@/utils/fetchWithAuth';
+import { usePathname } from 'next/navigation';
 
-export default function CalendarPage({ allowCreate = true }: { allowCreate?: boolean }) {
+export default function CalendarPage() {
+  const pathname = usePathname();
+  // Allow create on dashboard calendar, but not on public calendar route
+  const allowCreate = pathname === '/calendar' ? false : true;
   const [activeView, setActiveView] = useState("week");
   const today = new Date();
   const [selectedDate, setSelectedDate] = useState(today.getDate());
