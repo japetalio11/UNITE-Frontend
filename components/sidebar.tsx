@@ -329,6 +329,36 @@ export default function Sidebar({
           if (loadedIsCoordinator || loadedIsSystemAdmin2)
             setShowStakeholderLink(true);
         }
+        // Attempt to fetch authoritative user info from the server as a
+        // fallback when local storage or the login response is missing
+        // compatibility fields (this helps when deployed backend returns
+        // a slightly different shape).
+        try {
+          (async () => {
+            try {
+              const base = (process.env.NEXT_PUBLIC_API_URL || "").replace(/\/$/, "");
+              const url = base ? `${base}/api/auth/me` : `/api/auth/me`;
+              const body: any = await fetchJsonWithAuth(url).catch(() => ({}));
+              const serverData = (body && (body.data || body)) || null;
+              if (!serverData) return;
+
+              const serverStaffType =
+                serverData?.StaffType || serverData?.staff_type || serverData?.role || null;
+              const serverRoleLower = serverStaffType ? String(serverStaffType).toLowerCase() : (serverData?.role || "").toString().toLowerCase();
+
+              const serverIsAdmin =
+                !!serverData?.isAdmin || serverRoleLower === 'admin' || (serverRoleLower.includes('sys') && serverRoleLower.includes('admin'));
+
+              const serverIsCoordinator =
+                (serverStaffType && String(serverStaffType).toLowerCase() === 'coordinator') || (String(serverData?.role || '').toLowerCase().includes('coordinator'));
+
+              if (serverIsAdmin) setShowCoordinatorLink(true);
+              if (serverIsCoordinator || serverIsAdmin) setShowStakeholderLink(true);
+            } catch (e) {
+              // ignore network/fetch errors
+            }
+          })();
+        } catch (e) {}
       } catch (e) {
         // ignore client-only read errors
       }
