@@ -38,6 +38,7 @@ import ConfirmModal from "./modals/ConfirmModal";
 import {
   performRequestAction as svcPerformRequestAction,
   performStakeholderConfirm as svcPerformStakeholderConfirm,
+  performCoordinatorConfirm,
   fetchRequestDetails as svcFetchRequestDetails,
   deleteRequest as svcDeleteRequest,
 } from "./services/requestsService";
@@ -119,6 +120,72 @@ const EventCard: React.FC<EventCardProps> = ({
   const [fullRequest, setFullRequest] = useState<any>(null);
   const [resolvedGeo, setResolvedGeo] = useState<any>({});
 
+  // Try to resolve district/province names for the card itself (best-effort)
+  React.useEffect(() => {
+    (async () => {
+      try {
+        const pickId =
+          (request && (request as any).district) || district || null;
+
+        const isObjectId = (s: any) => typeof s === "string" && /^[a-f0-9]{24}$/i.test(s);
+
+        if (!pickId) return;
+
+        // If it's already a friendly name (not an ObjectId), use it
+        if (!isObjectId(pickId)) {
+          setResolvedGeo((p: any) => ({ ...(p || {}), district: pickId }));
+          return;
+        }
+
+        const token =
+          typeof window !== "undefined"
+            ? localStorage.getItem("unite_token") || sessionStorage.getItem("unite_token")
+            : null;
+        const headers: any = { "Content-Type": "application/json" };
+        if (token) headers["Authorization"] = `Bearer ${token}`;
+
+        // Try direct lookup
+        try {
+          const res = await fetch(`${API_BASE}/api/districts/${encodeURIComponent(pickId)}`, { headers, credentials: token ? undefined : "include" });
+          if (res && res.ok) {
+            const body = await res.json().catch(() => null);
+            const data = body?.data || body?.district || body || null;
+            if (data) {
+              const districtName = data?.District_Name || data?.DistrictName || data?.name || data?.Name || null;
+              const provinceName = data?.Province_Name || data?.ProvinceName || data?.province || data?.Province || null;
+              setResolvedGeo((p: any) => ({ ...(p || {}), district: districtName || null, province: provinceName || null }));
+              return;
+            }
+          }
+        } catch (e) {
+          // ignore
+        }
+
+        // Fallback: list and match by _id or District_ID
+        try {
+          const listRes = await fetch(`${API_BASE}/api/districts?page=1&limit=1000`, { headers, credentials: token ? undefined : "include" });
+          if (listRes && listRes.ok) {
+            const listBody = await listRes.json().catch(() => null);
+            const list = listBody?.data || listBody?.districts || listBody || [];
+            if (Array.isArray(list) && list.length) {
+              const match = list.find((d: any) => String(d._id) === String(pickId) || String(d.District_ID) === String(pickId));
+              if (match) {
+                const districtName = match?.District_Name || match?.DistrictName || match?.name || match?.Name || null;
+                const provinceName = match?.Province_Name || match?.ProvinceName || match?.province || match?.Province || null;
+                setResolvedGeo((p: any) => ({ ...(p || {}), district: districtName || null, province: provinceName || null }));
+                return;
+              }
+            }
+          }
+        } catch (e) {
+          // ignore
+        }
+      } catch (e) {
+        // ignore overall
+      }
+    })();
+  }, [district, request]);
+
   const resolvedRequest =
     fullRequest ||
     request ||
@@ -146,6 +213,34 @@ const EventCard: React.FC<EventCardProps> = ({
 
   const allowedActionSet = useAllowedActionSet({ request, fullRequest, resolvedRequest });
   const hasAllowedAction = React.useCallback(hasAllowedActionFactory(allowedActionSet), [allowedActionSet]);
+
+  const viewer = getViewer();
+  const viewerId = getViewerId();
+  const viewerRoleString = String(viewer.role || "").toLowerCase();
+
+  const isReviewAccepted = (() => {
+    try {
+      const r = resolvedRequest || request || {};
+      const s = String(r?.Status || r?.status || "").toLowerCase();
+      return s.includes("review") && s.includes("accepted");
+    } catch (e) {
+      return false;
+    }
+  })();
+
+  const viewerIsAssignedCoordinator = (() => {
+    try {
+      if (!viewerId) return false;
+      if (!viewerRoleString.includes("coordinator")) return false;
+      const r = resolvedRequest || request || {};
+      if (!r) return false;
+      const coordId = r?.coordinator_id || r?.Coordinator_ID || r?.coordinatorId || null;
+      const reviewerId = r?.reviewer?.id || r?.reviewerId || null;
+      return String(viewerId) === String(coordId) || String(viewerId) === String(reviewerId);
+    } catch (e) {
+      return false;
+    }
+  })();
 
   const hasAnyAllowedAction = (names: string[]) =>
     names.some((name) => hasAllowedAction(name));
@@ -722,7 +817,12 @@ const EventCard: React.FC<EventCardProps> = ({
       if (!resolvedRequestId) {
         throw new Error("Unable to determine request id");
       }
-      await performStakeholderConfirm(resolvedRequestId, decision);
+      // If current viewer is a coordinator confirming an admin decision, use the coordinator-confirm endpoint
+      if (viewerRoleString.includes("coordinator") && viewerIsAssignedCoordinator) {
+        await performCoordinatorConfirm(resolvedRequestId, decision);
+      } else {
+        await performStakeholderConfirm(resolvedRequestId, decision);
+      }
       setViewOpen(false);
     } catch (err: any) {
       console.error("Stakeholder decision error:", err);
@@ -796,16 +896,19 @@ const EventCard: React.FC<EventCardProps> = ({
     }
 
     if (flagFor("canReject", "reject")) {
-      actions.push(
-        <DropdownItem
-          key="reject"
-          description="Reject this request"
-          startContent={<X />}
-          onPress={() => setRejectOpen(true)}
-        >
-          Reject Request
-        </DropdownItem>,
-      );
+      // When waiting for coordinator confirmation after admin accepted, do not show a Reject option
+      if (!(isReviewAccepted && viewerIsAssignedCoordinator)) {
+        actions.push(
+          <DropdownItem
+            key="reject"
+            description="Reject this request"
+            startContent={<X />}
+            onPress={() => setRejectOpen(true)}
+          >
+            Reject Request
+          </DropdownItem>,
+        );
+      }
     }
 
     if (flagFor("canReschedule", ["resched", "reschedule"])) {
@@ -821,14 +924,26 @@ const EventCard: React.FC<EventCardProps> = ({
       );
     }
 
-    if (flagFor("canConfirm", "confirm")) {
+    // Show Confirm action when allowed, or as a fallback when request is review-accepted
+    // and the current viewer is the assigned coordinator (ensures quick-action availability).
+    if (flagFor("canConfirm", "confirm") || (isReviewAccepted && viewerIsAssignedCoordinator)) {
       actions.push(
         <DropdownItem
           key="confirm"
           description="Confirm the reviewer decision"
           startContent={<Check />}
           onPress={async () => {
-            await runStakeholderDecision("Accepted");
+            try {
+              if (viewerRoleString.includes("coordinator") && viewerIsAssignedCoordinator) {
+                await performCoordinatorConfirm(resolvedRequestId, "Accepted");
+                setViewOpen(false);
+              } else {
+                await runStakeholderDecision("Accepted");
+              }
+            } catch (e) {
+              console.error("Confirm error:", e);
+              alert("Failed to confirm request: " + (e as any)?.message || "Unknown error");
+            }
           }}
         >
           Confirm
@@ -907,7 +1022,28 @@ const EventCard: React.FC<EventCardProps> = ({
     const buttons: JSX.Element[] = [];
     // Only show the core action set: Accept, Reschedule, Reject
     // Reject is styled as a danger action to make it visually distinct.
-    if (hasAllowedAction(["accept", "approve"])) {
+    if (isReviewAccepted && viewerIsAssignedCoordinator) {
+      buttons.push(
+        <Button
+          key="footer-confirm"
+          className="bg-black text-white"
+          color="default"
+          onPress={async () => {
+            setViewOpen(false);
+            try {
+              if (!resolvedRequestId) return alert('Request id not found');
+              await performCoordinatorConfirm(resolvedRequestId, 'Accepted');
+              try { window.dispatchEvent(new CustomEvent('unite:requests-changed', { detail: { requestId: resolvedRequestId } })); } catch (e) {}
+            } catch (e) {
+              console.error('Footer confirm error:', e);
+              alert('Failed to confirm request: ' + ((e as any)?.message || 'Unknown error'));
+            }
+          }}
+        >
+          Confirm
+        </Button>,
+      );
+    } else if (hasAllowedAction(["accept", "approve"])) {
       buttons.push(
         <Button
           key="footer-accept"
@@ -938,7 +1074,8 @@ const EventCard: React.FC<EventCardProps> = ({
       );
     }
 
-    if (hasAllowedAction("reject")) {
+    // Only show Reject when not in review-accepted coordinator confirmation state
+    if (!(isReviewAccepted && viewerIsAssignedCoordinator) && hasAllowedAction("reject")) {
       buttons.push(
         <Button
           key="footer-reject"
@@ -972,28 +1109,36 @@ const EventCard: React.FC<EventCardProps> = ({
 
   // Determine a human-friendly pending-stage label for Pending requests
   const getPendingStageLabel = (): string | null => {
-    const r = request || (request && (request as any).event) || {};
+    const r = resolvedRequest || request || (request && (request as any).event) || {};
+
+    // Prefer a human-friendly label returned by the backend when present
+    const backendLabel = r?.statusLabel || r?.status_label || r?.StatusLabel || null;
+    if (backendLabel) return backendLabel;
 
     // First check the request Status field for new workflow statuses
-    const requestStatus = r?.Status || r?.status || null;
+    const requestStatus = String(r?.Status || r?.status || '').toLowerCase();
 
-    if (requestStatus === "Pending_Stakeholder_Review") {
-      return "Waiting for stakeholder review";
+    // Unified workflow statuses (case-insensitive)
+    if (requestStatus.includes('pending') || requestStatus.includes('pending_review') || requestStatus.includes('pending_review')) {
+      if (r?.reviewer?.role && String(r.reviewer.role).toLowerCase().includes('coordinator')) return 'Waiting for Coordinator review';
+      if (r?.reviewer?.role && (String(r.reviewer.role).toLowerCase().includes('admin') || String(r.reviewer.role).toLowerCase().includes('systemadmin'))) return 'Waiting for Admin review';
+      return 'Waiting for Admin or Coordinator review';
     }
-    if (requestStatus === "Pending_Coordinator_Review") {
-      return "Waiting for coordinator review";
+
+    if (requestStatus.includes('review')) {
+      if (requestStatus.includes('accepted')) return 'Waiting for Coordinator confirmation';
+      if (requestStatus.includes('resched') || requestStatus.includes('reschedule') || requestStatus.includes('rescheduled')) return (r?.reviewer?.role && String(r.reviewer.role).toLowerCase().includes('coordinator')) ? 'Waiting for Coordinator review (reschedule)' : 'Waiting for Admin review (reschedule)';
+      return 'Waiting for Admin or Coordinator review';
     }
-    if (requestStatus === "Pending_Admin_Review") {
-      return "Waiting for admin review";
+
+    if (requestStatus.includes('rescheduled_by_admin') || requestStatus.includes('rescheduled_by_admin') || requestStatus.includes('rescheduled_by_admin')) {
+      return (r?.reviewer?.role && String(r.reviewer.role).toLowerCase().includes('coordinator')) ? 'Waiting for Coordinator review (reschedule)' : 'Waiting for Admin review (reschedule)';
     }
-    if (requestStatus === "Rescheduled_By_Admin") {
-      return "Rescheduled by admin";
+    if (requestStatus.includes('rescheduled_by_coordinator')) {
+      return 'Rescheduled by coordinator';
     }
-    if (requestStatus === "Rescheduled_By_Coordinator") {
-      return "Rescheduled by coordinator";
-    }
-    if (requestStatus === "Rescheduled_By_Stakeholder") {
-      return "Rescheduled by stakeholder";
+    if (requestStatus.includes('rescheduled_by_stakeholder')) {
+      return 'Rescheduled by stakeholder';
     }
 
     // Fallback to old logic for backward compatibility
@@ -1095,13 +1240,28 @@ const EventCard: React.FC<EventCardProps> = ({
                 setRejectOpen={setRejectOpen}
                 setCancelOpen={setCancelOpen}
                 setDeleteOpen={setDeleteOpen}
+                showConfirmFallback={isReviewAccepted && viewerIsAssignedCoordinator}
+                onConfirm={async () => {
+                  try {
+                    if (!resolvedRequestId) throw new Error('Request id not found');
+                    if (viewerRoleString.includes('coordinator') && viewerIsAssignedCoordinator) {
+                      await performCoordinatorConfirm(resolvedRequestId, 'Accepted');
+                    } else {
+                      await runStakeholderDecision('Accepted');
+                    }
+                    try { window.dispatchEvent(new CustomEvent('unite:requests-changed', { detail: { requestId: resolvedRequestId } })); } catch (e) {}
+                  } catch (e) {
+                    console.error('Dropdown confirm error:', e);
+                    try { alert('Failed to confirm request: ' + (e as any)?.message || 'Unknown error'); } catch (_) {}
+                  }
+                }}
               />
           </Dropdown>
         </CardHeader>
         <CardBody>
           <div className="flex justify-between items-center mb-2">
             <p className="text-xs">District</p>
-            <p className="text-xs text-default-800 font-medium">{district}</p>
+            <p className="text-xs text-default-800 font-medium">{resolvedGeo?.district || district}</p>
           </div>
           <div className="flex items-center gap-3">
             <Chip color="primary" radius="sm" size="sm" variant="faded">
@@ -1121,6 +1281,7 @@ const EventCard: React.FC<EventCardProps> = ({
             >
               {status}
             </Chip>
+            {/* Confirm is available in the action menu; no quick button on the card itself */}
           </div>
         </CardBody>
         <CardFooter className="flex flex-col items-start gap-2 text-xs">
@@ -1161,7 +1322,57 @@ const EventCard: React.FC<EventCardProps> = ({
                 r?.event?.reviewMessage ||
                 null;
 
-              if (!reviewSummary) return null;
+              // Admin/coordinator decisions and reschedule proposals are attached
+              // to `decisionSummary` by the backend. Prefer showing either the
+              // original review message or the decision summary (or both).
+              const decisionSummary =
+                r?.decisionSummary || r?.DecisionSummary || r?.event?.decisionSummary || null;
+
+              // Treat as rejected when the status contains 'reject' or 'rejected'
+              const statusRaw = String(r?.Status || r?.status || "");
+              const isRejected = /reject(ed)?/i.test(statusRaw);
+
+              // Try to infer who performed the decision (actor) for display
+              const actorNameOrRole =
+                r?.decision?.actor?.name ||
+                r?.Decision?.actor?.name ||
+                r?.decision?.actor?.role ||
+                r?.Decision?.actor?.role ||
+                r?.reviewer?.name ||
+                r?.reviewer?.role ||
+                r?.reviewerName ||
+                r?.ReviewerName ||
+                null;
+
+              const actorLabel = actorNameOrRole
+                ? String(actorNameOrRole)
+                : null;
+
+              // Build a sensible fallback note when `decisionSummary` is absent
+              const fallbackNoteCandidates = [
+                r?.decisionSummary,
+                r?.DecisionSummary,
+                r?.AdminNote,
+                r?.adminNote,
+                r?.Admin_Notes,
+                r?.ReviewerNotes,
+                r?.reviewerNotes,
+                r?.rescheduleProposal?.reviewerNotes,
+                r?.rescheduleProposal?.proposedBy?.notes,
+                r?.DecisionNote,
+                r?.decisionNote,
+              ];
+
+              const composedFallbackNote = (() => {
+                for (const c of fallbackNoteCandidates) {
+                  if (c !== undefined && c !== null && String(c).trim() !== "") return String(c);
+                }
+                return null;
+              })();
+
+              const noteText = decisionSummary || composedFallbackNote || reviewSummary || null;
+
+              if (!reviewSummary && !decisionSummary) return null;
 
               // helper to pick first available field from candidates
               const pick = (...cands: any[]) => {
@@ -1259,8 +1470,25 @@ const EventCard: React.FC<EventCardProps> = ({
               return (
                 <div className="space-y-3 mb-4">
                   <div className="p-4 border border-default-200 rounded-lg bg-default-50">
-                    <p className="text-sm font-semibold text-default-900 mb-2">Request Message</p>
-                    <p className="text-sm text-default-800 whitespace-pre-line">{reviewSummary}</p>
+
+                    {/* Prefer showing the backend decision summary (includes admin/coordinator note)
+                        when present — replace the original request message for reschedule/reject flows. */}
+                    {isRejected ? (
+                      <>
+                        <p className="text-sm font-semibold text-default-900 mb-2">Rejected</p>
+                        <p className="text-sm text-default-800 whitespace-pre-line">{decisionSummary || reviewSummary}</p>
+                      </>
+                    ) : decisionSummary ? (
+                      <>
+                        <p className="text-sm font-semibold text-default-900 mb-2">Decision Note</p>
+                        <p className="text-sm text-default-800 whitespace-pre-line">{decisionSummary}</p>
+                      </>
+                    ) : reviewSummary ? (
+                      <>
+                        <p className="text-sm font-semibold text-default-900 mb-2">Request Message</p>
+                        <p className="text-sm text-default-800 whitespace-pre-line">{reviewSummary}</p>
+                      </>
+                    ) : null}
 
                     <div className="mt-4 grid grid-cols-2 gap-4 text-sm">
                       <div>

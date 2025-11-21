@@ -82,6 +82,42 @@ export const performStakeholderConfirm = async (requestId: string, action: "Acce
   return resp;
 };
 
+export const performCoordinatorConfirm = async (requestId: string, action: "Accepted" | "Rejected") => {
+  const rawUser = typeof window !== "undefined" ? localStorage.getItem("unite_user") : null;
+  const parsedUser = rawUser ? JSON.parse(rawUser as string) : null;
+  const coordinatorId = parsedUser?.id || parsedUser?.Coordinator_ID || parsedUser?.CoordinatorId || parsedUser?.ID || null;
+
+  if (!coordinatorId) throw new Error("Unable to determine coordinator id");
+
+  const token = getToken();
+  const headers: any = { "Content-Type": "application/json" };
+  if (token) headers["Authorization"] = `Bearer ${token}`;
+
+  const body: any = { coordinatorId, action };
+
+  let res;
+  if (token) {
+    res = await fetchWithAuth(
+      `${API_BASE}/api/requests/${encodeURIComponent(requestId)}/coordinator-confirm`,
+      { method: "POST", body: JSON.stringify(body) },
+    );
+  } else {
+    res = await fetch(
+      `${API_BASE}/api/requests/${encodeURIComponent(requestId)}/coordinator-confirm`,
+      { method: "POST", headers, body: JSON.stringify(body), credentials: "include" },
+    );
+  }
+
+  const resp = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(resp.message || "Failed to record coordinator confirmation");
+
+  try {
+    window.dispatchEvent(new CustomEvent("unite:requests-changed", { detail: { requestId } }));
+  } catch (e) {}
+
+  return resp;
+};
+
 export const fetchRequestDetails = async (requestId: string) => {
   const token = getToken();
   const headers: any = { "Content-Type": "application/json" };
