@@ -1,5 +1,5 @@
 import { Link } from "@heroui/link";
-import { ArrowLeft } from "lucide-react";
+import { ArrowLeft } from '@gravity-ui/icons';
 import Image from "next/image";
 
 export default function AuthLayout({
@@ -29,7 +29,7 @@ export default function AuthLayout({
             className="flex items-center gap-2 hover:text-default-800 transition-colors"
             href="/"
           >
-            <ArrowLeft size={20} />
+            <ArrowLeft className="w-5 h-5" />
             <span className="text-sm">Go Back</span>
           </Link>
         </header>

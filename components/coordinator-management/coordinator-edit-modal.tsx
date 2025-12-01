@@ -1,6 +1,6 @@
 "use client";
 import React, { useState, useEffect } from "react";
-import { Eye, EyeOff } from "lucide-react";
+import { Eye, EyeSlash as EyeOff } from "@gravity-ui/icons";
 import {
   Modal,
   ModalContent,
@@ -498,13 +498,11 @@ export default function EditCoordinatorModal({
                   >
                     {showPassword ? (
                       <Eye
-                        className="text-default-800 pointer-events-none"
-                        size={18}
+                        className="text-default-800 pointer-events-none w-5 h-5"
                       />
                     ) : (
                       <EyeOff
-                        className="text-default-800 pointer-events-none"
-                        size={18}
+                        className="text-default-800 pointer-events-none w-5 h-5"
                       />
                     )}
                   </button>

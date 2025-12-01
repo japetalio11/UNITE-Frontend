@@ -6,7 +6,7 @@ import { Input } from "@heroui/input";
 import { Button } from "@heroui/button";
 import { Link } from "@heroui/link";
 import { Checkbox } from "@heroui/checkbox";
-import { Eye, EyeOff } from "lucide-react";
+import { Eye, EyeSlash } from '@gravity-ui/icons';
 
 import { useLoading } from "@/components/loading-overlay";
 
@@ -239,13 +239,11 @@ export default function SignIn() {
                   >
                     {showPassword ? (
                       <Eye
-                        className="text-default-800 pointer-events-none"
-                        size={20}
+                        className="text-default-800 pointer-events-none w-5 h-5"
                       />
                     ) : (
-                      <EyeOff
-                        className="text-default-800 pointer-events-none"
-                        size={20}
+                      <EyeSlash
+                        className="text-default-800 pointer-events-none w-5 h-5"
                       />
                     )}
                   </button>

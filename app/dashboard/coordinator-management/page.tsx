@@ -34,6 +34,7 @@ export default function CoordinatorManagement() {
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
   const [isCreating, setIsCreating] = useState(false);
   const [coordinators, setCoordinators] = useState<any[]>([]);
+  const [filteredCoordinators, setFilteredCoordinators] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [isEditModalOpen, setIsEditModalOpen] = useState(false);
@@ -51,8 +52,6 @@ export default function CoordinatorManagement() {
     name: string;
   } | null>(null);
 
-  // Do not call getUserInfo() synchronously during render — read it on mount so
-  // server and client initial HTML remain identical and avoid hydration mismatches.
   const [userInfo, setUserInfo] = useState<any | null>(null);
   const [displayName, setDisplayName] = useState("Bicol Medical Center");
   const [displayEmail, setDisplayEmail] = useState("bmc@gmail.com");
@@ -82,11 +81,6 @@ export default function CoordinatorManagement() {
         !!info?.isAdmin ||
         (roleLower.includes("sys") && roleLower.includes("admin"));
 
-      // Allow management when the user is a system administrator OR when they
-      // are staff-type 'Admin' with explicit admin role. Previously this
-      // required both (system admin && staff admin) which could hide actions
-      // for legitimate system administrators. Relax the rule so system
-      // administrators can manage coordinators even if StaffType isn't set.
       setCanManageCoordinators(
         Boolean(isSystemAdmin || (isStaffAdmin && roleLower === "admin")),
       );
@@ -96,13 +90,6 @@ export default function CoordinatorManagement() {
       /* ignore */
     }
   }, []);
-
-  // Debug: surface permission flags so we can see why actions may be hidden
-  try {
-    // debug logs removed
-  } catch (e) {
-    /* ignore */
-  }
 
   const handleSearch = (query: string) => {
     setSearchQuery(query);
@@ -136,7 +123,6 @@ export default function CoordinatorManagement() {
     setIsCreating(true);
     try {
       const base = (process.env.NEXT_PUBLIC_API_URL || "").replace(/\/$/, "");
-      // get logged-in admin id and token
       let rawUser = null;
 
       try {
@@ -165,7 +151,6 @@ export default function CoordinatorManagement() {
         ? `${base}/api/admin/${encodeURIComponent(adminId)}/coordinators`
         : `/api/admin/${encodeURIComponent(adminId)}/coordinators`;
 
-      // The backend expects { staffData, coordinatorData, createdByAdminId } in body (see coordinator.service.createCoordinatorAccount)
       const staffData = {
         First_Name: data.firstName,
         Middle_Name: data.middleName || null,
@@ -175,12 +160,9 @@ export default function CoordinatorManagement() {
         Password: data.password,
       };
 
-      // Send new coordinator data using province and district ObjectId refs
       const coordinatorData = {
-        // New normalized fields (ObjectId refs)
         district: data.district || data.districtId,
         province: data.province,
-        // Legacy compatibility fields
         District_ID: data.districtId || data.district,
         Province_Name: data.province,
       };
@@ -212,67 +194,7 @@ export default function CoordinatorManagement() {
             `Failed to create coordinator (status ${res.status})`,
         );
 
-      // success: refresh coordinators list
-      await (async () => {
-        // reuse fetchCoordinators logic: crudely re-run the effect by calling internal fetch
-        setLoading(true);
-        setError(null);
-        try {
-          const listBase = base;
-          const adminUrl = listBase
-            ? `${listBase}/api/admin/${encodeURIComponent(adminId)}/coordinators?limit=1000`
-            : `/api/admin/${encodeURIComponent(adminId)}/coordinators?limit=1000`;
-          const listRes = await fetch(adminUrl, { headers });
-          const listText = await listRes.text();
-          const listJson = listText ? JSON.parse(listText) : null;
-          const items = listJson?.data || listJson?.coordinators || [];
-          const mapped = items.map((c: any) => {
-            const staff = c.Staff || {};
-            const district = c.District || null;
-            const province =
-              c.Province_Name || (district && district.Province_Name) || "";
-            const fullName = [
-              staff.First_Name,
-              staff.Middle_Name,
-              staff.Last_Name,
-            ]
-              .filter(Boolean)
-              .join(" ");
-
-            return {
-              id: c.Coordinator_ID || staff.ID || "",
-              name: fullName,
-              email: staff.Email || "",
-              phone: staff.Phone_Number || "",
-              province,
-              district: (() => {
-                if (!district) return "";
-                const num = Number(district.District_Number);
-
-                if (!Number.isNaN(num)) {
-                  const j = num % 10,
-                    k = num % 100;
-
-                  if (j === 1 && k !== 11) return `${num}st District`;
-                  if (j === 2 && k !== 12) return `${num}nd District`;
-                  if (j === 3 && k !== 13) return `${num}rd District`;
-
-                  return `${num}th District`;
-                }
-
-                return district.District_Name || "";
-              })(),
-            };
-          });
-
-          setCoordinators(mapped);
-        } catch (e) {
-          // ignore refresh errors
-        } finally {
-          setLoading(false);
-        }
-      })();
-
+      await fetchCoordinators();
       setIsAddModalOpen(false);
     } catch (err: any) {
       alert(err?.message || "Failed to create coordinator");
@@ -284,7 +206,7 @@ export default function CoordinatorManagement() {
 
   const handleSelectAll = (checked: boolean) => {
     if (checked) {
-      setSelectedCoordinators(coordinators.map((c) => c.id));
+      setSelectedCoordinators(filteredCoordinators.map((c) => c.id));
     } else {
       setSelectedCoordinators([]);
     }
@@ -303,7 +225,6 @@ export default function CoordinatorManagement() {
   };
 
   const handleUpdateCoordinator = (id: string) => {
-    // fetch coordinator details and open edit modal
     (async () => {
       try {
         setLoading(true);
@@ -340,13 +261,11 @@ export default function CoordinatorManagement() {
     })();
   };
 
-  // Instead of immediate delete, show confirm modal that requires typing full name
   const handleDeleteCoordinator = (id: string, name?: string) => {
     if (!canManageCoordinators) {
       alert(
         "Only system administrators with StaffType=Admin can delete coordinators",
       );
-
       return;
     }
     setDeletingCoordinator({ id, name: name || "" });
@@ -378,7 +297,6 @@ export default function CoordinatorManagement() {
             `Failed to delete coordinator (status ${res.status})`,
         );
 
-      // refresh list
       await fetchCoordinators();
     } catch (err: any) {
       throw err;
@@ -387,11 +305,7 @@ export default function CoordinatorManagement() {
     }
   };
 
-  // Fetch coordinators from backend and normalize shape for the table
-  const fetchCoordinators = async (appliedFilters?: {
-    province?: string;
-    districtId?: string;
-  }) => {
+  const fetchCoordinators = async () => {
     const startTime = Date.now();
 
     const ordinalSuffix = (n: number | string) => {
@@ -408,21 +322,10 @@ export default function CoordinatorManagement() {
       return `${num}th`;
     };
 
-    const formatDistrict = (districtObj: any) => {
-      if (!districtObj) return "";
-      if (districtObj.District_Number)
-        return `${ordinalSuffix(districtObj.District_Number)} District`;
-      if (districtObj.District_Name) return districtObj.District_Name;
-
-      return "";
-    };
-
     setLoading(true);
     setError(null);
     try {
-      // Use NEXT_PUBLIC_API_URL from .env.local (inlined at build time)
       const base = (process.env.NEXT_PUBLIC_API_URL || "").replace(/\/$/, "");
-      // get logged-in user and token from local/session storage
       let rawUser = null;
 
       try {
@@ -437,7 +340,6 @@ export default function CoordinatorManagement() {
             sessionStorage.getItem("unite_token")
           : null;
 
-      // choose admin-managed endpoint only when the logged-in user is BOTH a system admin and has StaffType 'Admin'
       const adminId =
         user?.id ||
         user?.ID ||
@@ -466,14 +368,8 @@ export default function CoordinatorManagement() {
         adminId
       );
 
-      // attach filters as query params when present
       const params = new URLSearchParams();
-
       params.set("limit", "1000");
-      const af = appliedFilters || filters || {};
-
-      if (af.districtId) params.set("districtId", String(af.districtId));
-      if (af.province) params.set("province", String(af.province));
 
       const url = base
         ? useAdminEndpoint
@@ -488,14 +384,12 @@ export default function CoordinatorManagement() {
       if (token) headers["Authorization"] = `Bearer ${token}`;
       const res = await fetch(url, { headers });
 
-      // Read as text first to avoid JSON parse errors when the server returns HTML (like a 404 page)
       const text = await res.text();
       let json: any = null;
 
       try {
         json = text ? JSON.parse(text) : null;
       } catch (parseErr) {
-        // If response is not valid JSON, include a short snippet in the error to help debugging
         const snippet = text.slice(0, 300);
 
         throw new Error(
@@ -511,8 +405,6 @@ export default function CoordinatorManagement() {
 
       const items = json.data || json.coordinators || [];
 
-      // Fetch lookup maps for provinces and districts so we can resolve
-      // ObjectId strings returned by the API into human-readable names.
       let provincesMap: Record<string, string> = {};
       let districtsMap: Record<string, any> = {};
 
@@ -543,24 +435,18 @@ export default function CoordinatorManagement() {
           return acc;
         }, {});
       } catch (e) {
-        // If lookup fetch fails, we silently continue and fall back to legacy fields
+        // If lookup fetch fails, we silently continue
       }
 
       const mapped = items.map((c: any) => {
         const staff = c.Staff || {};
 
-        // Support multiple possible shapes for province/district coming
-        // from backend during migration: new normalized refs may appear
-        // as `province`/`district` (object or id), or legacy fields may
-        // exist as `Province_Name` and `District` / `District_Name`.
         const districtObj = c.district || c.District || null;
         const provinceObj = c.province || c.Province || null;
 
         const resolveProvinceName = () => {
-          // priority: populated province object -> legacy Province_Name -> district-contained province
           if (provinceObj) {
             if (typeof provinceObj === "string") {
-              // lookup by id
               return provincesMap[provinceObj] || provinceObj;
             }
 
@@ -606,12 +492,31 @@ export default function CoordinatorManagement() {
             );
           }
 
-          // legacy flattened fields
           if (c.District_Name) return c.District_Name;
           if (c.District_Number)
             return `${ordinalSuffix(c.District_Number)} District`;
 
           return "";
+        };
+
+        const resolveDistrictId = () => {
+          if (districtObj) {
+            if (typeof districtObj === "string") {
+              return districtObj;
+            }
+            return districtObj._id || districtObj.id || districtObj.District_ID || "";
+          }
+          return c.District_ID || "";
+        };
+
+        const resolveProvinceId = () => {
+          if (provinceObj) {
+            if (typeof provinceObj === "string") {
+              return provinceObj;
+            }
+            return provinceObj._id || provinceObj.id || "";
+          }
+          return c.province || "";
         };
 
         const fullName = [staff.First_Name, staff.Middle_Name, staff.Last_Name]
@@ -624,15 +529,16 @@ export default function CoordinatorManagement() {
           email: staff.Email || "",
           phone: staff.Phone_Number || "",
           province: resolveProvinceName(),
+          provinceId: resolveProvinceId(),
           district: resolveDistrictName(),
+          districtId: resolveDistrictId(),
         };
       });
 
       setCoordinators(mapped);
 
-      // Add artificial delay for fast fetches to show loading animation longer
       const elapsedTime = Date.now() - startTime;
-      const minLoadingTime = 1500; // 1.5 seconds
+      const minLoadingTime = 1500;
       if (elapsedTime < minLoadingTime) {
         await new Promise(resolve => setTimeout(resolve, minLoadingTime - elapsedTime));
       }
@@ -644,6 +550,27 @@ export default function CoordinatorManagement() {
     }
   };
 
+  // Apply filters whenever coordinators or filters change
+  useEffect(() => {
+    let filtered = [...coordinators];
+
+    // Apply province filter
+    if (filters.province) {
+      filtered = filtered.filter(
+        (c) => c.provinceId === filters.province || c.province === filters.province
+      );
+    }
+
+    // Apply district filter
+    if (filters.districtId) {
+      filtered = filtered.filter(
+        (c) => c.districtId === filters.districtId
+      );
+    }
+
+    setFilteredCoordinators(filtered);
+  }, [coordinators, filters]);
+
   useEffect(() => {
     const init = async () => {
       await fetchCoordinators();
@@ -651,6 +578,15 @@ export default function CoordinatorManagement() {
     };
     init();
   }, []);
+
+  const handleApplyFilters = (newFilters: { province?: string; districtId?: string }) => {
+    setFilters(newFilters);
+    setOpenQuickFilter(false);
+  };
+
+  const handleClearFilters = () => {
+    setFilters({});
+  };
 
   return (
     <div className="min-h-screen bg-white">
@@ -677,10 +613,45 @@ export default function CoordinatorManagement() {
         onSearch={handleSearch}
       />
 
+      {/* Active Filters Display */}
+{(filters.province || filters.districtId) && (
+  <div className="px-6 py-2 bg-blue-50 border-b border-blue-100">
+    <div className="flex items-center gap-2 text-sm">
+      <span className="font-medium text-blue-900">Active Filters:</span>
+
+      {filters.province && (
+        <span className="px-2 py-1 bg-blue-100 text-blue-800 rounded-md">
+          Province: {
+            coordinators.find(c => c.provinceId === filters.province)?.province 
+            || filters.province
+          }
+        </span>
+      )}
+
+      {filters.districtId && (
+        <span className="px-2 py-1 bg-blue-100 text-blue-800 rounded-md">
+          District: {
+            coordinators.find(c => c.districtId === filters.districtId)?.district 
+            || filters.districtId
+          }
+        </span>
+      )}
+
+      <button
+        onClick={handleClearFilters}
+        className="ml-2 text-blue-600 hover:text-blue-800 underline"
+      >
+        Clear all
+      </button>
+    </div>
+  </div>
+)}
+
+
       {/* Table Content */}
       <div className="px-6 py-4 bg-gray-50">
         <CoordinatorTable
-          coordinators={coordinators}
+          coordinators={filteredCoordinators}
           selectedCoordinators={selectedCoordinators}
           onActionClick={handleActionClick}
           onDeleteCoordinator={handleDeleteCoordinator}
@@ -688,7 +659,6 @@ export default function CoordinatorManagement() {
           onSelectCoordinator={handleSelectCoordinator}
           onUpdateCoordinator={handleUpdateCoordinator}
           searchQuery={searchQuery}
-          // Pass true only when user is both a system admin and has StaffType='Admin'
           isAdmin={canManageCoordinators}
           loading={loading}
         />
@@ -700,6 +670,8 @@ export default function CoordinatorManagement() {
         onClose={handleModalClose}
         onSubmit={handleModalSubmit}
       />
+      
+      {/* Delete Coordinator Modal */}
       <DeleteCoordinatorModal
         coordinatorId={deletingCoordinator?.id || null}
         coordinatorName={deletingCoordinator?.name || null}
@@ -714,6 +686,7 @@ export default function CoordinatorManagement() {
           setDeletingCoordinator(null);
         }}
       />
+      
       {/* Edit Coordinator Modal */}
       <EditCoordinatorModal
         coordinator={editingCoordinator}
@@ -729,13 +702,10 @@ export default function CoordinatorManagement() {
         }}
       />
 
+      {/* Quick Filter Modal */}
       <QuickFilterModal
         isOpen={openQuickFilter}
-        onApply={(f) => {
-          setFilters(f);
-          setOpenQuickFilter(false);
-          fetchCoordinators(f);
-        }}
+        onApply={handleApplyFilters}
         onClose={() => setOpenQuickFilter(false)}
       />
     </div>

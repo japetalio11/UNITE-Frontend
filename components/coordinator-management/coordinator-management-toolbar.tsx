@@ -1,15 +1,15 @@
 "use client";
 
-import { Search } from "lucide-react";
 import { Button } from "@heroui/button";
 import { Input } from "@heroui/input";
 import {
-  Download,
-  Filter,
-  SlidersHorizontal,
+  Magnifier as Search,
+  ArrowDownToSquare as Download,
+  Funnel as Filter,
+  Wrench as SlidersHorizontal,
   Plus,
   ChevronDown,
-} from "lucide-react";
+} from "@gravity-ui/icons";
 
 interface CoordinatorToolbarProps {
   onExport: () => void;
@@ -101,3 +101,5 @@ export default function CoordinatorToolbar({
     </div>
   );
 }
+
+//[FCM-002] Feature: Added coordinator management toolbar component

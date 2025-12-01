@@ -3,12 +3,12 @@
 import { useEffect, useState, useCallback } from "react";
 import {
   Calendar,
-  Settings,
-  UsersRound,
+  Gear,
+  Persons,
   Ticket,
   Bell,
-  ContactRound,
-} from "lucide-react";
+  PersonPlanetEarth,
+} from "@gravity-ui/icons";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 
@@ -16,6 +16,8 @@ import { getUserInfo } from "../utils/getUserInfo";
 import { fetchJsonWithAuth } from "../utils/fetchWithAuth";
 
 import { debug } from "@/utils/devLogger";
+import NotificationModal from "@/components/notification-modal";
+import SettingsModal from "@/components/settings-modal";
 
 interface SidebarProps {
   role?: string;
@@ -36,6 +38,9 @@ export default function Sidebar({
 }: SidebarProps) {
   const pathname = usePathname();
   const router = useRouter();
+
+  const [isNotificationOpen, setIsNotificationOpen] = useState(false);
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
 
   // Prefer the `userInfo` prop when provided (it may be passed from the layout/server)
   // so both server and client render the same initial HTML and avoid hydration mismatches.
@@ -476,13 +481,13 @@ export default function Sidebar({
     // Only show stakeholder-management to system admins OR coordinators.
     {
       href: "/dashboard/stakeholder-management",
-      icon: ContactRound,
+      icon: PersonPlanetEarth,
       key: "stakeholder",
       visible: showStakeholderLink,
     },
     {
       href: "/dashboard/coordinator-management",
-      icon: UsersRound,
+      icon: Persons,
       key: "coordinator",
       visible: showCoordinatorLink,
     },
@@ -490,8 +495,8 @@ export default function Sidebar({
 
   const bottomLinks = [
     { href: "/dashboard/notification", icon: Bell },
-    // direct settings link so the sidebar navigates to the settings page
-    { href: "/dashboard/settings", icon: Settings },
+    // direct Gear link so the sidebar navigates to the Gear page
+    { href: "/dashboard/settings", icon: Gear },
   ];
   const [unreadCount, setUnreadCount] = useState<number | null>(null);
 
@@ -569,7 +574,26 @@ export default function Sidebar({
     // optional: refresh count every 30s
     const id = setInterval(() => loadUnreadCount(), 30000);
 
-    return () => clearInterval(id);
+    const onRefresh = () => loadUnreadCount();
+    const onRead = (e: any) => {
+      if (e.detail && typeof e.detail.unread === "number") {
+        setUnreadCount(e.detail.unread);
+      } else {
+        loadUnreadCount();
+      }
+    };
+
+    window.addEventListener("unite:request-refresh-notifications", onRefresh);
+    window.addEventListener("unite:notifications-read", onRead);
+
+    return () => {
+      clearInterval(id);
+      window.removeEventListener(
+        "unite:request-refresh-notifications",
+        onRefresh,
+      );
+      window.removeEventListener("unite:notifications-read", onRead);
+    };
   }, [loadUnreadCount]);
 
   const renderButton = (
@@ -601,7 +625,7 @@ export default function Sidebar({
         href={href}
         tabIndex={visible ? 0 : -1}
       >
-        <Icon className="-translate-y-[0.5px]" size={16} strokeWidth={2} />
+        <Icon className="-translate-y-[0.5px] w-4 h-4" strokeWidth={2} />
       </Link>
     );
   };
@@ -624,7 +648,7 @@ export default function Sidebar({
   };
 
   return (
-    <div className="w-16 h-screen bg-white flex flex-col items-center justify-between py-6 border-r border-default-300">
+    <div className="hidden md:flex w-16 h-screen bg-white flex-col items-center justify-between py-6 border-r border-default-300">
       {/* Top section */}
       <div className="flex flex-col items-center space-y-4">
         {links.map(({ href, icon, key, visible }) =>
@@ -638,30 +662,25 @@ export default function Sidebar({
           // render unread badge for notifications link
           if (href === "/dashboard/notification") {
             // render custom button so we can show badge
-            const isActive = pathname === href;
+            const isActive = pathname === href || isNotificationOpen;
             const hiddenClasses = "";
 
             return (
-              <Link
+              <button
                 key={`bottom-${href}`}
-                aria-hidden={"false"}
-                className={`relative w-10 h-10 inline-flex items-center justify-center rounded-full transition-colors duration-200 ${
+                aria-label="Notifications"
+                className={`relative w-10 h-10 inline-flex items-center justify-center rounded-full transition-colors duration-200 cursor-pointer ${
                   isActive
                     ? "bg-danger text-white"
                     : "text-black border border-gray-300 hover:bg-gray-100"
                 }`}
-                href={href}
-                tabIndex={0}
+                onClick={() => setIsNotificationOpen(!isNotificationOpen)}
               >
                 {(() => {
                   const Icon = icon as any;
 
                   return (
-                    <Icon
-                      className="-translate-y-[0.5px]"
-                      size={16}
-                      strokeWidth={2}
-                    />
+                    <Icon className="-translate-y-[0.5px] w-4 h-4" strokeWidth={2} />
                   );
                 })()}
                 {(() => {
@@ -702,14 +721,47 @@ export default function Sidebar({
                     </span>
                   );
                 })()}
-              </Link>
+              </button>
+            );
+          }
+
+          if (href === "/dashboard/settings") {
+            const isActive = pathname === href || isSettingsOpen;
+
+            return (
+              <button
+                key={`bottom-${href}`}
+                aria-label="Settings"
+                className={`relative w-10 h-10 inline-flex items-center justify-center rounded-full transition-colors duration-200 cursor-pointer ${
+                  isActive
+                    ? "bg-danger text-white"
+                    : "text-black border border-gray-300 hover:bg-gray-100"
+                }`}
+                onClick={() => setIsSettingsOpen(true)}
+              >
+                {(() => {
+                  const Icon = icon as any;
+
+                    return (
+                      <Icon className="-translate-y-[0.5px] w-4 h-4" strokeWidth={2} />
+                    );
+                })()}
+              </button>
             );
           }
 
           return renderButton(href, icon, `bottom-${href}`);
         })}
-        {/* Settings popover removed to avoid duplicate settings icon; use /dashboard/settings page for settings and logout */}
+        {/* Gear popover removed to avoid duplicate Gear icon; use /dashboard/Gear page for Gear and logout */}
       </div>
+      <NotificationModal
+        isOpen={isNotificationOpen}
+        onClose={() => setIsNotificationOpen(false)}
+      />
+      <SettingsModal
+        isOpen={isSettingsOpen}
+        onClose={() => setIsSettingsOpen(false)}
+      />
     </div>
   );
 }

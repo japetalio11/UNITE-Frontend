@@ -3,7 +3,7 @@
 import React, { useState, useMemo, useEffect } from "react";
 import { Button } from "@heroui/button";
 import { Card, CardBody, CardHeader, CardFooter } from "@heroui/card";
-import { ChevronLeft, ChevronRight } from "lucide-react";
+import { ChevronLeft, ChevronRight } from "@gravity-ui/icons";
 import { Chip } from "@heroui/react";
 
 /**
@@ -209,7 +209,7 @@ const CalendarComponent: React.FC<CampaignCalendarProps> = ({
   };
 
   return (
-    <Card className="w-[480px] h-[calc(106vh-300px)] shadow-none border border-default-300">
+    <Card className="w-full md:w-[480px] h-auto md:h-[calc(106vh-300px)] shadow-none border border-default-300">
       <CardHeader className="flex justify-between items-center px-4 py-3">
         <h2 className="text-base font-medium">{monthYear}</h2>
         <div className="flex gap-2 items-center">

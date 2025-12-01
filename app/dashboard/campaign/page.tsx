@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useState, useEffect, useMemo } from "react";
+import { Ticket, Calendar as CalIcon, PersonPlanetEarth, Persons, Bell, Gear } from "@gravity-ui/icons";
 import { Modal } from "@heroui/modal";
 
 import { getUserInfo } from "../../../utils/getUserInfo";
@@ -14,6 +15,7 @@ import EventViewModal from "@/components/campaign/event-view-modal";
 import EditEventModal from "@/components/campaign/event-edit-modal";
 
 import { useLoading } from "@/components/loading-overlay";
+import { useLocations } from "../../../components/locations-provider";
 
 /**
  * Campaign Page Component
@@ -24,8 +26,11 @@ export default function CampaignPage() {
   // Defer initializing selectedDate to after hydration to avoid any
   // server/client time differences during initial render.
   const [selectedDate, setSelectedDate] = useState<Date | undefined>(undefined);
+  const [mobileNavOpen, setMobileNavOpen] = useState(false);
 
   const { setIsLoading } = useLoading();
+
+  const { locations, getDistrictsForProvince, getMunicipalitiesForDistrict, getAllProvinces, getAllMunicipalities } = useLocations();
 
   useEffect(() => {
     if (!selectedDate) setSelectedDate(new Date());
@@ -42,14 +47,20 @@ export default function CampaignPage() {
   const pageSize = 6; // show max 6 requests per page
   const [currentUserName, setCurrentUserName] = useState<string>("");
   const [currentUserEmail, setCurrentUserEmail] = useState<string>("");
-  const [quickFilterCategory, setQuickFilterCategory] = useState<
-    string | undefined
-  >(undefined);
+  const [quickFilter, setQuickFilter] = useState<{
+    category?: string;
+    startDate?: string;
+    endDate?: string;
+    province?: string;
+    district?: string;
+    municipality?: string;
+  } | null>(null);
   const [advancedFilter, setAdvancedFilter] = useState<{
     start?: string;
     end?: string;
     title?: string;
     requester?: string;
+    municipality?: string;
   }>({});
   const [errorModalOpen, setErrorModalOpen] = useState(false);
   const [errorModalMessage, setErrorModalMessage] = useState("");
@@ -68,6 +79,23 @@ export default function CampaignPage() {
   const [initialLoadDone, setInitialLoadDone] = useState(false);
 
   const API_URL = process.env.NEXT_PUBLIC_API_URL || "";
+
+  const [provinces, setProvinces] = useState<any[]>([]);
+  const [districts, setDistricts] = useState<any[]>([]);
+  const [municipalities, setMunicipalities] = useState<any[]>([]);
+
+  useEffect(() => {
+    setProvinces(getAllProvinces());
+  }, [getAllProvinces]);
+
+  useEffect(() => {
+    setMunicipalities(getAllMunicipalities());
+  }, [getAllMunicipalities]);
+
+  const fetchDistricts = async (provinceId: number | string) => {
+    const districtsForProvince = getDistrictsForProvince(provinceId.toString());
+    setDistricts(districtsForProvince);
+  };
 
   // Helper to parse a variety of date shapes (ISO string, ms timestamp,
   // and Mongo Extended JSON like { $date: { $numberLong: '...' } }).
@@ -137,7 +165,8 @@ export default function CampaignPage() {
       // Do not send date_from/date_to to server; advanced date filtering is
       // performed client-side against the event's Start_Date to avoid server
       // timezone/format mismatches.
-      if (quickFilterCategory) params.set("category", quickFilterCategory);
+      if (quickFilter?.category && quickFilter.category !== "all")
+        params.set("category", quickFilter.category);
 
       const url = `${API_URL}/api/requests/me?${params.toString()}`;
       // Request fresh data (avoid cached 304 responses) so client-side filters
@@ -197,7 +226,10 @@ export default function CampaignPage() {
 
   useEffect(() => {
     // Check if we should show loading overlay from login
-    if (typeof window !== "undefined" && sessionStorage.getItem("showLoadingOverlay") === "true") {
+    if (
+      typeof window !== "undefined" &&
+      sessionStorage.getItem("showLoadingOverlay") === "true"
+    ) {
       sessionStorage.removeItem("showLoadingOverlay");
       setIsLoading(true);
     }
@@ -279,7 +311,7 @@ export default function CampaignPage() {
   }, [
     searchQuery,
     selectedTab,
-    quickFilterCategory,
+    JSON.stringify(quickFilter),
     JSON.stringify(advancedFilter),
   ]);
 
@@ -297,7 +329,7 @@ export default function CampaignPage() {
     currentPage,
     selectedTab,
     searchQuery,
-    quickFilterCategory,
+    JSON.stringify(quickFilter),
     JSON.stringify(advancedFilter),
   ]);
 
@@ -423,14 +455,8 @@ export default function CampaignPage() {
   };
 
   // Handler for quick filter
-  const handleQuickFilter = (filter?: { category?: string | undefined }) => {
-    // called from toolbar dropdown with selected filters
-    if (filter && Object.prototype.hasOwnProperty.call(filter, "category")) {
-      setQuickFilterCategory(filter.category);
-    } else {
-      // clear
-      setQuickFilterCategory(undefined);
-    }
+  const handleQuickFilter = (filter: any) => {
+    setQuickFilter(filter);
   };
 
   // Handler for advanced filter (expects { start?, title?, requester? })
@@ -867,6 +893,31 @@ export default function CampaignPage() {
     return "Pending";
   };
 
+  const requestCounts = useMemo(() => {
+    const counts = {
+      approved: 0,
+      pending: 0,
+      rejected: 0,
+    };
+
+    requests.forEach((req) => {
+      const status = normalizeStatus(req);
+
+      if (status === "Approved") {
+        counts.approved++;
+      } else if (status === "Pending") {
+        counts.pending++;
+      } else if (status === "Rejected") {
+        counts.rejected++;
+      }
+    });
+
+    return {
+      all: requests.length,
+      ...counts,
+    };
+  }, [requests]);
+
   const filteredRequests = requests.filter((r: any) => {
     // Tab/status filter (using event.Status preferred)
     if (selectedTab && selectedTab !== "all") {
@@ -877,17 +928,67 @@ export default function CampaignPage() {
       if (selectedTab === "rejected" && s !== "Rejected") return false;
     }
 
-    // Quick filter: category (from toolbar)
-    if (quickFilterCategory) {
+    // Quick filter (from toolbar)
+    if (quickFilter) {
       const ev = r.event || {};
-      const rawCategory = ev.Category || ev.categoryType || ev.category || "";
-      const catKey = String(rawCategory || "").toLowerCase();
-      let categoryLabel = "Event";
 
-      if (catKey.includes("blood")) categoryLabel = "Blood Drive";
-      else if (catKey.includes("training")) categoryLabel = "Training";
-      else if (catKey.includes("advocacy")) categoryLabel = "Advocacy";
-      if (categoryLabel !== quickFilterCategory) return false;
+      // Category
+      if (quickFilter.category && quickFilter.category !== "all") {
+        const rawCategory = ev.Category || ev.categoryType || ev.category || "";
+        const catKey = String(rawCategory || "").toLowerCase();
+        let categoryLabel = "Event";
+
+        if (catKey.includes("blood")) categoryLabel = "Blood Drive";
+        else if (catKey.includes("training")) categoryLabel = "Training";
+        else if (catKey.includes("advocacy")) categoryLabel = "Advocacy";
+
+        if (categoryLabel !== quickFilter.category) return false;
+      }
+
+      // Date Range
+      if (quickFilter.startDate && quickFilter.endDate) {
+        const start = parseDate(quickFilter.startDate);
+        const end = parseDate(quickFilter.endDate);
+        const evStart = parseDate(ev.Start_Date || ev.date);
+
+        if (start && end && evStart) {
+          // Reset times for comparison (inclusive)
+          start.setHours(0, 0, 0, 0);
+          end.setHours(23, 59, 59, 999);
+          if (evStart < start || evStart > end) return false;
+        }
+      }
+
+      // Province
+      if (quickFilter.province) {
+        const pId = String(quickFilter.province);
+        // Check against various possible field names for province ID
+        const evPId = String(
+          ev.Province_ID || ev.province_id || ev.provinceId || "",
+        );
+
+        if (evPId && evPId !== pId) return false;
+      }
+
+      // District
+      if (quickFilter.district) {
+        const dId = String(quickFilter.district);
+        const evDId = String(
+          ev.District_ID || ev.district_id || ev.districtId || "",
+        );
+
+        if (evDId && evDId !== dId) return false;
+      }
+
+      // Municipality
+      if (quickFilter.municipality) {
+        const mId = String(quickFilter.municipality);
+        const evMId = String(
+          ev.Municipality_ID || ev.municipality_id || ev.municipalityId || "",
+        );
+
+        if (evMId && evMId !== mId) return false;
+      }
     }
 
     // Search query (global search box) - match title or requester or coordinator
@@ -1015,6 +1116,16 @@ export default function CampaignPage() {
           // ignore malformed date filter
         }
       }
+
+      // Municipality
+      if (advancedFilter.municipality) {
+        const mId = String(advancedFilter.municipality);
+        const evMId = String(
+          ev.Municipality_ID || ev.municipality_id || ev.municipalityId || "",
+        );
+
+        if (evMId && evMId !== mId) return false;
+      }
     }
 
     return true;
@@ -1043,8 +1154,26 @@ export default function CampaignPage() {
   return (
     <div className="min-h-screen bg-white">
       {/* Page Header */}
-      <div className="px-6 pt-6 pb-4">
-        <h1 className="text-2xl font-semibold text-gray-900">Campaign</h1>
+      <div className="px-6 pt-6 pb-4 flex items-center justify-between">
+        <h1 className="text-2xl font-semibold">Campaign</h1>
+        {/* Mobile hamburger at top-right next to Campaign title */}
+        <button
+          aria-label="Open navigation"
+          className="inline-flex items-center justify-center p-2 rounded-md md:hidden"
+          onClick={() => setMobileNavOpen(true)}
+        >
+          <svg
+            width="20"
+            height="20"
+            viewBox="0 0 20 20"
+            fill="none"
+            xmlns="http://www.w3.org/2000/svg"
+          >
+            <path d="M3 5H17" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+            <path d="M3 10H17" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+            <path d="M3 15H17" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+          </svg>
+        </button>
       </div>
 
       {/* Topbar Component */}
@@ -1057,32 +1186,43 @@ export default function CampaignPage() {
 
       {/* Campaign Toolbar Component */}
       <CampaignToolbar
+        counts={requestCounts}
+        currentPage={currentPage}
         defaultTab={selectedTab}
         onAdvancedFilter={handleAdvancedFilter}
         onCreateEvent={handleCreateEvent}
         onExport={handleExport}
+        onPageChange={setCurrentPage}
+        districts={districts}
+        provinces={provinces}
+        municipalities={municipalities}
+        onDistrictFetch={fetchDistricts}
         onQuickFilter={handleQuickFilter}
         onTabChange={handleTabChange}
+        totalPages={totalPages}
+        totalRequests={totalRequests}
       />
 
       {/* Main Content Area */}
-      <div className="px-6 py-6 flex gap-4">
-        {/* Calendar Section */}
-        <CampaignCalendar
-          events={approvedEvents}
-          selectedDate={selectedDate}
-          onDateSelect={handleDateSelect}
-        />
+      <div className="px-6 py-6 flex flex-col md:flex-row gap-4">
+        {/* Calendar Section (on mobile appears after cards) */}
+        <div className="md:order-1 order-2 md:w-[480px] w-full">
+          <CampaignCalendar
+            events={approvedEvents}
+            selectedDate={selectedDate}
+            onDateSelect={handleDateSelect}
+          />
+        </div>
 
-        {/* Event / Request Cards Section - Scrollable */}
-        <div className="flex-1 h-[calc(106vh-300px)] pr-2 relative">
+        {/* Event / Request Cards Section - Scrollable (prioritized on mobile) */}
+        <div className="flex-1 pr-2 relative md:order-2 order-1 h-auto md:h-[calc(106vh-300px)]">
           {/* Scrollable content is nested so overlay can be absolutely positioned and centered
               relative to this wrapper (keeps overlay fixed in the visible viewport while
               the inner content scrolls). */}
           <div className="overflow-y-auto h-full pb-12">
-            <div className="grid grid-cols-2 gap-4">
+            <div className="grid grid-cols-1 md:grid-cols-[repeat(auto-fill,minmax(300px,1fr))] gap-4">
               {requestsError && (
-                <div className="col-span-2 text-sm text-danger">
+                <div className="col-span-full text-sm text-danger">
                   {requestsError}
                 </div>
               )}
@@ -1259,50 +1399,7 @@ export default function CampaignPage() {
                 );
               })}
             </div>
-
             {/* Pagination controls (render after cards inside the scroll area) */}
-            {totalPages > 1 && (
-              <div className="col-span-2 mt-4">
-                <div className="bg-white/90 border-t border-default-200 py-3">
-                  <div className="max-w-full px-2 mx-auto flex items-center justify-between">
-                    <div className="text-sm text-default-600">
-                      Showing {(currentPage - 1) * pageSize + 1} -{" "}
-                      {Math.min(currentPage * pageSize, totalRequests)} of{" "}
-                      {totalRequests}
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <button
-                        className="px-3 py-1 border border-default-200 rounded shadow-sm hover:shadow focus:outline-none focus:ring-2 focus:ring-default-200 focus:ring-offset-0 disabled:opacity-50"
-                        disabled={currentPage === 1}
-                        onClick={() =>
-                          setCurrentPage((p) => Math.max(1, p - 1))
-                        }
-                      >
-                        Prev
-                      </button>
-                      {Array.from({ length: totalPages }).map((_, i) => (
-                        <button
-                          key={i}
-                          className={`px-3 py-1 border border-default-200 rounded shadow-sm hover:shadow focus:outline-none focus:ring-2 focus:ring-default-200 focus:ring-offset-0 ${currentPage === i + 1 ? "bg-default-800 text-white border-transparent" : "bg-white text-default-600"}`}
-                          onClick={() => setCurrentPage(i + 1)}
-                        >
-                          {i + 1}
-                        </button>
-                      ))}
-                      <button
-                        className="px-3 py-1 border border-default-200 rounded shadow-sm hover:shadow focus:outline-none focus:ring-2 focus:ring-default-200 focus:ring-offset-0 disabled:opacity-50"
-                        disabled={currentPage === totalPages}
-                        onClick={() =>
-                          setCurrentPage((p) => Math.min(totalPages, p + 1))
-                        }
-                      >
-                        Next
-                      </button>
-                    </div>
-                  </div>
-                </div>
-              </div>
-            )}
           </div>
 
           {/* Overlay area positioned relative to wrapper. This keeps spinner / no-results
@@ -1382,6 +1479,58 @@ export default function CampaignPage() {
           await fetchRequests();
         }}
       />
+
+      {/* Mobile Navigation Drawer (right-side) */}
+      {mobileNavOpen && (
+        <div className="fixed inset-0 z-50 flex">
+          <div className="ml-auto w-3/4 max-w-sm bg-white h-full shadow-lg p-4">
+            <div className="flex items-center justify-between mb-4">
+              <div>
+                <div className="text-sm font-semibold">{currentUserName || "User"}</div>
+                <div className="text-xs text-default-500">{currentUserEmail || ""}</div>
+              </div>
+              <button
+                aria-label="Close navigation"
+                onClick={() => setMobileNavOpen(false)}
+                className="p-2 text-xl"
+              >
+                ✕
+              </button>
+            </div>
+
+            <nav className="flex flex-col gap-3">
+              <a className="flex items-center gap-3 text-sm" href="/dashboard/campaign">
+                <Ticket className="w-5 h-5" />
+                Campaign
+              </a>
+              <a className="flex items-center gap-3 text-sm" href="/dashboard/calendar">
+                <CalIcon className="w-5 h-5" />
+                Calendar
+              </a>
+              <a className="flex items-center gap-3 text-sm" href="/dashboard/stakeholder-management">
+                <PersonPlanetEarth className="w-5 h-5" />
+                Stakeholders
+              </a>
+              <a className="flex items-center gap-3 text-sm" href="/dashboard/coordinator-management">
+                <Persons className="w-5 h-5" />
+                Coordinators
+              </a>
+              <a className="flex items-center gap-3 text-sm" href="/dashboard/notification">
+                <Bell className="w-5 h-5" />
+                Notifications
+              </a>
+              <a className="flex items-center gap-3 text-sm" href="/dashboard/settings">
+                <Gear className="w-5 h-5" />
+                Settings
+              </a>
+              <a className="flex items-center gap-3 text-sm text-danger" href="/auth/login">
+                Logout
+              </a>
+            </nav>
+          </div>
+          <div className="flex-1" onClick={() => setMobileNavOpen(false)} />
+        </div>
+      )}
     </div>
   );
 }

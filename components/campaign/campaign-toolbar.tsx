@@ -2,23 +2,20 @@
 
 import React, { useState } from "react";
 import { Input } from "@heroui/input";
-import { DatePicker } from "@heroui/date-picker";
+import { DatePicker, DateRangePicker } from "@heroui/date-picker";
 import { Tabs, Tab } from "@heroui/tabs";
 import { Button, ButtonGroup } from "@heroui/button";
+import { Pagination } from "@heroui/pagination";
 import {
   Dropdown,
   DropdownTrigger,
   DropdownMenu,
   DropdownItem,
-  DropdownSection,
 } from "@heroui/dropdown";
-import {
-  Download,
-  Filter,
-  SlidersHorizontal,
-  Ticket,
-  ChevronDown,
-} from "lucide-react";
+import { Popover, PopoverTrigger, PopoverContent } from "@heroui/popover";
+import { Select, SelectItem } from "@heroui/select";
+import { Avatar } from "@heroui/avatar";
+import { ArrowDownToSquare, Funnel, Ticket, ChevronDown, Wrench } from "@gravity-ui/icons";
 import {
   Modal,
   ModalContent,
@@ -26,6 +23,9 @@ import {
   ModalBody,
   ModalFooter,
 } from "@heroui/modal";
+import { RangeValue } from "@react-types/shared";
+import { DateValue } from "@internationalized/date";
+import { useLocations } from "../locations-provider";
 
 import {
   CreateTrainingEventModal,
@@ -35,11 +35,21 @@ import {
 
 interface CampaignToolbarProps {
   onExport?: () => void;
-  onQuickFilter?: (filter?: any) => void;
-  onAdvancedFilter?: (filter?: any) => void;
+  onQuickFilter?: (filter: any) => void;
+  onAdvancedFilter?: (filter: any) => void;
   onCreateEvent?: (eventType: string, eventData: any) => void;
   onTabChange?: (tab: string) => void;
   defaultTab?: string;
+  currentPage: number;
+  totalPages: number;
+  onPageChange: (page: number) => void;
+  // Location data
+  provinces?: any[];
+  districts?: any[];
+  municipalities?: any[];
+  onDistrictFetch?: (provinceId: string | number) => void;
+  counts?: { all: number; approved: number; pending: number; rejected: number };
+  totalRequests?: number;
 }
 
 export default function CampaignToolbar({
@@ -49,15 +59,29 @@ export default function CampaignToolbar({
   onCreateEvent,
   onTabChange,
   defaultTab = "all",
+  currentPage,
+  totalPages,
+  onPageChange,
+  provinces = [],
+  districts = [],
+  municipalities = [],
+  onDistrictFetch,
+  counts = { all: 0, approved: 0, pending: 0, rejected: 0 },
 }: CampaignToolbarProps) {
+  const { getMunicipalitiesForDistrict } = useLocations();
   const [selectedTab, setSelectedTab] = useState(defaultTab);
   const [selectedEventType, setSelectedEventType] = useState(
     new Set(["blood-drive"]),
   );
-  const [quickQuery, setQuickQuery] = useState("");
-  const [selectedQuick, setSelectedQuick] = useState<string | undefined>(
-    undefined,
+
+  // Quick Filter States
+  const [qEventType, setQEventType] = useState<string>("");
+  const [qDateRange, setQDateRange] = useState<RangeValue<DateValue> | null>(
+    null,
   );
+  const [qProvince, setQProvince] = useState<string>("");
+  const [qDistrict, setQDistrict] = useState<string>("");
+  const [qMunicipality, setQMunicipality] = useState<string>("");
 
   // Modal states
   const [isTrainingModalOpen, setIsTrainingModalOpen] = useState(false);
@@ -72,9 +96,13 @@ export default function CampaignToolbar({
   const [bloodDriveError, setBloodDriveError] = useState<string | null>(null);
   const [advocacyError, setAdvocacyError] = useState<string | null>(null);
   const [isAdvancedModalOpen, setIsAdvancedModalOpen] = useState(false);
-  const [advStart, setAdvStart] = useState<any>(null);
-  const [advTitle, setAdvTitle] = useState("");
-  const [advRequester, setAdvRequester] = useState("");
+  const [advCity, setAdvCity] = useState("");
+  const [advProvince, setAdvProvince] = useState("");
+  const [advDistrict, setAdvDistrict] = useState("");
+  const [advMunicipality, setAdvMunicipality] = useState("");
+  const [advOrganizer, setAdvOrganizer] = useState("");
+  const [advDateRange, setAdvDateRange] =
+    useState<RangeValue<DateValue> | null>(null);
 
   // Event type labels and descriptions
   const eventLabelsMap = {
@@ -182,107 +210,329 @@ export default function CampaignToolbar({
     }
   };
 
+  // Helper to apply quick filter
+  const applyQuickFilter = (
+    eventType: string,
+    dateRange: RangeValue<DateValue> | null,
+    province: string,
+    district: string,
+    municipality: string,
+  ) => {
+    const filter: any = {};
+
+    if (eventType && eventType !== "all") filter.category = eventType;
+    if (dateRange) {
+      filter.startDate = dateRange.start.toString();
+      filter.endDate = dateRange.end.toString();
+    }
+    if (province) filter.province = province;
+    if (district) filter.district = district;
+    if (municipality) filter.municipality = municipality;
+    onQuickFilter?.(filter);
+  };
+
   return (
     <>
       <div className="w-full bg-white">
-        <div className="flex items-center justify-between px-6 py-3">
-          {/* Left side - Status Tabs */}
-          <Tabs
-            radius="md"
-            selectedKey={selectedTab}
-            size="sm"
-            variant="solid"
-            onSelectionChange={handleTabChange}
-          >
-            <Tab key="all" title="All" />
-            <Tab key="approved" title="Approved" />
-            <Tab key="pending" title="Pending" />
-            <Tab key="rejected" title="Rejected" />
-          </Tabs>
+        <div className="flex flex-row flex-wrap items-center justify-between px-6 py-3 gap-3 overflow-visible pr-6 z-20">
+          {/* Left side: Tabs and Pagination group */}
+          <div className="flex-1 min-w-0 flex items-center gap-4">
+            {/* Status Tabs */}
+            <div className="min-w-0 overflow-x-auto">
+            <Tabs
+              classNames={{
+                tabList: "bg-gray-100 p-1",
+                cursor: "bg-white shadow-sm",
+                tabContent:
+                  "group-data-[selected=true]:text-gray-900 text-xs font-medium",
+              }}
+              radius="md"
+              selectedKey={selectedTab}
+              size="sm"
+              variant="solid"
+              onSelectionChange={handleTabChange}
+            >
+              <Tab
+                key="all"
+                title={counts.all > 0 ? `All (${counts.all})` : "All"}
+              />
+              <Tab
+                key="approved"
+                title={
+                  counts.approved > 0
+                    ? `Approved (${counts.approved})`
+                    : "Approved"
+                }
+              />
+              <Tab
+                key="pending"
+                title={
+                  counts.pending > 0 ? `Pending (${counts.pending})` : "Pending"
+                }
+              />
+              <Tab
+                key="rejected"
+                title={
+                  counts.rejected > 0
+                    ? `Rejected (${counts.rejected})`
+                    : "Rejected"
+                }
+              />
+            </Tabs>
+          </div>
+
+            {/* Pagination and its buttons */}
+            {totalPages > 1 && (
+              <div className="flex items-center gap-2">
+                <Pagination
+                  showControls
+                  page={currentPage}
+                  size="sm"
+                  total={totalPages}
+                  variant="light"
+                  onChange={onPageChange}
+                />
+              </div>
+            )}
+          </div>
 
           {/* Right side - Action Buttons */}
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 flex-shrink-0 overflow-visible pr-2">
             {/* Export Button */}
-            <Button
-              radius="md"
-              size="sm"
-              startContent={<Download className="w-4 h-4" />}
-              variant="faded"
-              onPress={onExport}
-            >
-              Export
-            </Button>
+            {/*<Button
+              <Button
+                className=" border-default-200 bg-white font-medium text-xs"
+                radius="md"
+                size="sm"
+                startContent={<ArrowDownToSquare className="w-4 h-4" />}
+                variant="bordered"
+                onPress={onExport}
+              >
+                Export
+              </Button>
+            </Button>*/}
 
-            {/* Quick Filter Dropdown */}
-            <Dropdown>
-              <DropdownTrigger>
+            {/* Quick Filter Popover (mimicking a custom dropdown) */}
+            <Popover offset={10} placement="bottom" showArrow>
+              <PopoverTrigger>
                 <Button
-                  endContent={<ChevronDown className="w-4 h-4" />}
+                  className=" border-default-200 bg-white font-medium text-xs hidden sm:inline-flex"
+                  endContent={<ChevronDown className="w-3 h-3" />}
                   radius="md"
                   size="sm"
-                  startContent={<Filter className="w-4 h-4" />}
-                  variant="faded"
+                  startContent={<Funnel className="w-4 h-4" />}
+                  variant="bordered"
                 >
                   Quick Filter
                 </Button>
-              </DropdownTrigger>
-              <DropdownMenu
-                disallowEmptySelection
-                selectedKeys={
-                  selectedQuick ? new Set([selectedQuick]) : new Set()
-                }
-                selectionMode="single"
-                onSelectionChange={(keys: any) => {
-                  try {
-                    const arr = Array.from(keys as Iterable<any>);
-                    const val = arr[0] as string | undefined;
+              </PopoverTrigger>
+              <PopoverContent className="w-[280px] p-4">
+                <div className="w-full space-y-4">
+                  <div className="text-xs">Quick Filter</div>
 
-                    setSelectedQuick(val);
-                    // apply immediately
-                    if (val === undefined || val === "") {
-                      onQuickFilter?.({ category: undefined });
-                    } else {
-                      onQuickFilter?.({ category: val });
-                    }
-                  } catch {
-                    setSelectedQuick(undefined);
-                    onQuickFilter?.({ category: undefined });
-                  }
-                }}
-              >
-                <DropdownSection title="Category">
-                  <DropdownItem key="">All</DropdownItem>
-                  <DropdownItem key="Blood Drive">Blood Drive</DropdownItem>
-                  <DropdownItem key="Training">Training</DropdownItem>
-                  <DropdownItem key="Advocacy">Advocacy</DropdownItem>
-                </DropdownSection>
-              </DropdownMenu>
-            </Dropdown>
+                  <div className="space-y-1">
+                    <label className="text-xs font-medium">Event Type</label>
+                    <Select
+                      className="h-9"
+                      placeholder="Pick an event type"
+                      selectedKeys={qEventType ? [qEventType] : []}
+                      size="sm"
+                      radius="md"
+                      variant="bordered"
+                      onChange={(e) => {
+                        const val = e.target.value;
+
+                        setQEventType(val);
+                        applyQuickFilter(val, qDateRange, qProvince, qDistrict, qMunicipality);
+                      }}
+                    >
+                      <SelectItem key="all">
+                        All
+                      </SelectItem>
+                      <SelectItem key="Blood Drive">
+                        Blood Drive
+                      </SelectItem>
+                      <SelectItem key="Training">
+                        Training
+                      </SelectItem>
+                      <SelectItem key="Advocacy">
+                        Advocacy
+                      </SelectItem>
+                    </Select>
+                  </div>
+
+                  <div className="space-y-1">
+                    <label className="text-xs font-medium">Date Range</label>
+                    <DateRangePicker
+                      aria-label="Date Range"
+                      className="w-full"
+                      classNames={{
+                        inputWrapper: "h-9",
+                      }}
+                      radius="md"
+                      size="sm"
+                      value={qDateRange}
+                      variant="bordered"
+                      onChange={(val) => {
+                        setQDateRange(val);
+                        applyQuickFilter(qEventType, val, qProvince, qDistrict, qMunicipality);
+                      }}
+                    />
+                  </div>
+
+                  <div className="space-y-1">
+                    <label className="text-xs font-medium">Province</label>
+                    <Select
+                      className="h-9"
+                      placeholder="Pick a province"
+                      selectedKeys={qProvince ? [qProvince] : []}
+                      size="sm"
+                      variant="bordered"
+                      radius="md"
+                      onChange={(e) => {
+                        const val = e.target.value;
+
+                        setQProvince(val);
+                        // Fetch districts
+                        onDistrictFetch?.(val);
+                        // Clear district
+                        setQDistrict("");
+                        setQMunicipality("");
+                        applyQuickFilter(qEventType, qDateRange, val, "", "");
+                      }}
+                    >
+                      {provinces.map((p) => (
+                        <SelectItem
+                          key={p._id}
+                        >
+                          {p.name}
+                        </SelectItem>
+                      ))}
+                    </Select>
+                  </div>
+
+                  <div className="space-y-1">
+                    <label className="text-xs font-medium ">District</label>
+                    <Select
+                      className="h-9"
+                      isDisabled={!qProvince}
+                      placeholder="Pick a district"
+                      selectedKeys={qDistrict ? [qDistrict] : []}
+                      size="sm"
+                      variant="bordered"
+                      radius="md"
+                      onChange={(e) => {
+                        const val = e.target.value;
+
+                        setQDistrict(val);
+                        setQMunicipality("");
+                        applyQuickFilter(
+                          qEventType,
+                          qDateRange,
+                          qProvince,
+                          val,
+                          "",
+                        );
+                      }}
+                    >
+                      {districts.map((d) => (
+                        <SelectItem
+                          key={d._id}
+                        >
+                          {d.name}
+                        </SelectItem>
+                      ))}
+                    </Select>
+                  </div>
+
+                  <div className="space-y-1">
+                    <label className="text-xs font-medium">Municipality</label>
+                    <Select
+                      className="h-9"
+                      isDisabled={!qDistrict}
+                      placeholder="Pick a municipality"
+                      selectedKeys={qMunicipality ? [qMunicipality] : []}
+                      size="sm"
+                      variant="bordered"
+                      radius="md"
+                      onChange={(e) => {
+                        const val = e.target.value;
+
+                        setQMunicipality(val);
+                        applyQuickFilter(qEventType, qDateRange, qProvince, qDistrict, val);
+                      }}
+                    >
+                      {getMunicipalitiesForDistrict(qDistrict).map((m) => (
+                        <SelectItem
+                          key={m._id}
+                        >
+                          {m.name}
+                        </SelectItem>
+                      ))}
+                    </Select>
+                  </div>
+                </div>
+              </PopoverContent>
+            </Popover>
 
             {/* Advanced Filter opens modal */}
             <Button
-              endContent={<ChevronDown className="w-4 h-4" />}
+              className=" border-default-200 bg-white font-medium text-xs hidden sm:inline-flex"
+              endContent={<ChevronDown className="w-3 h-3" />}
               radius="md"
               size="sm"
-              startContent={<SlidersHorizontal className="w-4 h-4" />}
-              variant="faded"
+              startContent={<Wrench className="w-4 h-4" />}
+              variant="bordered"
               onPress={() => setIsAdvancedModalOpen(true)}
             >
               Advanced Filter
             </Button>
 
+            {/* Removed separate mobile funnel icon to free space on small screens */}
+
             {/* Create Event Button Group with Dropdown Menu*/}
-            <ButtonGroup radius="md" size="sm" variant="solid">
+            <ButtonGroup radius="md" size="sm" variant="solid" className="flex-shrink-0 overflow-visible mr-3 relative z-50">
+              {/* Full button for desktop/tablet */}
               <Button
                 color="primary"
+                className="hidden sm:inline-flex items-center gap-2 rounded-l-md"
+                radius="md"
+                size="sm"
                 startContent={<Ticket className="w-4 h-4" />}
                 onPress={handleCreateEventClick}
+                style={{ borderTopLeftRadius: "0.75rem", borderBottomLeftRadius: "0.75rem", borderTopRightRadius: 0, borderBottomRightRadius: 0 }}
               >
                 {currentEventLabel}
               </Button>
+
+              {/* Compact icon-only button for small screens */}
+              <Button
+                color="primary"
+                isIconOnly
+                radius="md"
+                size="sm"
+                className="inline-flex sm:hidden h-8 w-8 items-center justify-center rounded-l-md"
+                onPress={handleCreateEventClick}
+                aria-label={`Create ${currentEventLabel}`}
+                style={{ borderTopLeftRadius: "0.75rem", borderBottomLeftRadius: "0.75rem", borderTopRightRadius: 0, borderBottomRightRadius: 0 }}
+              >
+                <svg
+                  className="w-4 h-4"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth={2}
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  aria-hidden="true"
+                >
+                  <line x1="12" y1="5" x2="12" y2="19" />
+                  <line x1="5" y1="12" x2="19" y2="12" />
+                </svg>
+              </Button>
               <Dropdown placement="bottom-end">
                 <DropdownTrigger>
-                  <Button isIconOnly color="primary">
+                  <Button isIconOnly color="primary" className="h-8 w-8 rounded-r-md" size="sm" style={{ borderTopRightRadius: "0.75rem", borderBottomRightRadius: "0.75rem", borderTopLeftRadius: 0, borderBottomLeftRadius: 0 }}>
                     <ChevronDown className="w-4 h-4" />
                   </Button>
                 </DropdownTrigger>
@@ -370,82 +620,187 @@ export default function CampaignToolbar({
         onClose={() => setIsAdvancedModalOpen(false)}
       >
         <ModalContent>
-          <ModalHeader>
-            <h3 className="text-lg font-semibold">Advanced Filter</h3>
+          <ModalHeader className="flex flex-col gap-1">
+            <div className="flex items-center gap-2">
+              <Avatar
+                className="bg-default-100 border-1 border-default"
+                icon={<Wrench />}
+              />
+            </div>
+            <h3 className="text-sm font-semibold py-2">Advanced Filter</h3>
+            <p className="text-xs font-normal">
+              Start providing your information by selecting your blood type. Add
+              details below to proceed.
+            </p>
           </ModalHeader>
           <ModalBody>
-            <div className="space-y-3">
-              <div className="flex items-center gap-3">
-                <label className="w-20 text-sm">Date</label>
-                <div className="w-full">
-                  <DatePicker
-                    hideTimeZone
-                    classNames={{
-                      base: "w-full",
-                      inputWrapper:
-                        "border-default-200 hover:border-default-400 h-10",
-                      input: "text-sm",
-                    }}
-                    granularity="day"
-                    value={advStart}
-                    variant="bordered"
-                    onChange={setAdvStart}
-                  />
+            <div className="space-y-12">
+              {/* Location Section */}
+              <div className="space-y-2">
+                <h4 className="text-xs font-semibold">Location</h4>
+
+                <div className="h-px w-full bg-default"></div>
+
+                {/* City and Province */}
+                <div className="flex gap-4">
+                  {/* City */}
+                  <div className="flex-1 space-y-1">
+                    <label className="text-xs font-medium">City</label>
+                    <Input
+                      classNames={{
+                        inputWrapper: "h-9 border-default-200",
+                      }}
+                      placeholder="Enter city"
+                      radius="md"
+                      size="sm"
+                      value={advCity}
+                      variant="bordered"
+                      onValueChange={setAdvCity}
+                    />
+                  </div>
+
+                  {/* Province */}
+                  <div className="flex-1 space-y-1">
+                    <label className="text-xs font-medium">Province</label>
+                    <Select
+                      className="h-9"
+                      classNames={{ trigger: "h-9 border-default-200" }}
+                      placeholder="Pick a province"
+                      radius="md"
+                      selectedKeys={advProvince ? [advProvince] : []}
+                      size="sm"
+                      variant="bordered"
+                      onChange={(e) => {
+                        const val = e.target.value;
+
+                        setAdvProvince(val);
+                        onDistrictFetch?.(val);
+                        setAdvDistrict("");
+                        setAdvMunicipality("");
+                      }}
+                    >
+                      {provinces.map((p) => (
+                        <SelectItem
+                          key={p._id}
+                        >
+                          {p.name}
+                        </SelectItem>
+                      ))}
+                    </Select>
+                  </div>
+                </div>
+
+                {/* District and Municipality */}
+                <div className="flex gap-4">
+                  {/* District */}
+                  <div className="flex-1">
+                    <label className="text-xs font-medium">District</label>
+                    <Select
+                      className="h-9"
+                      classNames={{ trigger: "h-9 border-default-200" }}
+                      isDisabled={!advProvince}
+                      placeholder="Pick a district"
+                      radius="md"
+                      selectedKeys={advDistrict ? [advDistrict] : []}
+                      size="sm"
+                      variant="bordered"
+                      onChange={(e) => {
+                        setAdvDistrict(e.target.value);
+                        setAdvMunicipality("");
+                      }}
+                    >
+                      {districts.map((d) => (
+                        <SelectItem
+                          key={d._id}
+                        >
+                          {d.name}
+                        </SelectItem>
+                      ))}
+                    </Select>
+                  </div>
+
+                  {/* Municipality */}
+                  <div className="flex-1">
+                    <label className="text-xs font-medium">Municipality</label>
+                    <Select
+                      className="h-9"
+                      classNames={{ trigger: "h-9 border-default-200" }}
+                      isDisabled={!advDistrict}
+                      placeholder="Pick a municipality"
+                      radius="md"
+                      selectedKeys={advMunicipality ? [advMunicipality] : []}
+                      size="sm"
+                      variant="bordered"
+                      onChange={(e) => setAdvMunicipality(e.target.value)}
+                    >
+                      {getMunicipalitiesForDistrict(advDistrict).map((m) => (
+                        <SelectItem
+                          key={m._id}
+                        >
+                          {m.name}
+                        </SelectItem>
+                      ))}
+                    </Select>
+                  </div>
                 </div>
               </div>
-              <div className="flex items-center gap-3">
-                <label className="w-20 text-sm">Title</label>
-                <Input
-                  placeholder="Event title"
-                  value={advTitle}
-                  onChange={(e) =>
-                    setAdvTitle((e.target as HTMLInputElement).value)
-                  }
-                />
-              </div>
-              <div className="flex items-center gap-3">
-                <label className="w-20 text-sm">Requester</label>
-                <Input
-                  placeholder="Requester name"
-                  value={advRequester}
-                  onChange={(e) =>
-                    setAdvRequester((e.target as HTMLInputElement).value)
-                  }
-                />
+
+              {/* Event Details Section */}
+              <div className="space-y-2">
+                <h4 className="text-xs font-semibold">Event Details</h4>
+
+                <div className="h-px w-full bg-default"></div>
+
+                {/* Organizer */}
+                <div className="w-full space-y-1">
+                  <label className="text-xs font-medium">
+                    Organizer <span className="text-danger">*</span>
+                  </label>
+                  <Input
+                    classNames={{
+                      inputWrapper: "h-9 border-default-200",
+                    }}
+                    placeholder="Enter location"
+                    radius="md"
+                    size="sm"
+                    value={advOrganizer}
+                    variant="bordered"
+                    onValueChange={setAdvOrganizer}
+                  />
+                </div>
+
+                {/* Date Range */}
+                <div className="w-full space-y-1">
+                  <label className="text-xs font-medium">Date Range</label>
+                  <DateRangePicker
+                    className="w-full"
+                    classNames={{
+                      inputWrapper: "h-9 border-default-200",
+                    }}
+                    radius="md"
+                    size="sm"
+                    value={advDateRange}
+                    variant="bordered"
+                    onChange={setAdvDateRange}
+                  />
+                </div>
               </div>
             </div>
           </ModalBody>
           <ModalFooter>
             <Button
-              variant="bordered"
-              onPress={() => {
-                setIsAdvancedModalOpen(false);
-              }}
-            >
-              Cancel
-            </Button>
-            <Button
-              className="ml-2"
-              variant="bordered"
-              onPress={() => {
-                setAdvStart(null);
-                setAdvTitle("");
-                setAdvRequester("");
-                onAdvancedFilter?.();
-              }}
-            >
-              Clear
-            </Button>
-            <Button
-              className="ml-2"
+              className="w-full"
               color="primary"
+              radius="md"
               onPress={() => {
                 onAdvancedFilter?.({
-                  start: advStart
-                    ? new Date(advStart).toISOString()
-                    : undefined,
-                  title: advTitle || undefined,
-                  requester: advRequester || undefined,
+                  city: advCity || undefined,
+                  province: advProvince || undefined,
+                  district: advDistrict || undefined,
+                  municipality: advMunicipality || undefined,
+                  requester: advOrganizer || undefined,
+                  startDate: advDateRange?.start?.toString(),
+                  endDate: advDateRange?.end?.toString(),
                 });
                 setIsAdvancedModalOpen(false);
               }}

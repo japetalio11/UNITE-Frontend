@@ -6,17 +6,16 @@ import {
   ChevronDown,
   ChevronLeft,
   ChevronRight,
-  Clock as ClockIcon,
+  Clock,
   Calendar,
-  CalendarDays,
-  MoreVertical,
+  EllipsisVertical as MoreVertical,
   Eye,
-  Edit,
-  Users,
-  Trash2,
+  Pencil as Edit,
+  Persons as Users,
+  TrashBin as Trash2,
   Check,
-  X,
-} from "lucide-react";
+  Xmark as X,
+} from "@gravity-ui/icons";
 import {
   Dropdown,
   DropdownTrigger,
@@ -24,6 +23,7 @@ import {
   DropdownSection,
   DropdownItem,
 } from "@heroui/dropdown";
+import { Tabs, Tab } from "@heroui/tabs";
 import { Button } from "@heroui/button";
 import {
   Modal,
@@ -40,10 +40,13 @@ import EditEventModal from "@/components/calendar/event-edit-modal";
 import EventManageStaffModal from "@/components/calendar/event-manage-staff-modal";
 import EventRescheduleModal from "@/components/calendar/event-reschedule-modal";
 import CalendarToolbar from "@/components/calendar/calendar-toolbar";
+import Topbar from "@/components/topbar";
 import { fetchWithAuth } from "@/utils/fetchWithAuth";
 import { getUserInfo } from "@/utils/getUserInfo";
+import { Menu } from "lucide-react";
 
-export default function CalendarPage() {
+export default function CalendarPage(props: any) {
+  const publicTitle: string | undefined = props?.publicTitle;
   const pathname = usePathname();
   // Allow create on dashboard calendar, but not on public calendar route
   const allowCreate = pathname === "/calendar" ? false : true;
@@ -156,6 +159,13 @@ export default function CalendarPage() {
   >({});
   const [staffLoading, setStaffLoading] = useState(false);
 
+  // Mobile state
+  const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
+
+  // Horizontal scroll refs for calendar views
+  const weekViewRef = useRef<HTMLDivElement>(null);
+  const monthViewRef = useRef<HTMLDivElement>(null);
+
   // Close create menu when clicking outside
   useEffect(() => {
     function handleClickOutside(event: MouseEvent) {
@@ -173,6 +183,7 @@ export default function CalendarPage() {
       document.removeEventListener("mousedown", handleClickOutside);
     };
   }, []);
+
   // API base (allow override via NEXT_PUBLIC_API_URL)
   const API_BASE =
     typeof process !== "undefined" &&
@@ -302,21 +313,23 @@ export default function CalendarPage() {
     if (!Array.isArray(eventIds) || eventIds.length === 0) return {};
 
     // Filter out ids already cached
-    const idsToFetch = eventIds.filter(id => id && !detailedEvents[id]);
+    const idsToFetch = eventIds.filter((id) => id && !detailedEvents[id]);
     if (idsToFetch.length === 0) return {};
 
     const token =
-      typeof window !== 'undefined' && (localStorage.getItem('unite_token') || sessionStorage.getItem('unite_token'));
+      typeof window !== "undefined" &&
+      (localStorage.getItem("unite_token") ||
+        sessionStorage.getItem("unite_token"));
 
-    const headers: any = { 'Content-Type': 'application/json' };
-    if (token) headers['Authorization'] = `Bearer ${token}`;
+    const headers: any = { "Content-Type": "application/json" };
+    if (token) headers["Authorization"] = `Bearer ${token}`;
 
     try {
       const res = await fetch(`${API_BASE}/api/events/batch`, {
-        method: 'POST',
+        method: "POST",
         headers,
         body: JSON.stringify({ ids: idsToFetch }),
-        credentials: token ? undefined : 'include'
+        credentials: token ? undefined : "include",
       });
 
       const body = await res.json();
@@ -329,7 +342,7 @@ export default function CalendarPage() {
         });
 
         if (Object.keys(result).length > 0) {
-          setDetailedEvents(prev => ({ ...prev, ...result }));
+          setDetailedEvents((prev) => ({ ...prev, ...result }));
         }
 
         return result;
@@ -359,14 +372,21 @@ export default function CalendarPage() {
         const monthEnd = new Date(year, monthIndex + 1, 0, 23, 59, 59, 999);
 
         const publicUrl = `${API_BASE}/api/public/events?date_from=${encodeURIComponent(monthStart.toISOString())}&date_to=${encodeURIComponent(monthEnd.toISOString())}`;
-        const publicResp = await fetch(publicUrl, { credentials: 'include' });
+        const publicResp = await fetch(publicUrl, { credentials: "include" });
         const publicJson = await publicResp.json();
 
-        if (mounted && publicResp.ok && publicJson && Array.isArray(publicJson.data)) {
+        if (
+          mounted &&
+          publicResp.ok &&
+          publicJson &&
+          Array.isArray(publicJson.data)
+        ) {
           const monthEvents = publicJson.data;
 
           // Batch fetch detailed info for all events in the month (single request)
-          const eventIds = monthEvents.map((e: any) => e.Event_ID || e.EventId).filter(Boolean);
+          const eventIds = monthEvents
+            .map((e: any) => e.Event_ID || e.EventId)
+            .filter(Boolean);
           if (eventIds.length > 0) {
             await fetchEventDetails(eventIds);
           }
@@ -398,7 +418,7 @@ export default function CalendarPage() {
           // First, collect all events that naturally fall within the current week dates
           Object.keys(normalizedMonth).forEach((dateKey) => {
             const events = normalizedMonth[dateKey] || [];
-            const eventDate = new Date(dateKey + 'T00:00:00');
+            const eventDate = new Date(dateKey + "T00:00:00");
 
             // Check if this date falls within the current week
             if (eventDate >= wkStart && eventDate <= wkEnd) {
@@ -423,7 +443,9 @@ export default function CalendarPage() {
           const elapsed = Date.now() - startTime;
           const minDuration = 1000; // shorten artificial minimum loading time
           if (elapsed < minDuration) {
-            await new Promise(resolve => setTimeout(resolve, minDuration - elapsed));
+            await new Promise((resolve) =>
+              setTimeout(resolve, minDuration - elapsed),
+            );
           }
           setEventsLoading(false);
         }
@@ -822,22 +844,76 @@ export default function CalendarPage() {
         "Coordinator";
 
       // District number — prefer detailed event coordinator district, then stakeholder district, then fall back to basic event data
-      const districtNumber =
+      const rawDistrictSource =
         detailedEvent?.coordinator?.district_number ??
         detailedEvent?.stakeholder?.district_number ??
         detailedEvent?.coordinator?.District_Number ??
-        (detailedEvent?.coordinator?.district?.name ? extractDistrictNumber(detailedEvent.coordinator.district.name) : null) ??
-        (detailedEvent?.stakeholder?.district?.name ? extractDistrictNumber(detailedEvent.stakeholder.district.name) : null) ??
+        (detailedEvent?.coordinator?.district?.name
+          ? extractDistrictNumber(detailedEvent.coordinator.district.name)
+          : null) ??
+        (detailedEvent?.stakeholder?.district?.name
+          ? extractDistrictNumber(detailedEvent.stakeholder.district.name)
+          : null) ??
         e.coordinator?.district_number ??
         e.stakeholder?.district_number ??
         e.district_number ??
         e.DistrictNumber ??
         e.district ??
-        (e.coordinator?.district?.name ? extractDistrictNumber(e.coordinator.district.name) : null) ??
-        (e.stakeholder?.district?.name ? extractDistrictNumber(e.stakeholder.district.name) : null);
-      const districtDisplay = districtNumber
-        ? `${makeOrdinal(districtNumber)} District`
-        : "District TBD";
+        (e.coordinator?.district?.name
+          ? extractDistrictNumber(e.coordinator.district.name)
+          : null) ??
+        (e.stakeholder?.district?.name
+          ? extractDistrictNumber(e.stakeholder.district.name)
+          : null);
+
+      // Compute a user-friendly district display. If `rawDistrictSource` is numeric, show ordinal style
+      // Otherwise it may be a slug like 'camarines-sur-district-v' — try to parse province and district from it.
+      let districtDisplay = "District TBD";
+      let provinceDisplay: string | null =
+        detailedEvent?.province ||
+        detailedEvent?.Province ||
+        detailedEvent?.coordinator?.province ||
+        detailedEvent?.stakeholder?.province ||
+        e.province ||
+        e.Province ||
+        null;
+
+      // If rawDistrictSource is a number (or parsable to number), use ordinal formatting
+      if (typeof rawDistrictSource === "number" || !isNaN(Number(rawDistrictSource))) {
+        const num = Number(rawDistrictSource);
+        districtDisplay = `${makeOrdinal(num)} District`;
+      } else if (typeof rawDistrictSource === "string") {
+        const s = rawDistrictSource as string;
+        // Try to parse slug like 'camarines-sur-district-v'
+        const slugMatch = s.match(/^(.*)-district-(.+)$/i);
+        if (slugMatch) {
+          const provSlug = slugMatch[1];
+          const distPart = slugMatch[2];
+
+          // Format province: replace hyphens with spaces and capitalize words
+          const prov = provSlug
+            .split("-")
+            .map((p) => (p.length ? p.charAt(0).toUpperCase() + p.slice(1) : p))
+            .join(" ");
+
+          provinceDisplay = provinceDisplay || prov;
+
+          // district: if numeric use ordinal, else show as Roman/letter uppercased
+          const distNum = Number(distPart);
+          const distLabel = !isNaN(distNum)
+            ? `${makeOrdinal(distNum)} District`
+            : `District ${distPart.toUpperCase()}`;
+
+          districtDisplay = distLabel;
+        } else {
+          // Fallback: if district looks like a plain name, use it
+          const simple = s.trim();
+          if (simple) districtDisplay = simple;
+        }
+      }
+
+      // Province display only (derived from detailed event or parsed slug)
+      // `provinceDisplay` already contains the parsed province name when available
 
       // Determine category (case-insensitive, check both Category and category)
       const rawCat = (e.Category ?? e.category ?? "").toString().toLowerCase();
@@ -851,13 +927,28 @@ export default function CalendarPage() {
       const getVal = (keys: string[]) => {
         // First check detailed event data
         for (const k of keys) {
-          if (detailedEvent && detailedEvent[k] !== undefined && detailedEvent[k] !== null) return detailedEvent[k];
-          if (detailedEvent?.categoryData && detailedEvent.categoryData[k] !== undefined && detailedEvent.categoryData[k] !== null) return detailedEvent.categoryData[k];
+          if (
+            detailedEvent &&
+            detailedEvent[k] !== undefined &&
+            detailedEvent[k] !== null
+          )
+            return detailedEvent[k];
+          if (
+            detailedEvent?.categoryData &&
+            detailedEvent.categoryData[k] !== undefined &&
+            detailedEvent.categoryData[k] !== null
+          )
+            return detailedEvent.categoryData[k];
         }
         // Then check basic event data
         for (const k of keys) {
           if (e[k] !== undefined && e[k] !== null) return e[k];
-          if (e.categoryData && e.categoryData[k] !== undefined && e.categoryData[k] !== null) return e.categoryData[k];
+          if (
+            e.categoryData &&
+            e.categoryData[k] !== undefined &&
+            e.categoryData[k] !== null
+          )
+            return e.categoryData[k];
         }
 
         return undefined;
@@ -911,6 +1002,7 @@ export default function CalendarPage() {
         time: startTime,
         type: typeKey,
         district: districtDisplay,
+        province: provinceDisplay,
         location:
           detailedEvent?.Location ||
           detailedEvent?.location ||
@@ -934,16 +1026,18 @@ export default function CalendarPage() {
       const publicUrl = `${API_BASE}/api/public/events`;
       const res = await fetch(publicUrl, { credentials: "include" });
       const body = await res.json();
-      
+
       if (res.ok && Array.isArray(body.data)) {
         // Filter for events in the current month (public events are already approved)
         const monthEvents = body.data.filter((event: any) => {
           // Check if event is in current month
           const startDate = parseServerDate(event.Start_Date);
           if (!startDate) return false;
-          return startDate.getFullYear() === year && startDate.getMonth() === month;
+          return (
+            startDate.getFullYear() === year && startDate.getMonth() === month
+          );
         });
-        
+
         const blob = new Blob([JSON.stringify(monthEvents, null, 2)], {
           type: "application/json",
         });
@@ -994,14 +1088,16 @@ export default function CalendarPage() {
       const monthEnd = new Date(year, monthIndex + 1, 0, 23, 59, 59, 999);
 
       const publicUrl = `${API_BASE}/api/public/events?date_from=${encodeURIComponent(monthStart.toISOString())}&date_to=${encodeURIComponent(monthEnd.toISOString())}`;
-      const publicResp = await fetch(publicUrl, { credentials: 'include' });
+      const publicResp = await fetch(publicUrl, { credentials: "include" });
       const publicJson = await publicResp.json();
 
       if (publicResp.ok && Array.isArray(publicJson.data)) {
         const monthEvents = publicJson.data;
 
         // Batch fetch detailed information for all events in the month
-        const eventIds = monthEvents.map((e: any) => e.Event_ID || e.EventId).filter(Boolean);
+        const eventIds = monthEvents
+          .map((e: any) => e.Event_ID || e.EventId)
+          .filter(Boolean);
         if (eventIds.length > 0) {
           await fetchEventDetails(eventIds);
         }
@@ -1031,7 +1127,7 @@ export default function CalendarPage() {
 
         Object.keys(normalizedMonth).forEach((dateKey) => {
           const events = normalizedMonth[dateKey] || [];
-          const eventDate = new Date(dateKey + 'T00:00:00');
+          const eventDate = new Date(dateKey + "T00:00:00");
 
           if (eventDate >= wkStart && eventDate <= wkEnd) {
             weekEvents[dateKey] = events;
@@ -1357,12 +1453,13 @@ export default function CalendarPage() {
   // Build dropdown menus matching campaign design
   const getMenuByStatus = (event: any) => {
     // Calendar events are from public API; assume Approved for action availability
-    const status = 'Approved';
+    const status = "Approved";
 
     // Unauthenticated users: view-only
     const token =
-      typeof window !== 'undefined'
-        ? localStorage.getItem('unite_token') || sessionStorage.getItem('unite_token')
+      typeof window !== "undefined"
+        ? localStorage.getItem("unite_token") ||
+          sessionStorage.getItem("unite_token")
         : null;
     const isAuthenticated = !!token;
 
@@ -1384,7 +1481,8 @@ export default function CalendarPage() {
     }
 
     // Parse current user
-    const rawUserStr = typeof window !== 'undefined' ? localStorage.getItem('unite_user') : null;
+    const rawUserStr =
+      typeof window !== "undefined" ? localStorage.getItem("unite_user") : null;
     let parsedUser: any = null;
     try {
       parsedUser = rawUserStr ? JSON.parse(rawUserStr) : null;
@@ -1394,16 +1492,33 @@ export default function CalendarPage() {
 
     const info = getUserInfo();
     const userIsAdmin = !!info.isAdmin;
-    const userCoordinatorId = parsedUser?.Coordinator_ID || parsedUser?.CoordinatorId || parsedUser?.CoordinatorId || parsedUser?.Coordinator || parsedUser?.Coordinator_ID;
-    const userStakeholderId = parsedUser?.Stakeholder_ID || parsedUser?.StakeholderId || parsedUser?.StakeholderId || parsedUser?.Stakeholder || parsedUser?.Stakeholder_ID;
+    const userCoordinatorId =
+      parsedUser?.Coordinator_ID ||
+      parsedUser?.CoordinatorId ||
+      parsedUser?.CoordinatorId ||
+      parsedUser?.Coordinator ||
+      parsedUser?.Coordinator_ID;
+    const userStakeholderId =
+      parsedUser?.Stakeholder_ID ||
+      parsedUser?.StakeholderId ||
+      parsedUser?.StakeholderId ||
+      parsedUser?.Stakeholder ||
+      parsedUser?.Stakeholder_ID;
 
     // Helpers to extract district/province objects from various shapes
     const extractDistrictProvince = (obj: any) => {
-      if (!obj) return { district_number: null, district_name: null, province: null };
+      if (!obj)
+        return { district_number: null, district_name: null, province: null };
       return {
-        district_number: obj.District_Number || obj.district_number || obj.District_ID || obj.DistrictId || null,
-        district_name: obj.District_Name || obj.district_name || obj.district || null,
-        province: obj.Province || obj.province || obj.Province_Name || null
+        district_number:
+          obj.District_Number ||
+          obj.district_number ||
+          obj.District_ID ||
+          obj.DistrictId ||
+          null,
+        district_name:
+          obj.District_Name || obj.district_name || obj.district || null,
+        province: obj.Province || obj.province || obj.Province_Name || null,
       };
     };
 
@@ -1412,33 +1527,83 @@ export default function CalendarPage() {
     const evId = evRaw.Event_ID || evRaw.EventId || evRaw.id;
     const detailed = evId ? detailedEvents[evId] : null;
 
-    const eventCoordinatorId = evRaw.MadeByCoordinatorID || evRaw.MadeByCoordinatorId || evRaw.coordinatorId || (detailed?.coordinator?.id || detailed?.coordinator?.Coordinator_ID);
-    const eventStakeholderId = evRaw.MadeByStakeholderID || evRaw.MadeByStakeholderId || evRaw.stakeholder || (detailed?.stakeholder?.id || detailed?.stakeholder?.Stakeholder_ID);
+    const eventCoordinatorId =
+      evRaw.MadeByCoordinatorID ||
+      evRaw.MadeByCoordinatorId ||
+      evRaw.coordinatorId ||
+      detailed?.coordinator?.id ||
+      detailed?.coordinator?.Coordinator_ID;
+    const eventStakeholderId =
+      evRaw.MadeByStakeholderID ||
+      evRaw.MadeByStakeholderId ||
+      evRaw.stakeholder ||
+      detailed?.stakeholder?.id ||
+      detailed?.stakeholder?.Stakeholder_ID;
 
-    const eventStakeholderMeta = detailed?.stakeholder || evRaw.stakeholder || evRaw.MadeByStakeholder || evRaw.MadeByStakeholderMeta || null;
+    const eventStakeholderMeta =
+      detailed?.stakeholder ||
+      evRaw.stakeholder ||
+      evRaw.MadeByStakeholder ||
+      evRaw.MadeByStakeholderMeta ||
+      null;
     const stakeholderDP = extractDistrictProvince(eventStakeholderMeta);
 
     const userDP = extractDistrictProvince(parsedUser || {});
 
-    const coordinatorOwns = userCoordinatorId && eventCoordinatorId && String(userCoordinatorId) === String(eventCoordinatorId);
-    const stakeholderOwns = userStakeholderId && eventStakeholderId && String(userStakeholderId) === String(eventStakeholderId);
+    const coordinatorOwns =
+      userCoordinatorId &&
+      eventCoordinatorId &&
+      String(userCoordinatorId) === String(eventCoordinatorId);
+    const stakeholderOwns =
+      userStakeholderId &&
+      eventStakeholderId &&
+      String(userStakeholderId) === String(eventStakeholderId);
 
     // Coordinator may act if they own the event OR the event is owned by a stakeholder in the same district/province
-    const sameDistrictForCoordinator = (userDP.district_number && stakeholderDP.district_number && String(userDP.district_number) === String(stakeholderDP.district_number)) || (userDP.district_name && stakeholderDP.district_name && String(userDP.district_name).toLowerCase() === String(stakeholderDP.district_name).toLowerCase());
-    const sameProvinceForCoordinator = userDP.province && stakeholderDP.province && String(userDP.province).toLowerCase() === String(stakeholderDP.province).toLowerCase();
+    const sameDistrictForCoordinator =
+      (userDP.district_number &&
+        stakeholderDP.district_number &&
+        String(userDP.district_number) ===
+          String(stakeholderDP.district_number)) ||
+      (userDP.district_name &&
+        stakeholderDP.district_name &&
+        String(userDP.district_name).toLowerCase() ===
+          String(stakeholderDP.district_name).toLowerCase());
+    const sameProvinceForCoordinator =
+      userDP.province &&
+      stakeholderDP.province &&
+      String(userDP.province).toLowerCase() ===
+        String(stakeholderDP.province).toLowerCase();
 
-    const userIsCoordinator = !!(userCoordinatorId || String(info.role || '').toLowerCase().includes('coordinator'));
+    const userIsCoordinator = !!(
+      userCoordinatorId ||
+      String(info.role || "")
+        .toLowerCase()
+        .includes("coordinator")
+    );
 
-    const coordinatorHasFull = userIsCoordinator && (coordinatorOwns || (eventStakeholderId && (sameDistrictForCoordinator || sameProvinceForCoordinator)) || stakeholderOwns);
+    const coordinatorHasFull =
+      userIsCoordinator &&
+      (coordinatorOwns ||
+        (eventStakeholderId &&
+          (sameDistrictForCoordinator || sameProvinceForCoordinator)) ||
+        stakeholderOwns);
 
-    const userIsStakeholder = !!(userStakeholderId || String(info.role || '').toLowerCase().includes('stakeholder'));
+    const userIsStakeholder = !!(
+      userStakeholderId ||
+      String(info.role || "")
+        .toLowerCase()
+        .includes("stakeholder")
+    );
     const stakeholderHasFull = userIsStakeholder && stakeholderOwns;
 
     // Build allowed action flags
     const allowView = true;
     const allowEdit = userIsAdmin || coordinatorHasFull || stakeholderHasFull;
-    const allowManageStaff = userIsAdmin || coordinatorHasFull || stakeholderHasFull;
-    const allowResched = userIsAdmin || coordinatorHasFull || stakeholderHasFull;
+    const allowManageStaff =
+      userIsAdmin || coordinatorHasFull || stakeholderHasFull;
+    const allowResched =
+      userIsAdmin || coordinatorHasFull || stakeholderHasFull;
     const allowCancel = userIsAdmin || coordinatorHasFull || stakeholderHasFull;
 
     const approvedMenu = (
@@ -1478,7 +1643,7 @@ export default function CalendarPage() {
             <DropdownItem
               key="reschedule"
               description="Reschedule this event"
-              startContent={<ClockIcon />}
+              startContent={<Clock className="w-3 h-3 text-gray-500" />}
               onPress={() => setRescheduleOpenId(event.raw.Event_ID)}
             >
               Reschedule Event
@@ -1519,7 +1684,7 @@ export default function CalendarPage() {
       </DropdownMenu>
     );
 
-    if (status === 'Approved') return approvedMenu;
+    if (status === "Approved") return approvedMenu;
     return defaultMenu;
   };
 
@@ -1629,69 +1794,41 @@ export default function CalendarPage() {
 
   return (
     <div className="flex-1 flex flex-col overflow-visible bg-white">
-      {/* Header */}
-      <div className="px-8 py-6">
-        <h1 className="text-2xl font-semibold text-gray-900 mb-6">Calendar</h1>
+      {/* Header: match campaign spacing */}
+      <div className="px-6 pt-6 pb-4">
+        <h1 className="text-2xl font-semibold">{publicTitle ?? "Calendar"}</h1>
+      </div>
 
-        {/* User Profile Section (use HeroUI User like campaign Topbar) */}
-        <div className="flex items-center gap-3 mb-6">
-          <User
-            avatarProps={{
-              src: "",
-              size: "md",
-              className: "bg-orange-400 text-white",
-            }}
-            classNames={{
-              base: "cursor-pointer",
-              name: "font-semibold text-gray-900 text-sm",
-              description: "text-gray-500 text-xs",
-            }}
-            description={currentUserEmail}
-            name={currentUserName}
-            onClick={() => {}}
-          />
-          <button
-            aria-label="User menu"
-            className="text-gray-400 hover:text-gray-600 transition-colors"
-            onClick={() => {}}
-          >
-            <ChevronDown className="w-4 h-4 text-gray-400" />
-          </button>
-        </div>
+      <Topbar
+        userEmail={currentUserEmail}
+        userName={currentUserName}
+        onUserClick={() => {}}
+      />
 
-        {/* Toolbar */}
-        <div className="flex items-center justify-between mb-6">
+      {/* Toolbar area with campaign padding */}
+      <div className="px-6 py-6">
+        <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4 mb-6">
           {/* Left side - View Toggle and Date Navigation */}
-          <div className="flex items-center gap-3">
-            {/* View Toggle */}
-            <div className="flex items-center bg-white border border-gray-300 rounded-lg overflow-hidden">
-              <button
-                className={`px-4 py-2 text-sm font-medium flex items-center gap-2 transition-colors ${
-                  activeView === "week"
-                    ? "bg-gray-100 text-gray-900"
-                    : "text-gray-600 hover:text-gray-900"
-                }`}
-                onClick={() => handleViewChange("week")}
-              >
-                <CalendarDays className="w-4 h-4" />
-                Week
-              </button>
-              <div className="w-px h-6 bg-gray-300" />
-              <button
-                className={`px-4 py-2 text-sm font-medium flex items-center gap-2 transition-colors ${
-                  activeView === "month"
-                    ? "bg-gray-100 text-gray-900"
-                    : "text-gray-600 hover:text-gray-900"
-                }`}
-                onClick={() => handleViewChange("month")}
-              >
-                <Calendar className="w-4 h-4" />
-                Month
-              </button>
-            </div>
+          <div className="flex flex-col sm:flex-row items-start sm:items-center gap-3">
+            {/* View Toggle: use campaign Tabs for consistent sizing */}
+            <Tabs
+              classNames={{
+                tabList: "bg-gray-100 p-1",
+                cursor: "bg-white shadow-sm",
+                tabContent: "group-data-[selected=true]:text-gray-900 text-xs font-medium",
+              }}
+              radius="md"
+              selectedKey={activeView}
+              size="sm"
+              variant="solid"
+              onSelectionChange={(key: React.Key) => handleViewChange(String(key))}
+            >
+              <Tab key="week" title="Week" />
+              <Tab key="month" title="Month" />
+            </Tabs>
 
             {/* Date Navigation */}
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-2 w-full sm:w-auto justify-between sm:justify-start">
               <button
                 className="p-2 hover:bg-gray-100 rounded-lg transition-colors"
                 onClick={() =>
@@ -1702,7 +1839,7 @@ export default function CalendarPage() {
               >
                 <ChevronLeft className="w-5 h-5 text-gray-600" />
               </button>
-              <span className="text-sm font-medium text-gray-900 min-w-[200px] text-center">
+              <span className="text-sm font-medium text-gray-900 min-w-[160px] sm:min-w-[200px] text-center px-2">
                 {activeView === "week"
                   ? formatWeekRange(currentDate)
                   : formatMonthYear(currentDate)}
@@ -1721,7 +1858,7 @@ export default function CalendarPage() {
           </div>
 
           {/* Right side - Action Buttons (calendar toolbar copied from campaign) */}
-          <div>
+          <div className={`${isMobileMenuOpen ? 'block' : 'hidden'} sm:block`}>
             <CalendarToolbar
               showCreate={allowCreate}
               onAdvancedFilter={handleAdvancedFilter}
@@ -1732,23 +1869,24 @@ export default function CalendarPage() {
           </div>
         </div>
 
-        {/* Views Container */}
-        <div className="relative min-h-[700px]">
+        {/* Views Container - Now horizontally scrollable */}
+        <div className="relative min-h-[500px] sm:min-h-[700px] overflow-x-auto hide-scrollbar">
           {/* Week View */}
           <div
-            className={`transition-all duration-500 ease-in-out ${getViewTransitionStyle("week")}`}
+            ref={weekViewRef}
+            className={`transition-all duration-500 ease-in-out w-full ${getViewTransitionStyle("week")}`}
           >
-            <div>
+            <div className="w-full overflow-x-auto">
               {/* Days of Week Header */}
-              <div className="grid grid-cols-7 gap-4 mb-4">
+              <div className="grid grid-cols-7 gap-1 sm:gap-4 mb-4 w-full min-w-[600px]">
                 {days.map((day, index) => (
                   <div key={`day-${index}`} className="text-center">
-                    <div className="text-sm font-medium text-gray-500 mb-2">
+                    <div className="text-xs sm:text-sm font-medium text-gray-500 mb-1 sm:mb-2">
                       {day.day}
                     </div>
                     <div className="flex justify-center">
                       <div
-                        className={`w-10 h-10 rounded-full flex items-center justify-center text-lg font-semibold ${
+                        className={`w-8 h-8 sm:w-10 sm:h-10 rounded-full flex items-center justify-center text-sm sm:text-lg font-semibold ${
                           day.isToday
                             ? "bg-red-500 text-white"
                             : "text-gray-900"
@@ -1762,7 +1900,7 @@ export default function CalendarPage() {
               </div>
 
               {/* Event Cards */}
-              <div className="grid grid-cols-7 gap-4 mt-6">
+              <div className="grid grid-cols-7 gap-2 sm:gap-4 mt-4 sm:mt-6 w-full min-w-[600px]">
                 {days.map((day, index) => {
                   const dayEvents = getEventsForDate(day.fullDate);
 
@@ -1810,15 +1948,15 @@ export default function CalendarPage() {
                           No events
                         </div>
                       ) : (
-                        <div className="space-y-3">
+                        <div className="space-y-2 sm:space-y-3">
                           {dayEvents.map((event, eventIndex) => (
                             <div
                               key={eventIndex}
-                              className="bg-white rounded-lg border border-gray-200 p-3 hover:shadow-md transition-shadow"
+                              className="bg-white rounded-lg border border-gray-200 p-2 sm:p-3 hover:shadow-md transition-shadow"
                             >
                               {/* Three-dot menu */}
-                              <div className="flex justify-between items-start mb-2">
-                                <h4 className="font-semibold text-gray-900 text-sm leading-tight pr-2">
+                              <div className="flex justify-between items-start mb-1">
+                                <h4 className="font-semibold text-gray-900 text-xs leading-tight pr-2 line-clamp-2 flex-1">
                                   {event.title}
                                 </h4>
                                 <Dropdown>
@@ -1826,10 +1964,11 @@ export default function CalendarPage() {
                                     <Button
                                       isIconOnly
                                       aria-label="Event actions"
-                                      className="hover:text-default-800"
+                                      className="hover:text-default-800 min-w-6 h-6 flex-shrink-0"
+                                      size="sm"
                                       variant="light"
                                     >
-                                      <MoreVertical className="w-5 h-5" />
+                                      <MoreVertical className="w-3 h-3 sm:w-4 sm:h-4" />
                                     </Button>
                                   </DropdownTrigger>
                                   {getMenuByStatus(event)}
@@ -1837,20 +1976,20 @@ export default function CalendarPage() {
                               </div>
 
                               {/* Profile */}
-                              <div className="flex items-center gap-2 mb-3">
+                              <div className="flex items-center gap-1 mb-2">
                                 <div
-                                  className="h-6 w-6 rounded-full flex-shrink-0 flex items-center justify-center text-xs font-semibold"
+                                  className="h-4 w-4 sm:h-6 sm:w-6 rounded-full flex-shrink-0 flex items-center justify-center"
                                   style={{
                                     backgroundColor: getProfileColor(
                                       event.coordinatorName,
                                     ),
                                   }}
                                 >
-                                  <span className="text-white">
+                                  <span className="text-white text-[10px] sm:text-xs">
                                     {getProfileInitial(event.coordinatorName)}
                                   </span>
                                 </div>
-                                <span className="text-xs text-gray-600">
+                                <span className="text-[10px] sm:text-xs text-gray-600 truncate">
                                   {event.coordinatorName}
                                 </span>
                               </div>
@@ -1858,30 +1997,40 @@ export default function CalendarPage() {
                               {/* Time and Type Badges */}
                               <div className="flex gap-2 mb-3">
                                 <div className="bg-gray-100 rounded px-2 py-1 flex items-center gap-1">
-                                  <ClockIcon className="w-3 h-3 text-gray-500" />
+                                  <Clock className="w-3 h-3 text-gray-500" />
                                   <span className="text-xs text-gray-700">
                                     {event.time}
                                   </span>
                                 </div>
-                                <div className="bg-gray-100 rounded px-2 py-1">
+                                <div className="bg-gray-100 rounded px-1.5 sm:px-2 py-0.5 sm:py-1">
                                   <span className="text-xs text-gray-700">
                                     {eventLabelsMap[event.type as EventType]}
                                   </span>
                                 </div>
                               </div>
 
-                              {/* District */}
-                              <div className="mb-2">
+                              {/* Province (new) */}
+                              <div className="mb-1">
+                                <div className="text-xs font-medium text-gray-700 mb-0.5">
+                                  Province
+                                </div>
+                                <div className="text-xs text-gray-600 line-clamp-1">
+                                  {event.province || "-"}
+                                </div>
+                              </div>
+
+                              {/* District (legacy) */}
+                              <div className="mb-1">
                                 <div className="text-xs font-medium text-gray-700 mb-0.5">
                                   District
                                 </div>
-                                <div className="text-xs text-gray-600">
+                                <div className="text-xs text-gray-600 line-clamp-1">
                                   {event.district}
                                 </div>
                               </div>
 
                               {/* Location */}
-                              <div className="mb-3">
+                              <div className="mb-2">
                                 <div className="text-xs font-medium text-gray-700 mb-0.5">
                                   Location
                                 </div>
@@ -1891,12 +2040,12 @@ export default function CalendarPage() {
                               </div>
 
                               {/* Count */}
-                              <div className="border-t border-gray-200 pt-2">
+                              <div className="border-t border-gray-200 pt-1 sm:pt-2">
                                 <div className="flex justify-between items-center">
                                   <span className="text-xs text-gray-600">
                                     {event.countType}
                                   </span>
-                                  <span className="text-lg font-bold text-red-500">
+                                  <span className="text-sm sm:text-lg font-bold text-red-500">
                                     {event.count}
                                   </span>
                                 </div>
@@ -1914,34 +2063,35 @@ export default function CalendarPage() {
 
           {/* Month View */}
           <div
-            className={`transition-all duration-500 ease-in-out ${getViewTransitionStyle("month")}`}
+            ref={monthViewRef}
+            className={`transition-all duration-500 ease-in-out w-full ${getViewTransitionStyle("month")}`}
           >
-            <div>
+            <div className="w-full overflow-x-auto">
               {/* Days of Week Header */}
-              <div className="grid grid-cols-7 gap-4 mb-4">
+              <div className="grid grid-cols-7 gap-1 sm:gap-2 mb-2 sm:mb-4 w-full min-w-[600px]">
                 {["Su", "Mo", "Tu", "We", "Th", "Fr", "Sa"].map((day) => (
                   <div key={day} className="text-center">
-                    <div className="text-sm font-medium text-gray-500 mb-2">
+                    <div className="text-xs sm:text-sm font-medium text-gray-500 mb-1 sm:mb-2">
                       {day}
                     </div>
-                    <div className="h-10" />
+                    <div className="h-6 sm:h-10" />
                   </div>
                 ))}
               </div>
 
               {/* Calendar Grid */}
-              <div className="bg-gray-50 rounded-lg border border-gray-200 overflow-hidden">
+              <div className="bg-gray-50 rounded-lg border border-gray-200 overflow-hidden w-full min-w-[600px]">
                 <div className="grid grid-cols-7 gap-px bg-gray-200">
                   {generateMonthDays(currentDate).map((day, index) => (
                     <div
                       key={index}
-                      className={`min-h-[100px] bg-white p-2 ${
+                      className={`min-h-[80px] sm:min-h-[100px] bg-white p-1 sm:p-2 ${
                         !day.isCurrentMonth && "bg-gray-50 text-gray-400"
                       }`}
                     >
-                      <div className="flex justify-center mb-2">
+                      <div className="flex justify-center mb-1 sm:mb-2">
                         <div
-                          className={`w-7 h-7 rounded-full flex items-center justify-center text-sm font-semibold ${
+                          className={`w-6 h-6 sm:w-7 sm:h-7 rounded-full flex items-center justify-center text-xs sm:text-sm font-semibold ${
                             day.isToday
                               ? "bg-red-500 text-white"
                               : day.isCurrentMonth
@@ -1956,13 +2106,15 @@ export default function CalendarPage() {
                       {eventsLoading ? (
                         // Skeleton loading for month events
                         <div className="space-y-1">
-                          {[...Array(Math.floor(Math.random() * 3) + 1)].map((_, i) => (
-                            <div
-                              key={i}
-                              className="h-6 bg-gray-200 rounded animate-pulse"
-                              style={{ width: `${Math.random() * 40 + 60}%` }}
-                            ></div>
-                          ))}
+                          {[...Array(Math.floor(Math.random() * 3) + 1)].map(
+                            (_, i) => (
+                              <div
+                                key={i}
+                                className="h-6 bg-gray-200 rounded animate-pulse"
+                                style={{ width: `${Math.random() * 40 + 60}%` }}
+                              ></div>
+                            ),
+                          )}
                         </div>
                       ) : (
                         <div className="space-y-1">
@@ -2006,7 +2158,8 @@ export default function CalendarPage() {
           </div>
         </div>
       </div>
-      {/* Event View & Edit Modals (reuse campaign components) */}
+
+      {/* Rest of the modals remain the same */}
       <EventViewModal
         isOpen={viewModalOpen}
         request={viewRequest}
@@ -2227,6 +2380,16 @@ export default function CalendarPage() {
           </ModalFooter>
         </ModalContent>
       </Modal>
+
+      <style jsx>{`
+        .hide-scrollbar::-webkit-scrollbar {
+          display: none;
+        }
+        .hide-scrollbar {
+          -ms-overflow-style: none;
+          scrollbar-width: none;
+        }
+      `}</style>
     </div>
   );
 }

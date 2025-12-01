@@ -3,7 +3,6 @@ import React, { useCallback, useMemo, useState } from "react";
 import { DatePicker } from "@heroui/date-picker";
 import { Card, CardHeader, CardBody, CardFooter } from "@heroui/card";
 import { Chip } from "@heroui/chip";
-import { Avatar } from "@heroui/avatar";
 import {
   Dropdown,
   DropdownTrigger,
@@ -19,22 +18,23 @@ import {
   ModalBody,
   ModalFooter,
 } from "@heroui/modal";
+import { Avatar } from "@heroui/avatar";
 import {
-  MoreVertical,
+  EllipsisVertical,
   Eye,
-  Edit,
+  Pencil,
   Clock,
-  Trash2,
+  TrashBin,
   Check,
-  X,
-  Users,
+  Xmark,
+  Persons,
   FileText,
-} from "lucide-react";
+} from "@gravity-ui/icons";
 
 import ManageStaffModal from "../manage-staff-modal";
-import EventActionMenu from "./EventActionMenu";
-import RescheduleModal from "./modals/RescheduleModal";
-import ConfirmModal from "./modals/ConfirmModal";
+import EventActionMenu from "./event-action-menu";
+import RescheduleModal from "./reschedule-modal";
+import ConfirmModal from "./confirm-modal";
 import {
   performRequestAction as svcPerformRequestAction,
   performStakeholderConfirm as svcPerformStakeholderConfirm,
@@ -42,6 +42,8 @@ import {
   fetchRequestDetails as svcFetchRequestDetails,
   deleteRequest as svcDeleteRequest,
 } from "./services/requestsService";
+
+import { useLocations } from "../locations-provider";
 
 import { fetchWithAuth } from "@/utils/fetchWithAuth";
 
@@ -118,79 +120,38 @@ const EventCard: React.FC<EventCardProps> = ({
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [successModal, setSuccessModal] = useState(false);
   const [fullRequest, setFullRequest] = useState<any>(null);
-  const [resolvedGeo, setResolvedGeo] = useState<any>({});
 
-  // Try to resolve district/province names for the card itself (best-effort)
-  React.useEffect(() => {
-    (async () => {
-      try {
-        const pickId =
-          (request && (request as any).district) || district || null;
+  const { getDistrictName, getProvinceName, locations } = useLocations();
 
-        const isObjectId = (s: any) => typeof s === "string" && /^[a-f0-9]{24}$/i.test(s);
+  // Resolve district and province names using the centralized provider
+  const resolvedGeo = useMemo(() => {
+    const pickId =
+      (request && (request as any).district) || district || null;
 
-        if (!pickId) return;
+    if (!pickId) return { district: null, province: null };
 
-        // If it's already a friendly name (not an ObjectId), use it
-        if (!isObjectId(pickId)) {
-          setResolvedGeo((p: any) => ({ ...(p || {}), district: pickId }));
-          return;
-        }
+    // If it's already a friendly name (not an ObjectId), use it
+    const isObjectId = (s: any) =>
+      typeof s === "string" && /^[a-f0-9]{24}$/i.test(s);
 
-        const token =
-          typeof window !== "undefined"
-            ? localStorage.getItem("unite_token") || sessionStorage.getItem("unite_token")
-            : null;
-        const headers: any = { "Content-Type": "application/json" };
-        if (token) headers["Authorization"] = `Bearer ${token}`;
+    if (!isObjectId(pickId)) {
+      return { district: pickId, province: null };
+    }
 
-        // Try direct lookup
-        try {
-          const res = await fetch(`${API_BASE}/api/districts/${encodeURIComponent(pickId)}`, { headers, credentials: token ? undefined : "include" });
-          if (res && res.ok) {
-            const body = await res.json().catch(() => null);
-            const data = body?.data || body?.district || body || null;
-            if (data) {
-              const districtName = data?.District_Name || data?.DistrictName || data?.name || data?.Name || null;
-              const provinceName = data?.Province_Name || data?.ProvinceName || data?.province || data?.Province || null;
-              setResolvedGeo((p: any) => ({ ...(p || {}), district: districtName || null, province: provinceName || null }));
-              return;
-            }
-          }
-        } catch (e) {
-          // ignore
-        }
+    // Use provider lookups
+    const districtName = getDistrictName(pickId);
+    // For province, we need to find the district's province
+    const districtObj = Object.values(locations.districts).find(d => d._id === pickId);
+    const provinceName = districtObj ? getProvinceName(districtObj.province) : null;
 
-        // Fallback: list and match by _id or District_ID
-        try {
-          const listRes = await fetch(`${API_BASE}/api/districts?page=1&limit=1000`, { headers, credentials: token ? undefined : "include" });
-          if (listRes && listRes.ok) {
-            const listBody = await listRes.json().catch(() => null);
-            const list = listBody?.data || listBody?.districts || listBody || [];
-            if (Array.isArray(list) && list.length) {
-              const match = list.find((d: any) => String(d._id) === String(pickId) || String(d.District_ID) === String(pickId));
-              if (match) {
-                const districtName = match?.District_Name || match?.DistrictName || match?.name || match?.Name || null;
-                const provinceName = match?.Province_Name || match?.ProvinceName || match?.province || match?.Province || null;
-                setResolvedGeo((p: any) => ({ ...(p || {}), district: districtName || null, province: provinceName || null }));
-                return;
-              }
-            }
-          }
-        } catch (e) {
-          // ignore
-        }
-      } catch (e) {
-        // ignore overall
-      }
-    })();
-  }, [district, request]);
+    return {
+      district: districtName !== "Unknown District" ? districtName : null,
+      province: provinceName !== "Unknown Province" ? provinceName : null,
+    };
+  }, [request, district, getDistrictName, getProvinceName, locations.districts]);
 
   const resolvedRequest =
-    fullRequest ||
-    request ||
-    (request && (request as any).event) ||
-    null;
+    fullRequest || request || (request && (request as any).event) || null;
 
   const resolvedRequestId =
     resolvedRequest?.Request_ID ||
@@ -198,7 +159,6 @@ const EventCard: React.FC<EventCardProps> = ({
     resolvedRequest?._id ||
     resolvedRequest?.requestId ||
     null;
-
 
   const resolveActorEndpoint = () => {
     const viewer = getViewer();
@@ -211,8 +171,15 @@ const EventCard: React.FC<EventCardProps> = ({
     return "admin-action";
   };
 
-  const allowedActionSet = useAllowedActionSet({ request, fullRequest, resolvedRequest });
-  const hasAllowedAction = React.useCallback(hasAllowedActionFactory(allowedActionSet), [allowedActionSet]);
+  const allowedActionSet = useAllowedActionSet({
+    request,
+    fullRequest,
+    resolvedRequest,
+  });
+  const hasAllowedAction = React.useCallback(
+    hasAllowedActionFactory(allowedActionSet),
+    [allowedActionSet],
+  );
 
   const viewer = getViewer();
   const viewerId = getViewerId();
@@ -234,9 +201,13 @@ const EventCard: React.FC<EventCardProps> = ({
       if (!viewerRoleString.includes("coordinator")) return false;
       const r = resolvedRequest || request || {};
       if (!r) return false;
-      const coordId = r?.coordinator_id || r?.Coordinator_ID || r?.coordinatorId || null;
+      const coordId =
+        r?.coordinator_id || r?.Coordinator_ID || r?.coordinatorId || null;
       const reviewerId = r?.reviewer?.id || r?.reviewerId || null;
-      return String(viewerId) === String(coordId) || String(viewerId) === String(reviewerId);
+      return (
+        String(viewerId) === String(coordId) ||
+        String(viewerId) === String(reviewerId)
+      );
     } catch (e) {
       return false;
     }
@@ -249,7 +220,11 @@ const EventCard: React.FC<EventCardProps> = ({
   // Manage staff modal is handled by the shared ManageStaffModal component
 
   // Reschedule handler used by RescheduleModal
-  const handleRescheduleConfirm = async (currentDateStr: string, rescheduledISO: string, noteText: string) => {
+  const handleRescheduleConfirm = async (
+    currentDateStr: string,
+    rescheduledISO: string,
+    noteText: string,
+  ) => {
     try {
       if (onRescheduleEvent) {
         onRescheduleEvent(currentDateStr, rescheduledISO, noteText);
@@ -301,7 +276,9 @@ const EventCard: React.FC<EventCardProps> = ({
       }
     } catch (e) {
       console.error("Cancel error:", e);
-      alert("Failed to cancel event: " + ((e as Error).message || "Unknown error"));
+      alert(
+        "Failed to cancel event: " + ((e as Error).message || "Unknown error"),
+      );
       return;
     }
 
@@ -325,7 +302,10 @@ const EventCard: React.FC<EventCardProps> = ({
       }
 
       // If we don't have fresh data or the status isn't cancelled, fetch the latest
-      if (!fullRequest || (r.Status !== "Cancelled" && r.status !== "Cancelled")) {
+      if (
+        !fullRequest ||
+        (r.Status !== "Cancelled" && r.status !== "Cancelled")
+      ) {
         try {
           const data = await svcFetchRequestDetails(requestId);
           r = data || r;
@@ -500,8 +480,7 @@ const EventCard: React.FC<EventCardProps> = ({
   ): boolean => {
     try {
       const r = resolvedRequest || request || {};
-      const explicit =
-        (r as any)?.[flagName] ?? (r as any)?.event?.[flagName];
+      const explicit = (r as any)?.[flagName] ?? (r as any)?.event?.[flagName];
 
       if (explicit !== undefined && explicit !== null) {
         return Boolean(explicit);
@@ -521,7 +500,6 @@ const EventCard: React.FC<EventCardProps> = ({
       return false;
     }
   };
-
 
   // Menus are now rendered by EventActionMenu which uses the same flags and setters
 
@@ -712,92 +690,7 @@ const EventCard: React.FC<EventCardProps> = ({
       }
 
       setFullRequest(finalRequest || r);
-      // Try to resolve district/province names when opening modal
-      (async () => {
-        try {
-          const rr = finalRequest || r || {};
-          const pickId =
-            rr?.district || rr?.District || rr?.districtId || rr?.District_ID || rr?.district_id || null;
-
-          const isObjectId = (s: any) => typeof s === "string" && /^[a-f0-9]{24}$/i.test(s);
-
-          if (pickId && isObjectId(pickId)) {
-            try {
-              const token =
-                typeof window !== "undefined"
-                  ? localStorage.getItem("unite_token") || sessionStorage.getItem("unite_token")
-                  : null;
-              const headers: any = { "Content-Type": "application/json" };
-              if (token) headers["Authorization"] = `Bearer ${token}`;
-
-              // First try the direct lookup (this endpoint expects `District_ID` normally)
-              let foundDistrict: any = null;
-              try {
-                const res = await fetch(
-                  `${API_BASE}/api/districts/${encodeURIComponent(pickId)}`,
-                  { headers, credentials: token ? undefined : "include" },
-                );
-
-                if (res && res.ok) {
-                  const body = await res.json().catch(() => null);
-                  const data = body?.data || body?.district || body;
-                  foundDistrict = data || null;
-                }
-              } catch (e) {
-                // ignore direct lookup failure and try fallback
-              }
-
-              // Fallback: list districts (large limit) and search by Mongo _id
-              if (!foundDistrict) {
-                try {
-                  const listRes = await fetch(`${API_BASE}/api/districts?page=1&limit=1000`, {
-                    headers,
-                    credentials: token ? undefined : "include",
-                  });
-
-                  if (listRes && listRes.ok) {
-                    const listBody = await listRes.json().catch(() => null);
-                    const list = listBody?.data || listBody?.districts || listBody || [];
-                    if (Array.isArray(list) && list.length) {
-                      const match = list.find((d: any) => String(d._id) === String(pickId) || String(d.District_ID) === String(pickId));
-                      if (match) foundDistrict = match;
-                    }
-                  }
-                } catch (e) {
-                  // ignore
-                }
-              }
-
-              if (foundDistrict) {
-                const districtName = foundDistrict?.District_Name || foundDistrict?.DistrictName || foundDistrict?.name || foundDistrict?.Name || null;
-                let provinceName = foundDistrict?.Province_Name || foundDistrict?.ProvinceName || foundDistrict?.province || foundDistrict?.Province || null;
-
-                // If provinceName looks like a Mongo _id, try to resolve via provinces list
-                const isObjectId = (s: any) => typeof s === "string" && /^[a-f0-9]{24}$/i.test(s);
-                if (provinceName && isObjectId(provinceName)) {
-                  try {
-                    const provRes = await fetch(`${API_BASE}/api/locations/provinces`, { headers, credentials: token ? undefined : "include" });
-                    if (provRes && provRes.ok) {
-                      const provBody = await provRes.json().catch(() => null);
-                      const provList = provBody?.data || provBody || [];
-                      if (Array.isArray(provList)) {
-                        const matchProv = provList.find((p: any) => String(p._id) === String(provinceName) || String(p.Province_ID) === String(provinceName));
-                        if (matchProv) provinceName = matchProv?.name || matchProv?.Province_Name || matchProv?.ProvinceName || null;
-                      }
-                    }
-                  } catch (e) {
-                    // ignore
-                  }
-                }
-
-                setResolvedGeo((prev: any) => ({ ...prev, district: districtName || null, province: provinceName || null }));
-              }
-            } catch (e) {
-              // ignore fetch errors
-            }
-          }
-        } catch (e) {}
-      })();
+      // Geo resolution is now handled by useMemo above
 
       setViewOpen(true);
     } catch (e) {
@@ -810,15 +703,16 @@ const EventCard: React.FC<EventCardProps> = ({
   // Stakeholder confirm action moved to services
   const performStakeholderConfirm = svcPerformStakeholderConfirm;
 
-  const runStakeholderDecision = async (
-    decision: "Accepted" | "Rejected",
-  ) => {
+  const runStakeholderDecision = async (decision: "Accepted" | "Rejected") => {
     try {
       if (!resolvedRequestId) {
         throw new Error("Unable to determine request id");
       }
       // If current viewer is a coordinator confirming an admin decision, use the coordinator-confirm endpoint
-      if (viewerRoleString.includes("coordinator") && viewerIsAssignedCoordinator) {
+      if (
+        viewerRoleString.includes("coordinator") &&
+        viewerIsAssignedCoordinator
+      ) {
         await performCoordinatorConfirm(resolvedRequestId, decision);
       } else {
         await performStakeholderConfirm(resolvedRequestId, decision);
@@ -853,25 +747,12 @@ const EventCard: React.FC<EventCardProps> = ({
       );
     }
 
-    actions.push(
-      <DropdownItem
-        key="view-request"
-        description="View request details"
-        startContent={<FileText />}
-        onPress={async () => {
-          await openViewRequest();
-        }}
-      >
-        View Request
-      </DropdownItem>,
-    );
-
     if (flagFor("canManageStaff", "manage-staff")) {
       actions.push(
         <DropdownItem
           key="manage-staff"
           description="Manage staff for this event"
-          startContent={<Users />}
+          startContent={<Persons />}
           onPress={() => {
             setManageStaffOpen(true);
             if (typeof onManageStaff === "function") onManageStaff();
@@ -902,7 +783,7 @@ const EventCard: React.FC<EventCardProps> = ({
           <DropdownItem
             key="reject"
             description="Reject this request"
-            startContent={<X />}
+            startContent={<Xmark />}
             onPress={() => setRejectOpen(true)}
           >
             Reject Request
@@ -926,7 +807,10 @@ const EventCard: React.FC<EventCardProps> = ({
 
     // Show Confirm action when allowed, or as a fallback when request is review-accepted
     // and the current viewer is the assigned coordinator (ensures quick-action availability).
-    if (flagFor("canConfirm", "confirm") || (isReviewAccepted && viewerIsAssignedCoordinator)) {
+    if (
+      flagFor("canConfirm", "confirm") ||
+      (isReviewAccepted && viewerIsAssignedCoordinator)
+    ) {
       actions.push(
         <DropdownItem
           key="confirm"
@@ -934,7 +818,10 @@ const EventCard: React.FC<EventCardProps> = ({
           startContent={<Check />}
           onPress={async () => {
             try {
-              if (viewerRoleString.includes("coordinator") && viewerIsAssignedCoordinator) {
+              if (
+                viewerRoleString.includes("coordinator") &&
+                viewerIsAssignedCoordinator
+              ) {
                 await performCoordinatorConfirm(resolvedRequestId, "Accepted");
                 setViewOpen(false);
               } else {
@@ -942,7 +829,10 @@ const EventCard: React.FC<EventCardProps> = ({
               }
             } catch (e) {
               console.error("Confirm error:", e);
-              alert("Failed to confirm request: " + (e as any)?.message || "Unknown error");
+              alert(
+                "Failed to confirm request: " + (e as any)?.message ||
+                  "Unknown error",
+              );
             }
           }}
         >
@@ -956,7 +846,7 @@ const EventCard: React.FC<EventCardProps> = ({
         <DropdownItem
           key="decline"
           description="Decline the reviewer decision"
-          startContent={<X />}
+          startContent={<Xmark />}
           onPress={async () => {
             await runStakeholderDecision("Rejected");
           }}
@@ -974,7 +864,7 @@ const EventCard: React.FC<EventCardProps> = ({
           color="danger"
           description="Cancel this request"
           startContent={
-            <Trash2 className="text-xl text-danger pointer-events-none shrink-0" />
+            <TrashBin className="text-xl text-danger pointer-events-none shrink-0" />
           }
           onPress={() => setCancelOpen(true)}
         >
@@ -991,7 +881,7 @@ const EventCard: React.FC<EventCardProps> = ({
           color="danger"
           description="Delete this request"
           startContent={
-            <Trash2 className="text-xl text-danger pointer-events-none shrink-0" />
+            <TrashBin className="text-xl text-danger pointer-events-none shrink-0" />
           }
           onPress={() => setDeleteOpen(true)}
         >
@@ -1031,12 +921,21 @@ const EventCard: React.FC<EventCardProps> = ({
           onPress={async () => {
             setViewOpen(false);
             try {
-              if (!resolvedRequestId) return alert('Request id not found');
-              await performCoordinatorConfirm(resolvedRequestId, 'Accepted');
-              try { window.dispatchEvent(new CustomEvent('unite:requests-changed', { detail: { requestId: resolvedRequestId } })); } catch (e) {}
+              if (!resolvedRequestId) return alert("Request id not found");
+              await performCoordinatorConfirm(resolvedRequestId, "Accepted");
+              try {
+                window.dispatchEvent(
+                  new CustomEvent("unite:requests-changed", {
+                    detail: { requestId: resolvedRequestId },
+                  }),
+                );
+              } catch (e) {}
             } catch (e) {
-              console.error('Footer confirm error:', e);
-              alert('Failed to confirm request: ' + ((e as any)?.message || 'Unknown error'));
+              console.error("Footer confirm error:", e);
+              alert(
+                "Failed to confirm request: " +
+                  ((e as any)?.message || "Unknown error"),
+              );
             }
           }}
         >
@@ -1075,7 +974,10 @@ const EventCard: React.FC<EventCardProps> = ({
     }
 
     // Only show Reject when not in review-accepted coordinator confirmation state
-    if (!(isReviewAccepted && viewerIsAssignedCoordinator) && hasAllowedAction("reject")) {
+    if (
+      !(isReviewAccepted && viewerIsAssignedCoordinator) &&
+      hasAllowedAction("reject")
+    ) {
       buttons.push(
         <Button
           key="footer-reject"
@@ -1109,36 +1011,67 @@ const EventCard: React.FC<EventCardProps> = ({
 
   // Determine a human-friendly pending-stage label for Pending requests
   const getPendingStageLabel = (): string | null => {
-    const r = resolvedRequest || request || (request && (request as any).event) || {};
+    const r =
+      resolvedRequest || request || (request && (request as any).event) || {};
 
     // Prefer a human-friendly label returned by the backend when present
-    const backendLabel = r?.statusLabel || r?.status_label || r?.StatusLabel || null;
+    const backendLabel =
+      r?.statusLabel || r?.status_label || r?.StatusLabel || null;
     if (backendLabel) return backendLabel;
 
     // First check the request Status field for new workflow statuses
-    const requestStatus = String(r?.Status || r?.status || '').toLowerCase();
+    const requestStatus = String(r?.Status || r?.status || "").toLowerCase();
 
     // Unified workflow statuses (case-insensitive)
-    if (requestStatus.includes('pending') || requestStatus.includes('pending_review') || requestStatus.includes('pending_review')) {
-      if (r?.reviewer?.role && String(r.reviewer.role).toLowerCase().includes('coordinator')) return 'Waiting for Coordinator review';
-      if (r?.reviewer?.role && (String(r.reviewer.role).toLowerCase().includes('admin') || String(r.reviewer.role).toLowerCase().includes('systemadmin'))) return 'Waiting for Admin review';
-      return 'Waiting for Admin or Coordinator review';
+    if (
+      requestStatus.includes("pending") ||
+      requestStatus.includes("pending_review") ||
+      requestStatus.includes("pending_review")
+    ) {
+      if (
+        r?.reviewer?.role &&
+        String(r.reviewer.role).toLowerCase().includes("coordinator")
+      )
+        return "Waiting for Coordinator review";
+      if (
+        r?.reviewer?.role &&
+        (String(r.reviewer.role).toLowerCase().includes("admin") ||
+          String(r.reviewer.role).toLowerCase().includes("systemadmin"))
+      )
+        return "Waiting for Admin review";
+      return "Waiting for Admin or Coordinator review";
     }
 
-    if (requestStatus.includes('review')) {
-      if (requestStatus.includes('accepted')) return 'Waiting for Coordinator confirmation';
-      if (requestStatus.includes('resched') || requestStatus.includes('reschedule') || requestStatus.includes('rescheduled')) return (r?.reviewer?.role && String(r.reviewer.role).toLowerCase().includes('coordinator')) ? 'Waiting for Coordinator review (reschedule)' : 'Waiting for Admin review (reschedule)';
-      return 'Waiting for Admin or Coordinator review';
+    if (requestStatus.includes("review")) {
+      if (requestStatus.includes("accepted"))
+        return "Waiting for Coordinator confirmation";
+      if (
+        requestStatus.includes("resched") ||
+        requestStatus.includes("reschedule") ||
+        requestStatus.includes("rescheduled")
+      )
+        return r?.reviewer?.role &&
+          String(r.reviewer.role).toLowerCase().includes("coordinator")
+          ? "Waiting for Coordinator review (reschedule)"
+          : "Waiting for Admin review (reschedule)";
+      return "Waiting for Admin or Coordinator review";
     }
 
-    if (requestStatus.includes('rescheduled_by_admin') || requestStatus.includes('rescheduled_by_admin') || requestStatus.includes('rescheduled_by_admin')) {
-      return (r?.reviewer?.role && String(r.reviewer.role).toLowerCase().includes('coordinator')) ? 'Waiting for Coordinator review (reschedule)' : 'Waiting for Admin review (reschedule)';
+    if (
+      requestStatus.includes("rescheduled_by_admin") ||
+      requestStatus.includes("rescheduled_by_admin") ||
+      requestStatus.includes("rescheduled_by_admin")
+    ) {
+      return r?.reviewer?.role &&
+        String(r.reviewer.role).toLowerCase().includes("coordinator")
+        ? "Waiting for Coordinator review (reschedule)"
+        : "Waiting for Admin review (reschedule)";
     }
-    if (requestStatus.includes('rescheduled_by_coordinator')) {
-      return 'Rescheduled by coordinator';
+    if (requestStatus.includes("rescheduled_by_coordinator")) {
+      return "Rescheduled by coordinator";
     }
-    if (requestStatus.includes('rescheduled_by_stakeholder')) {
-      return 'Rescheduled by stakeholder';
+    if (requestStatus.includes("rescheduled_by_stakeholder")) {
+      return "Rescheduled by stakeholder";
     }
 
     // Fallback to old logic for backward compatibility
@@ -1164,7 +1097,8 @@ const EventCard: React.FC<EventCardProps> = ({
       null;
 
     if (!adminAction) return "Waiting for admin review";
-    if (hasStakeholder && !stakeholderAction) return "Waiting for stakeholder confirmation";
+    if (hasStakeholder && !stakeholderAction)
+      return "Waiting for stakeholder confirmation";
     if (!coordinatorAction) return "Waiting for coordinator confirmation";
 
     return null;
@@ -1195,76 +1129,326 @@ const EventCard: React.FC<EventCardProps> = ({
     }
   })();
 
+  // Header status label: shows pending subtypes (unless the subtype is 'completed'),
+  // or base statuses like Approved/Rejected/Cancelled as fallback.
+  const headerStatusLabel = (() => {
+    try {
+      const pendingLabel = getPendingStageLabel();
+      const r = resolvedRequest || request || {};
+      const rawStatus = String(r?.Status || r?.status || status || "").toLowerCase();
+
+      // If pending subtype indicates 'completed', don't show it
+      if (rawStatus.includes("pending") && pendingLabel) {
+        const low = String(pendingLabel).toLowerCase();
+        if (low.includes("complete")) return null;
+        return pendingLabel;
+      }
+
+      if (rawStatus.includes("approve") || rawStatus.includes("approved")) return "Approved";
+      if (rawStatus.includes("reject") || rawStatus.includes("rejected")) return "Rejected";
+      if (rawStatus.includes("cancel")) return "Cancelled";
+
+      return (r?.statusLabel || r?.StatusLabel || r?.status || r?.Status || status) || null;
+    } catch (e) {
+      return null;
+    }
+  })();
+
+  // Helper to safely extract numeric counts from various backend shapes
+  const extractNumber = (v: any): number | null => {
+    try {
+      if (v === undefined || v === null) return null;
+      if (typeof v === "number") return v;
+      if (typeof v === "string") {
+        const n = Number(v);
+        return Number.isFinite(n) ? n : null;
+      }
+      if (typeof v === "object") {
+        // Mongo Extended JSON shapes
+        if (v.$numberInt !== undefined) return Number(v.$numberInt);
+        if (v.$numberLong !== undefined) return Number(v.$numberLong);
+        if (v.$numberDecimal !== undefined) return Number(v.$numberDecimal);
+        // direct numeric-like keys
+        for (const k of Object.keys(v)) {
+          const maybe = (v as any)[k];
+          if (typeof maybe === "number") return maybe;
+          if (typeof maybe === "string" && /^[0-9]+(\.|$)/.test(maybe))
+            return Number(maybe);
+        }
+      }
+    } catch (e) {}
+    return null;
+  };
+
+  // Derive goal count and label from the request/event object
+  const goalInfo = useMemo(() => {
+    const r = resolvedRequest || request || {};
+    const ev = r.event || r || {};
+
+    const categoryCandidate =
+      (ev?.Category || ev?.category || r?.Category || r?.category || category || "")
+        .toString()
+        .toLowerCase();
+
+    // Candidate fields for each type (try multiple casings)
+    const bloodTargets = [
+      ev?.BloodDrive?.Target_Donation,
+      ev?.bloodDrive?.Target_Donation,
+      ev?.BloodDrive?.TargetDonation,
+      ev?.bloodDrive?.TargetDonation,
+      ev?.Target_Donation,
+      ev?.TargetDonation,
+      r?.Target_Donation,
+      r?.TargetDonation,
+    ];
+
+    const trainingTargets = [
+      ev?.Training?.MaxParticipants,
+      ev?.training?.MaxParticipants,
+      ev?.Training?.Max_Participants,
+      ev?.training?.Max_Participants,
+      ev?.MaxParticipants,
+      ev?.Max_Participants,
+      r?.MaxParticipants,
+      r?.Max_Participants,
+    ];
+
+    const advocacyTargets = [
+      ev?.Advocacy?.ExpectedAudienceSize,
+      ev?.advocacy?.ExpectedAudienceSize,
+      ev?.Advocacy?.Expected_Audience_Size,
+      ev?.advocacy?.Expected_Audience_Size,
+      ev?.ExpectedAudienceSize,
+      ev?.Expected_Audience_Size,
+      r?.ExpectedAudienceSize,
+      r?.Expected_Audience_Size,
+    ];
+
+    const pickNumberFrom = (arr: any[]) => {
+      for (const a of arr) {
+        const n = extractNumber(a);
+        if (n !== null) return n;
+      }
+      return null;
+    };
+
+    if (categoryCandidate.includes("blood")) {
+      let n = pickNumberFrom(bloodTargets);
+      // Fallback: try to parse number from reviewSummary text
+      if (n === null) {
+        const txt =
+          String(ev?.reviewSummary || ev?.reviewMessage || r?.reviewSummary || r?.reviewMessage || "");
+        const m = txt.match(/target\s+donation\s+of\s+(\d+)/i) || txt.match(/target\s+donation[^\d]*(\d+)/i) || txt.match(/target\s+(?:donation|donations)[^\d]*(\d+)/i);
+        if (m && m[1]) n = extractNumber(m[1]);
+      }
+      return { count: n, label: "u.", isBlood: true };
+    }
+
+    if (categoryCandidate.includes("training")) {
+      let n = pickNumberFrom(trainingTargets);
+      if (n === null) {
+        const txt = String(ev?.reviewSummary || r?.reviewSummary || "");
+        const m = txt.match(/max(?:imum)?\s+participants?\s+of\s+(\d+)/i) || txt.match(/participants?[^\d]*(\d+)/i);
+        if (m && m[1]) n = extractNumber(m[1]);
+      }
+      return { count: n, label: "Participants", isBlood: false };
+    }
+
+    if (categoryCandidate.includes("advoc") || categoryCandidate.includes("advocacy")) {
+      let n = pickNumberFrom(advocacyTargets);
+      if (n === null) {
+        const txt = String(ev?.reviewSummary || r?.reviewSummary || "");
+        const m = txt.match(/expected\s+audience\s+size\s+of\s+(\d+)/i) || txt.match(/audience[^\d]*(\d+)/i) || txt.match(/participants?[^\d]*(\d+)/i);
+        if (m && m[1]) n = extractNumber(m[1]);
+      }
+      return { count: n, label: "Participants", isBlood: false };
+    }
+
+    // Fallback: try any known fields
+    const fallback = pickNumberFrom([
+      ...bloodTargets,
+      ...trainingTargets,
+      ...advocacyTargets,
+    ]);
+
+    return { count: fallback, label: fallback !== null ? "" : "", isBlood: false };
+  }, [resolvedRequest, request, fullRequest, category]);
+
+  // Format the date/time for the card footer area (e.g. "Dec 1 8:00 AM - 4:00 PM")
+  const cardDateRange = useMemo(() => {
+    const r = resolvedRequest || request || {};
+
+    const pick = (...cands: any[]) => {
+      for (const c of cands) {
+        if (c !== undefined && c !== null && c !== "") return c;
+      }
+      return null;
+    };
+
+    const startVal = pick(
+      r?.Start_Date,
+      r?.Start,
+      r?.start,
+      r?.StartTime,
+      r?.event?.Start_Date,
+      r?.event?.Start,
+      r?.event?.StartTime,
+    );
+
+    const endVal = pick(
+      r?.End_Date,
+      r?.End,
+      r?.end,
+      r?.EndTime,
+      r?.event?.End_Date,
+      r?.event?.End,
+      r?.event?.EndTime,
+    );
+
+    const formatDateShort = (d?: any) => {
+      if (!d) return null;
+      try {
+        const dt = new Date(d);
+        if (isNaN(dt.getTime())) return String(d);
+        return dt.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+      } catch (e) {
+        return String(d);
+      }
+    };
+
+    const formatTimeShort = (t?: any) => {
+      if (!t) return null;
+      try {
+        const dt = new Date(t);
+        if (isNaN(dt.getTime())) return String(t);
+        return dt.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
+      } catch (e) {
+        return String(t);
+      }
+    };
+
+    const datePart = formatDateShort(startVal) || formatDateShort(endVal) || null;
+    const startTime = formatTimeShort(startVal);
+    const endTime = formatTimeShort(endVal);
+
+    if (!datePart && !startTime && !endTime) return null;
+
+    if (datePart && startTime) {
+      return `${datePart} ${startTime}${endTime ? " - " + endTime : ""}`;
+    }
+
+    // Fallbacks
+    if (startTime && endTime) return `${startTime} - ${endTime}`;
+    if (startTime) return `${startTime}`;
+    if (datePart) return datePart;
+
+    return null;
+  }, [resolvedRequest, request, fullRequest]);
+
   return (
     <>
-      <Card className="w-full max-w-md h-60 rounded-xl border border-gray-200 shadow-none bg-white">
-        <CardHeader className="flex justify-between items-center">
-          {/* Avatar Section*/}
-          <div className="flex items-center gap-3">
-            <Avatar />
-            <div>
-              <h3 className="text-sm font-semibold">{title}</h3>
-              {/* Show stakeholder full name when available; fall back to organization/coordinator */}
-              <p className="text-xs text-default-800">
-                {(request &&
-                  (request.createdByName ||
-                    (request.event && request.event.createdByName))) ||
-                  organization ||
-                  organizationType}
-              </p>
-              {getPendingStageLabel() ? (
-                <p className="text-xs text-default-500 mt-1">
-                  {getPendingStageLabel()}
+      <Card className="w-full rounded-xl border border-gray-200 shadow-none bg-white">
+        <CardHeader className="flex justify-between items-start">
+          {/* Title and Organization */}
+          <div>
+            <h3 className="text-lg font-semibold">{title}</h3>
+            <div className="flex items-center gap-2 mt-1">
+              <Avatar className="w-6 h-6" />
+              <div className="flex flex-col">
+                <p className="text-xs text-default-800">
+                  {(request &&
+                    (request.createdByName ||
+                      (request.event && request.event.createdByName))) ||
+                    organization ||
+                    organizationType}
                 </p>
-              ) : null}
+                {headerStatusLabel ? (
+                  <p className="text-xs text-default-400 mt-1">{headerStatusLabel}</p>
+                ) : null}
+              </div>
             </div>
           </div>
           <Dropdown>
-              <DropdownTrigger>
-                <Button isIconOnly aria-label="Event actions" className="hover:text-default-800" variant="light">
-                  <MoreVertical className="w-5 h-5" />
-                </Button>
-              </DropdownTrigger>
-              <EventActionMenu
-                allowedActionSet={allowedActionSet}
-                hasAllowedAction={hasAllowedAction}
-                flagFor={flagFor}
-                status={status}
-                request={request}
-                onViewEvent={onViewEvent}
-                onEditEvent={onEditEvent}
-                openViewRequest={openViewRequest}
-                setManageStaffOpen={setManageStaffOpen}
-                setRescheduleOpen={setRescheduleOpen}
-                setAcceptOpen={setAcceptOpen}
-                setRejectOpen={setRejectOpen}
-                setCancelOpen={setCancelOpen}
-                setDeleteOpen={setDeleteOpen}
-                showConfirmFallback={isReviewAccepted && viewerIsAssignedCoordinator}
-                onConfirm={async () => {
-                  try {
-                    if (!resolvedRequestId) throw new Error('Request id not found');
-                    if (viewerRoleString.includes('coordinator') && viewerIsAssignedCoordinator) {
-                      await performCoordinatorConfirm(resolvedRequestId, 'Accepted');
-                    } else {
-                      await runStakeholderDecision('Accepted');
-                    }
-                    try { window.dispatchEvent(new CustomEvent('unite:requests-changed', { detail: { requestId: resolvedRequestId } })); } catch (e) {}
-                  } catch (e) {
-                    console.error('Dropdown confirm error:', e);
-                    try { alert('Failed to confirm request: ' + (e as any)?.message || 'Unknown error'); } catch (_) {}
+            <DropdownTrigger>
+              <Button
+                isIconOnly
+                aria-label="Event actions"
+                className="hover:text-default-800"
+                variant="light"
+              >
+                <EllipsisVertical className="w-5 h-5" />
+              </Button>
+            </DropdownTrigger>
+            <EventActionMenu
+              allowedActionSet={allowedActionSet}
+              hasAllowedAction={hasAllowedAction}
+              flagFor={flagFor}
+              status={status}
+              request={request}
+              onViewEvent={onViewEvent}
+              onEditEvent={onEditEvent}
+              openViewRequest={openViewRequest}
+              setManageStaffOpen={setManageStaffOpen}
+              setRescheduleOpen={setRescheduleOpen}
+              setAcceptOpen={setAcceptOpen}
+              setRejectOpen={setRejectOpen}
+              setCancelOpen={setCancelOpen}
+              setDeleteOpen={setDeleteOpen}
+              showConfirmFallback={
+                isReviewAccepted && viewerIsAssignedCoordinator
+              }
+              onConfirm={async () => {
+                try {
+                  if (!resolvedRequestId)
+                    throw new Error("Request id not found");
+                  if (
+                    viewerRoleString.includes("coordinator") &&
+                    viewerIsAssignedCoordinator
+                  ) {
+                    await performCoordinatorConfirm(
+                      resolvedRequestId,
+                      "Accepted",
+                    );
+                  } else {
+                    await runStakeholderDecision("Accepted");
                   }
-                }}
-              />
+                  try {
+                    window.dispatchEvent(
+                      new CustomEvent("unite:requests-changed", {
+                        detail: { requestId: resolvedRequestId },
+                      }),
+                    );
+                  } catch (e) {}
+                } catch (e) {
+                  console.error("Dropdown confirm error:", e);
+                  try {
+                    alert(
+                      "Failed to confirm request: " + (e as any)?.message ||
+                        "Unknown error",
+                    );
+                  } catch (_) {}
+                }
+              }}
+            />
           </Dropdown>
         </CardHeader>
-        <CardBody>
-          <div className="flex justify-between items-center mb-2">
-            <p className="text-xs">District</p>
-            <p className="text-xs text-default-800 font-medium">{resolvedGeo?.district || district}</p>
-          </div>
-          <div className="flex items-center gap-3">
-            <Chip color="primary" radius="sm" size="sm" variant="faded">
+        <CardBody className="py-4">
+          <div className="flex items-center gap-2 mb-4">
+            <Chip
+              color={
+                category === "Blood Drive"
+                  ? "danger"
+                  : category === "Training"
+                    ? "success"
+                    : "default" // Fallback to default when not Blood Drive or Training
+              }
+              className={
+                category === "Advocacy" ? "bg-blue-100 text-blue-500" : ""
+              }
+              radius="sm"
+              size="sm"
+              variant="flat"
+            >
               {category}
             </Chip>
             <Chip
@@ -1281,19 +1465,55 @@ const EventCard: React.FC<EventCardProps> = ({
             >
               {status}
             </Chip>
-            {/* Confirm is available in the action menu; no quick button on the card itself */}
+          </div>
+          <div className="space-y-2">
+            <div className="flex justify-between items-center">
+              <p className="text-xs">Province</p>
+              <p className="text-xs text-default-800 font-medium">
+                {resolvedGeo?.province || "N/A"}
+              </p>
+            </div>
+            <div className="flex justify-between items-center">
+              <p className="text-xs">District</p>
+              <p className="text-xs text-default-800 font-medium">
+                {resolvedGeo?.district || district}
+              </p>
+            </div>
+            <div className="flex justify-between items-start">
+              <p className="text-xs mt-1">Location</p>
+              <p className="text-xs text-default-800 font-medium text-right max-w-[70%]">
+                {location}
+              </p>
+            </div>
+            <div className="flex justify-between items-center">
+              <p className="text-xs">Date</p>
+              <p className="text-xs text-default-800 font-medium text-right">
+                {cardDateRange || "—"}
+              </p>
+            </div>
           </div>
         </CardBody>
-        <CardFooter className="flex flex-col items-start gap-2 text-xs">
-          <div className="flex justify-between w-full">
-            <span className="">Location</span>
-            <span className="text-default-800 text-right">{location}</span>
+        <CardFooter className="pt-4 flex-col items-stretch gap-3">
+          <div className="h-px w-full bg-default-200"></div>
+          <div className="flex justify-between w-full items-center">
+            <span className="text-xs">Goal Count</span>
+            <span
+              className={`text-2xl font-bold ${
+                goalInfo?.isBlood ? "text-danger" : "text-default-800"
+              }`}
+            >
+              {goalInfo?.count !== null && goalInfo?.count !== undefined
+                ? goalInfo.count
+                : "N/A"}
+              {goalInfo && goalInfo.count !== null ? (
+                goalInfo.isBlood ? (
+                  <span className="text-xs font-normal ml-2">{goalInfo.label}</span>
+                ) : (
+                  <span className="text-xs font-normal ml-2">{goalInfo.label}</span>
+                )
+              ) : null}
+            </span>
           </div>
-          <div className="flex justify-between w-full">
-            <span className="">Date</span>
-            <span className="text-default-800">{date}</span>
-          </div>
-          {/* Primary action: View Request (replaces direct accept/reject on card) */}
         </CardFooter>
       </Card>
 
@@ -1308,10 +1528,19 @@ const EventCard: React.FC<EventCardProps> = ({
         }}
       >
         <ModalContent>
-          <ModalHeader>
-            <span className="text-lg font-semibold">Request Details</span>
+          <ModalHeader className="flex flex-col gap-1">
+            <div className="flex items-center gap-2">
+              <Avatar
+                className="bg-default-100 border-1 border-default"
+                icon={<FileText />}
+              />
+            </div>
+            <h3 className="text-sm font-semibold py-2">Request Details</h3>
+            <p className="text-xs font-normal">
+              Review the details of this request below.
+            </p>
           </ModalHeader>
-          <ModalBody>
+          <ModalBody className="py-4">
             {(() => {
               const r = resolvedRequest || {};
               const reviewSummary =
@@ -1326,7 +1555,10 @@ const EventCard: React.FC<EventCardProps> = ({
               // to `decisionSummary` by the backend. Prefer showing either the
               // original review message or the decision summary (or both).
               const decisionSummary =
-                r?.decisionSummary || r?.DecisionSummary || r?.event?.decisionSummary || null;
+                r?.decisionSummary ||
+                r?.DecisionSummary ||
+                r?.event?.decisionSummary ||
+                null;
 
               // Treat as rejected when the status contains 'reject' or 'rejected'
               const statusRaw = String(r?.Status || r?.status || "");
@@ -1365,12 +1597,17 @@ const EventCard: React.FC<EventCardProps> = ({
 
               const composedFallbackNote = (() => {
                 for (const c of fallbackNoteCandidates) {
-                  if (c !== undefined && c !== null && String(c).trim() !== "") return String(c);
+                  if (c !== undefined && c !== null && String(c).trim() !== "")
+                    return String(c);
                 }
                 return null;
               })();
 
-              const noteText = decisionSummary || composedFallbackNote || reviewSummary || null;
+              const noteText =
+                decisionSummary ||
+                composedFallbackNote ||
+                reviewSummary ||
+                null;
 
               if (!reviewSummary && !decisionSummary) return null;
 
@@ -1409,7 +1646,9 @@ const EventCard: React.FC<EventCardProps> = ({
 
               // If time fields are missing, try to parse them from the message (e.g. "from 08:00–16:00")
               if (!startRaw) {
-                const timeMatch = String(reviewSummary).match(/from\s+(\d{1,2}:\d{2})(?:\s*[–-]\s*(\d{1,2}:\d{2}))?/i);
+                const timeMatch = String(reviewSummary).match(
+                  /from\s+(\d{1,2}:\d{2})(?:\s*[–-]\s*(\d{1,2}:\d{2}))?/i,
+                );
                 if (timeMatch) {
                   startRaw = timeMatch[1];
                   if (timeMatch[2]) endRaw = timeMatch[2];
@@ -1419,7 +1658,8 @@ const EventCard: React.FC<EventCardProps> = ({
               // If date missing, attempt to extract an ISO date like 2025-12-22 from the message
               let inferredDate = requestedDateRaw;
               if (!inferredDate) {
-                const dateMatch = String(reviewSummary).match(/(\d{4}-\d{2}-\d{2})/);
+                const dateMatch =
+                  String(reviewSummary).match(/(\d{4}-\d{2}-\d{2})/);
                 if (dateMatch) inferredDate = dateMatch[1];
               }
 
@@ -1441,21 +1681,43 @@ const EventCard: React.FC<EventCardProps> = ({
               };
 
               const dateDisplay = formatDate(inferredDate as any);
-              const timeDisplay = startRaw ? `${formatTime(startRaw)}${endRaw ? " - " + formatTime(endRaw) : ""}` : "";
+              const timeDisplay = startRaw
+                ? `${formatTime(startRaw)}${endRaw ? " - " + formatTime(endRaw) : ""}`
+                : "";
 
               // Additional fields to display if present
-              const requester = pick(r?.createdByName, r?.RequesterName, r?.First_Name, r?.first_name, r?.Requester, r?.requesterName) || "—";
+              const requester =
+                pick(
+                  r?.createdByName,
+                  r?.RequesterName,
+                  r?.First_Name,
+                  r?.first_name,
+                  r?.Requester,
+                  r?.requesterName,
+                ) || "—";
 
               // Prefer resolved geo names fetched when opening the modal
               let districtVal = resolvedGeo?.district || null;
               let provinceVal = resolvedGeo?.province || null;
-              let municipalityVal = pick(r?.municipality, r?.Municipality, r?.MunicipalityName) || null;
-              let locationVal = pick(r?.Location, r?.location, r?.Venue, r?.venue) || null;
-              const eventType = pick(r?.Event_Type, r?.eventType, r?.Category, r?.category, r?.event?.Category) || "—";
+              let municipalityVal =
+                pick(r?.municipality, r?.Municipality, r?.MunicipalityName) ||
+                null;
+              let locationVal =
+                pick(r?.Location, r?.location, r?.Venue, r?.venue) || null;
+              const eventType =
+                pick(
+                  r?.Event_Type,
+                  r?.eventType,
+                  r?.Category,
+                  r?.category,
+                  r?.event?.Category,
+                ) || "—";
 
               // If location is still missing, try to parse it from the message (e.g. "Located at XYZ")
               if (!locationVal) {
-                const locMatch = String(reviewSummary).match(/Located at\s+([^\.\n,]+)/i);
+                const locMatch = String(reviewSummary).match(
+                  /Located at\s+([^\.\n,]+)/i,
+                );
                 if (locMatch && locMatch[1]) {
                   locationVal = locMatch[1].trim();
                 }
@@ -1467,55 +1729,137 @@ const EventCard: React.FC<EventCardProps> = ({
               municipalityVal = municipalityVal || "—";
               locationVal = locationVal || "—";
 
+                          // Helper to format date/time for the card: "Dec 1 8:00 AM - 4:00 PM"
+                          const formatDateShort = (d?: any) => {
+                            if (!d) return null;
+                            try {
+                              const dt = new Date(d);
+                              if (isNaN(dt.getTime())) return String(d);
+                              return dt.toLocaleDateString("en-US", {
+                                month: "short",
+                                day: "numeric",
+                              });
+                            } catch (e) {
+                              return String(d);
+                            }
+                          };
+
+                          const formatTimeShort = (t?: any) => {
+                            if (!t) return null;
+                            try {
+                              const dt = new Date(t);
+                              if (isNaN(dt.getTime())) return String(t);
+                              return dt.toLocaleTimeString("en-US", {
+                                hour: "numeric",
+                                minute: "2-digit",
+                              });
+                            } catch (e) {
+                              return String(t);
+                            }
+                          };
+
+                          const startVal = pick(
+                            r?.Start_Date,
+                            r?.Start,
+                            r?.start,
+                            r?.StartTime,
+                            r?.event?.Start_Date,
+                            r?.event?.Start,
+                            null,
+                          );
+
+                          const endVal = pick(
+                            r?.End_Date,
+                            r?.End,
+                            r?.end,
+                            r?.EndTime,
+                            r?.event?.End_Date,
+                            r?.event?.End,
+                            null,
+                          );
+
+                          const startDateShort = formatDateShort(startVal);
+                          const startTimeShort = formatTimeShort(startVal);
+                          const endTimeShort = formatTimeShort(endVal);
+
               return (
                 <div className="space-y-3 mb-4">
                   <div className="p-4 border border-default-200 rounded-lg bg-default-50">
-
                     {/* Prefer showing the backend decision summary (includes admin/coordinator note)
                         when present — replace the original request message for reschedule/reject flows. */}
                     {isRejected ? (
                       <>
-                        <p className="text-sm font-semibold text-default-900 mb-2">Rejected</p>
-                        <p className="text-sm text-default-800 whitespace-pre-line">{decisionSummary || reviewSummary}</p>
+                        <p className="text-xs font-semibold text-default-900 mb-2">
+                          Rejected
+                        </p>
+                        <p className="text-xs text-default-800 whitespace-pre-line">
+                          {decisionSummary || reviewSummary}
+                        </p>
                       </>
                     ) : decisionSummary ? (
                       <>
-                        <p className="text-sm font-semibold text-default-900 mb-2">Decision Note</p>
-                        <p className="text-sm text-default-800 whitespace-pre-line">{decisionSummary}</p>
+                        <p className="text-xs font-semibold text-default-900 mb-2">
+                          Decision Note
+                        </p>
+                        <p className="text-xs text-default-800 whitespace-pre-line">
+                          {decisionSummary}
+                        </p>
                       </>
                     ) : reviewSummary ? (
                       <>
-                        <p className="text-sm font-semibold text-default-900 mb-2">Request Message</p>
-                        <p className="text-sm text-default-800 whitespace-pre-line">{reviewSummary}</p>
+                        <p className="text-xs font-semibold text-default-900 mb-2">
+                          Request Message
+                        </p>
+                        <p className="text-xs text-default-800 whitespace-pre-line">
+                          {reviewSummary}
+                        </p>
                       </>
                     ) : null}
 
-                    <div className="mt-4 grid grid-cols-2 gap-4 text-sm">
+                    <div className="mt-4 grid grid-cols-2 gap-4 text-xs">
                       <div>
-                        <p className="text-default-700 font-semibold">Requester</p>
-                        <p className="text-default-800 font-medium">{requester}</p>
+                        <p className="text-default-700 font-semibold">
+                          Requester
+                        </p>
+                        <p className="text-default-800 font-medium">
+                          {requester}
+                        </p>
 
-                        <p className="mt-3 text-default-700 font-semibold">Province</p>
+                        <p className="mt-3 text-default-700 font-semibold">
+                          Province
+                        </p>
                         <p className="text-default-800">{provinceVal}</p>
 
-                        <p className="mt-3 text-default-700 font-semibold">District</p>
+                        <p className="mt-3 text-default-700 font-semibold">
+                          District
+                        </p>
                         <p className="text-default-800">{districtVal}</p>
 
-                        <p className="mt-3 text-default-700 font-semibold">Municipality</p>
+                        <p className="mt-3 text-default-700 font-semibold">
+                          Municipality
+                        </p>
                         <p className="text-default-800">{municipalityVal}</p>
                       </div>
 
                       <div>
                         <p className="text-default-700 font-semibold">Date</p>
-                        <p className="text-default-800 font-medium">{dateDisplay}</p>
+                        <p className="text-default-800 font-medium">
+                          {dateDisplay}
+                        </p>
 
-                        <p className="mt-3 text-default-700 font-semibold">Time</p>
+                        <p className="mt-3 text-default-700 font-semibold">
+                          Time
+                        </p>
                         <p className="text-default-800">{timeDisplay || "—"}</p>
 
-                        <p className="mt-3 text-default-700 font-semibold">Location</p>
+                        <p className="mt-3 text-default-700 font-semibold">
+                          Location
+                        </p>
                         <p className="text-default-800">{locationVal}</p>
 
-                        <p className="mt-3 text-default-700 font-semibold">Event Type</p>
+                        <p className="mt-3 text-default-700 font-semibold">
+                          Event Type
+                        </p>
                         <p className="text-default-800">{eventType}</p>
                       </div>
                     </div>
@@ -1569,6 +1913,7 @@ const EventCard: React.FC<EventCardProps> = ({
         confirmText="Cancel Event"
         onConfirm={async (note?: string) => await handleCancelWithNote(note)}
         requireNote={true}
+        color="danger"
       />
 
       <ConfirmModal
@@ -1599,6 +1944,7 @@ const EventCard: React.FC<EventCardProps> = ({
         confirmText="Delete"
         onConfirm={async () => await handleDelete()}
         requireNote={false}
+        color="danger"
       />
 
       {/* Success Modal */}
@@ -1609,17 +1955,17 @@ const EventCard: React.FC<EventCardProps> = ({
         onClose={() => setSuccessModal(false)}
       >
         <ModalContent>
-          <ModalHeader className="flex items-center gap-2">
-            <div className="flex items-center justify-center w-10 h-10 rounded-full bg-success-50">
-              <Check className="w-5 h-5 text-success-500" />
+          <ModalHeader className="flex flex-col gap-1">
+            <div className="flex items-center gap-2">
+              <Avatar
+                className="border-1"
+                icon={<Check className="w-4 h-4" />}
+              />
             </div>
-            <span className="text-lg font-semibold">Success</span>
+            <h3 className="text-sm font-semibold py-2">Success</h3>
+            <p className="text-xs font-normal">Request deleted successfully.</p>
           </ModalHeader>
-          <ModalBody>
-            <p className="text-sm text-default-600">
-              Request deleted successfully.
-            </p>
-          </ModalBody>
+          <ModalBody className="py-4"></ModalBody>
           <ModalFooter>
             <Button
               className="bg-black text-white font-medium"

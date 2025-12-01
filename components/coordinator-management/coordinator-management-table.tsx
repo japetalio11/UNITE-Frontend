@@ -1,5 +1,9 @@
 "use client";
-import { MoreHorizontal, Edit3, Trash2 } from "lucide-react";
+import {
+  Ellipsis as MoreHorizontal,
+  Pencil as Edit3,
+  TrashBin as Trash2,
+} from "@gravity-ui/icons";
 import { Checkbox } from "@heroui/checkbox";
 import { Button } from "@heroui/button";
 import {
@@ -146,7 +150,7 @@ export default function CoordinatorTable({
                     <div className="h-4 bg-gray-200 rounded w-28"></div>
                   </td>
                   <td className="px-6 py-4">
-                    <div className="h-4 bg-gray-200 rounded w-8 h-8"></div>
+                    <div className="bg-gray-200 rounded w-8 h-8"></div>
                   </td>
                 </tr>
               ))}
@@ -238,7 +242,7 @@ export default function CoordinatorTable({
                           size="sm"
                           variant="light"
                         >
-                          <MoreHorizontal size={18} />
+                          <MoreHorizontal width={18} height={18} />
                         </Button>
                       </DropdownTrigger>
                       <DropdownMenu
@@ -304,3 +308,5 @@ export default function CoordinatorTable({
     </div>
   );
 }
+
+//[FCM-003] Feature: Added coordinator management table component
