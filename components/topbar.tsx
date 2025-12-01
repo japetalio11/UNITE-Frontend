@@ -18,6 +18,7 @@ interface TopbarProps {
   userEmail?: string;
   userAvatar?: string;
   onUserClick?: () => void;
+  onSearch?: (query: string) => void;
 }
 
 export default function Topbar({
@@ -25,9 +26,11 @@ export default function Topbar({
   userEmail = "bmc@gmail.com",
   userAvatar = "",
   onUserClick,
+  onSearch,
 }: TopbarProps) {
   const handleSearchButtonClick = () => {
-    // This is where you would open the search modal
+    // Invoke parent-provided handler if present (public pages may noop)
+    if (onSearch) onSearch("");
   };
 
   // Handle keyboard shortcuts (Win+K or Cmd+K)

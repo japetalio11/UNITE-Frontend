@@ -903,11 +903,11 @@ export default function CampaignPage() {
     requests.forEach((req) => {
       const status = normalizeStatus(req);
 
-      if (status === "approved") {
+      if (status === "Approved") {
         counts.approved++;
-      } else if (status === "pending") {
+      } else if (status === "Pending") {
         counts.pending++;
-      } else if (status === "rejected") {
+      } else if (status === "Rejected") {
         counts.rejected++;
       }
     });

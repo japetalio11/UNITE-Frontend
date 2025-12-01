@@ -1065,13 +1065,11 @@ export default function EditStakeholderModal({
                     >
                       {showPassword ? (
                         <Eye
-                          className="text-default-800 pointer-events-none"
-                          size={18}
+                          className="text-default-800 pointer-events-none w-5 h-5"
                         />
                       ) : (
                         <EyeOff
-                          className="text-default-800 pointer-events-none"
-                          size={18}
+                          className="text-default-800 pointer-events-none w-5 h-5"
                         />
                       )}
                     </button>

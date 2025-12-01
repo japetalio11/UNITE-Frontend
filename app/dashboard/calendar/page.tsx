@@ -45,7 +45,8 @@ import { fetchWithAuth } from "@/utils/fetchWithAuth";
 import { getUserInfo } from "@/utils/getUserInfo";
 import { Menu } from "lucide-react";
 
-export default function CalendarPage({ publicTitle }: { publicTitle?: string } = {}) {
+export default function CalendarPage(props: any) {
+  const publicTitle: string | undefined = props?.publicTitle;
   const pathname = usePathname();
   // Allow create on dashboard calendar, but not on public calendar route
   const allowCreate = pathname === "/calendar" ? false : true;

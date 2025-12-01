@@ -49,6 +49,7 @@ interface CampaignToolbarProps {
   municipalities?: any[];
   onDistrictFetch?: (provinceId: string | number) => void;
   counts?: { all: number; approved: number; pending: number; rejected: number };
+  totalRequests?: number;
 }
 
 export default function CampaignToolbar({

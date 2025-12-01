@@ -286,7 +286,7 @@ export default function StakeholderTable({
                         size="sm"
                         variant="light"
                       >
-                        <MoreHorizontal size={18} />
+                        <MoreHorizontal className="w-4 h-4" />
                       </Button>
                     </DropdownTrigger>
                     <DropdownMenu

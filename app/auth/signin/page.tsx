@@ -239,13 +239,11 @@ export default function SignIn() {
                   >
                     {showPassword ? (
                       <Eye
-                        className="text-default-800 pointer-events-none"
-                        size={20}
+                        className="text-default-800 pointer-events-none w-5 h-5"
                       />
                     ) : (
                       <EyeSlash
-                        className="text-default-800 pointer-events-none"
-                        size={20}
+                        className="text-default-800 pointer-events-none w-5 h-5"
                       />
                     )}
                   </button>

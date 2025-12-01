@@ -625,7 +625,7 @@ export default function Sidebar({
         href={href}
         tabIndex={visible ? 0 : -1}
       >
-        <Icon className="-translate-y-[0.5px]" size={16} strokeWidth={2} />
+        <Icon className="-translate-y-[0.5px] w-4 h-4" strokeWidth={2} />
       </Link>
     );
   };
@@ -680,11 +680,7 @@ export default function Sidebar({
                   const Icon = icon as any;
 
                   return (
-                    <Icon
-                      className="-translate-y-[0.5px]"
-                      size={16}
-                      strokeWidth={2}
-                    />
+                    <Icon className="-translate-y-[0.5px] w-4 h-4" strokeWidth={2} />
                   );
                 })()}
                 {(() => {
@@ -746,13 +742,9 @@ export default function Sidebar({
                 {(() => {
                   const Icon = icon as any;
 
-                  return (
-                    <Icon
-                      className="-translate-y-[0.5px]"
-                      size={16}
-                      strokeWidth={2}
-                    />
-                  );
+                    return (
+                      <Icon className="-translate-y-[0.5px] w-4 h-4" strokeWidth={2} />
+                    );
                 })()}
               </button>
             );
