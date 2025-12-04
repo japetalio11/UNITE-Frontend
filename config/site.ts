@@ -7,7 +7,7 @@ export const siteConfig = {
   navItems: [
     {
       label: "About Us",
-      href: "",
+      href: "/about",
     },
     {
       label: "Calendar",
