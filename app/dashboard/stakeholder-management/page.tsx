@@ -248,8 +248,8 @@ export default function StakeholderManagement() {
       // Previous logic required both which could incorrectly block sys-admin users.
       const resolvedCanManage = !!(isSystemAdmin || isStaffAdmin || roleLower === "admin");
       setCanManageStakeholders(resolvedCanManage);
-      // If user is not authorized to manage stakeholders, redirect to error page
-      if (!resolvedCanManage) {
+      // Stakeholders cannot access this page
+      if (roleLower === "stakeholder") {
         try {
           router.replace('/error');
         } catch (e) {
