@@ -1,81 +1,76 @@
-import { cookies } from "next/headers";
+"use client";
 
+import React, { useEffect, useState } from "react";
 import Sidebar from "@/components/sidebar";
+import ProtectedRoute from "@/components/ProtectedRoute";
+import { getUserInfo } from "../../utils/getUserInfo";
 
 interface DashboardLayoutProps {
   children: React.ReactNode;
 }
 
-export default async function SysAdminDashboardLayout({
-  children,
-}: DashboardLayoutProps) {
-  // Attempt to read a server-set cookie named 'unite_user' (if your
-  // authentication sets this cookie). This lets the Sidebar receive
-  // server-derived userInfo during SSR so system-admins see admin links
-  // without waiting for client-side localStorage.
-  let userInfoProp: any = null;
+export default function SysAdminDashboardLayout({ children }: DashboardLayoutProps) {
+  const [userInfoProp, setUserInfoProp] = useState<any | null>(null);
+  const [loading, setLoading] = useState(true);
 
-  try {
-    const cookieStore = await cookies();
-    const c = cookieStore.get("unite_user")?.value || null;
-    const parsed = c ? JSON.parse(c) : null;
+  useEffect(() => {
+    try {
+      const info = getUserInfo();
+      const parsed = info?.raw || null;
 
-    if (parsed) {
-      userInfoProp = {
-        raw: parsed,
-        role:
-          parsed.role ||
-          parsed.StaffType ||
-          parsed.staff_type ||
-          parsed.staffType ||
-          null,
-        isAdmin: !!parsed.isAdmin,
-        displayName:
-          parsed.displayName || parsed.First_Name || parsed.name || null,
-        email: parsed.email || parsed.Email || null,
-      };
-      // developer-only logging removed
+      if (parsed) {
+        const derived = {
+          raw: parsed,
+          role:
+            parsed.role || parsed.StaffType || parsed.staff_type || parsed.staffType || null,
+          isAdmin: !!parsed.isAdmin,
+          displayName: parsed.displayName || parsed.First_Name || parsed.name || null,
+          email: parsed.email || parsed.Email || null,
+        };
+
+        setUserInfoProp(derived);
+      } else {
+        setUserInfoProp(null);
+      }
+    } catch (e) {
+      setUserInfoProp(null);
+    } finally {
+      setLoading(false);
     }
-  } catch (e) {
-    // ignore cookie parse errors
+  }, []);
+
+  if (loading) {
+    return <div className="h-screen flex items-center justify-center">Loading...</div>;
   }
 
-  // Compute server-side visibility flags for the sidebar. These are
-  // preferred by the client Sidebar to avoid hydration mismatches.
   const roleLower = String(userInfoProp?.role || "").toLowerCase();
   const staffType =
-    userInfoProp?.raw?.StaffType ||
-    userInfoProp?.raw?.staff_type ||
-    userInfoProp?.raw?.staffType ||
-    null;
+    userInfoProp?.raw?.StaffType || userInfoProp?.raw?.staff_type || userInfoProp?.raw?.staffType || null;
   const staffTypeLower = staffType ? String(staffType).toLowerCase() : "";
-  // Check if user is system admin: explicit isAdmin flag, StaffType === 'Admin',
-  // role === 'Admin', or system admin variant (contains both 'sys' and 'admin')
+
   const serverIsSystemAdmin = Boolean(
-    userInfoProp?.isAdmin ||
-      staffTypeLower === "admin" ||
-      roleLower === "admin" ||
-      (roleLower.includes("sys") && roleLower.includes("admin")),
+    userInfoProp?.isAdmin || staffTypeLower === "admin" || roleLower === "admin" || (roleLower.includes("sys") && roleLower.includes("admin")),
   );
   const serverIsCoordinator = Boolean(
-    (staffType && String(staffType).toLowerCase() === "coordinator") ||
-      roleLower.includes("coordinator"),
+    (staffType && String(staffType).toLowerCase() === "coordinator") || roleLower.includes("coordinator"),
   );
 
   const initialShowCoordinator = serverIsSystemAdmin;
   const initialShowStakeholder = serverIsSystemAdmin || serverIsCoordinator;
 
   return (
-    <div className="h-screen flex">
-      <Sidebar
-        initialShowCoordinator={initialShowCoordinator}
-        initialShowStakeholder={initialShowStakeholder}
-        role={userInfoProp?.role}
-        userInfo={userInfoProp}
-      />
+    <ProtectedRoute>
+      <div className="h-screen flex">
+        <Sidebar
+          initialShowCoordinator={initialShowCoordinator}
+          initialShowStakeholder={initialShowStakeholder}
+          role={userInfoProp?.role}
+          userInfo={userInfoProp}
+        />
 
-      {/* Main Content Area */}
-      <main className="flex-1 overflow-y-auto">{children}</main>
-    </div>
+        {/* Main Content Area */}
+        <main className="flex-1 overflow-y-auto">{children}</main>
+      </div>
+    </ProtectedRoute>
   );
 }

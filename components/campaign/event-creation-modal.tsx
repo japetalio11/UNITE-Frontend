@@ -15,9 +15,10 @@ import { DatePicker } from "@heroui/date-picker";
 import { Avatar } from "@heroui/avatar";
 import { Person, Droplet, Megaphone } from "@gravity-ui/icons";
 
-import { debug } from "@/utils/devLogger";
+// debug logger removed from demo
 import { getUserInfo } from "@/utils/getUserInfo";
 import { decodeJwt } from "@/utils/decodeJwt";
+import AppointmentDatePicker from "@/components/tools/appointment-date-picker";
 
 interface CreateTrainingEventModalProps {
   isOpen: boolean;
@@ -78,6 +79,7 @@ export const CreateTrainingEventModal: React.FC<
     { key: string; label: string }[]
   >([]);
   const API_URL = process.env.NEXT_PUBLIC_API_URL || "";
+  const [isSysAdmin, setIsSysAdmin] = useState(false);
 
   // Load stakeholders for selected coordinator's district when coordinator changes
   useEffect(() => {
@@ -245,22 +247,19 @@ export const CreateTrainingEventModal: React.FC<
           info?.role || user?.staff_type || user?.role || "",
         ).toLowerCase();
 
-        console.log(
-          "Stakeholder check: roleStr =",
-          roleStr,
-          "user =",
-          user,
-          "info =",
-          info,
-        );
-        if (user && roleStr.includes("stakeholder")) {
+        // diagnostic removed
+        if (
+          user &&
+          (user.Stakeholder_ID ||
+            (user.id && user.id.toLowerCase().startsWith("stkh_")))
+        ) {
           const sid =
             info?.raw?.id ||
             user.Stakeholder_ID ||
             user.StakeholderId ||
             user.id;
 
-          console.log("Stakeholder detected: sid =", sid);
+          // diagnostic removed
           if (sid) {
             try {
               const stRes = await fetch(
@@ -269,12 +268,12 @@ export const CreateTrainingEventModal: React.FC<
               );
               const stBody = await stRes.json();
 
-              console.log("Stakeholder fetch response:", stRes.ok, stBody);
+              // diagnostic removed
               if (stRes.ok && stBody.data) {
                 const st = stBody.data;
                 const districtId = st.district;
 
-                console.log("Stakeholder district ID:", districtId);
+                // diagnostic removed
                 if (districtId) {
                   const coordRes = await fetch(
                     `${API_URL}/api/coordinators?district_id=${encodeURIComponent(districtId)}`,
@@ -282,11 +281,7 @@ export const CreateTrainingEventModal: React.FC<
                   );
                   const coordBody = await coordRes.json();
 
-                  console.log(
-                    "Coordinator fetch response:",
-                    coordRes.ok,
-                    coordBody,
-                  );
+                  // diagnostic removed
                   if (
                     coordRes.ok &&
                     coordBody.data &&
@@ -315,11 +310,6 @@ export const CreateTrainingEventModal: React.FC<
                     setCoordinatorOptions(coordOpts);
                     if (coordOpts.length > 0) {
                       setCoordinator(coordOpts[0].key);
-                      console.log(
-                        "Coordinator set to:",
-                        coordOpts[0].key,
-                        coordOpts[0].label,
-                      );
                     }
                   } else {
                     console.error(
@@ -339,7 +329,7 @@ export const CreateTrainingEventModal: React.FC<
                       `${st.firstName || st.First_Name || ""} ${st.lastName || st.Last_Name || ""}`.trim(),
                   },
                 ]);
-                console.log("Set stakeholder for stakeholder user");
+                // diagnostic removed
               }
             } catch (e) {
               console.error("Failed to fetch for stakeholder", e);
@@ -507,22 +497,42 @@ export const CreateTrainingEventModal: React.FC<
           }
         })();
 
-        // eslint-disable-next-line no-console
-        console.log("[CampaignCreateEventModal] getUserInfo():", infoOuter);
+        // diagnostic removed
         const rawUserOuter =
           typeof window !== "undefined"
             ? localStorage.getItem("unite_user")
             : null;
 
-        // eslint-disable-next-line no-console
-        console.log(
-          "[CampaignCreateEventModal] raw unite_user (truncated):",
-          rawUserOuter ? String(rawUserOuter).slice(0, 300) : null,
-        );
+        // diagnostic removed
       } catch (e) {
         /* ignore */
       }
       fetchCoordinators();
+    }
+  }, [isOpen]);
+
+  // Set isSysAdmin based on user role
+  useEffect(() => {
+    if (isOpen) {
+      const rawUser = localStorage.getItem("unite_user");
+      const user = rawUser ? JSON.parse(rawUser) : null;
+      const info = (() => {
+        try {
+          return getUserInfo();
+        } catch (e) {
+          return null;
+        }
+      })();
+
+      const isAdmin = !!(
+        (info && info.isAdmin) ||
+        (user &&
+          ((user.staff_type &&
+            String(user.staff_type).toLowerCase().includes("admin")) ||
+            (user.role && String(user.role).toLowerCase().includes("admin"))))
+      );
+
+      setIsSysAdmin(isAdmin);
     }
   }, [isOpen]);
 
@@ -853,19 +863,26 @@ export const CreateTrainingEventModal: React.FC<
             <div className="grid grid-cols-3 gap-3 items-end">
               <div className="col-span-1 space-y-1">
                 <label className="text-xs font-medium">Date</label>
-                <DatePicker
-                  hideTimeZone
-                  classNames={{
-                    base: "w-full",
-                    inputWrapper: "border-default-200 h-9",
-                  }}
-                  granularity="day"
-                  radius="md"
-                  size="sm"
-                  value={date}
-                  variant="bordered"
-                  onChange={setDate}
-                />
+                {isSysAdmin ? (
+                  <DatePicker
+                    hideTimeZone
+                    classNames={{
+                      base: "w-full",
+                      inputWrapper: "border-default-200 h-9",
+                    }}
+                    granularity="day"
+                    radius="md"
+                    size="sm"
+                    value={date}
+                    variant="bordered"
+                    onChange={setDate}
+                  />
+                ) : (
+                  <AppointmentDatePicker
+                    value={date}
+                    onChange={setDate}
+                  />
+                )}
                 {dateError && (
                   <p className="text-danger text-xs mt-1">{dateError}</p>
                 )}
@@ -1071,6 +1088,7 @@ export const CreateBloodDriveEventModal: React.FC<
   const [email, setEmail] = useState("");
   const [contactNumber, setContactNumber] = useState("");
   const [dateError, setDateError] = useState("");
+  const [isSysAdmin, setIsSysAdmin] = useState(false);
 
   const coordinators = [
     { key: "john", label: "John Doe" },
@@ -1149,14 +1167,7 @@ export const CreateBloodDriveEventModal: React.FC<
           info?.role || user?.staff_type || user?.role || "",
         ).toLowerCase();
 
-        console.log(
-          "Stakeholder check: roleStr =",
-          roleStr,
-          "user =",
-          user,
-          "info =",
-          info,
-        );
+        // diagnostic removed
         if (
           user &&
           (user.Stakeholder_ID ||
@@ -1168,7 +1179,7 @@ export const CreateBloodDriveEventModal: React.FC<
             user.StakeholderId ||
             user.id;
 
-          console.log("Stakeholder detected: sid =", sid);
+          // diagnostic removed
           if (sid) {
             try {
               const stRes = await fetch(
@@ -1177,12 +1188,12 @@ export const CreateBloodDriveEventModal: React.FC<
               );
               const stBody = await stRes.json();
 
-              console.log("Stakeholder fetch response:", stRes.ok, stBody);
+              // diagnostic removed
               if (stRes.ok && stBody.data) {
                 const st = stBody.data;
                 const districtId = st.district;
 
-                console.log("Stakeholder district ID:", districtId);
+                // diagnostic removed
                 if (districtId) {
                   const coordRes = await fetch(
                     `${API_URL}/api/coordinators?district_id=${encodeURIComponent(districtId)}`,
@@ -1190,11 +1201,7 @@ export const CreateBloodDriveEventModal: React.FC<
                   );
                   const coordBody = await coordRes.json();
 
-                  console.log(
-                    "Coordinator fetch response:",
-                    coordRes.ok,
-                    coordBody,
-                  );
+                  // diagnostic removed
                   if (
                     coordRes.ok &&
                     coordBody.data &&
@@ -1221,13 +1228,8 @@ export const CreateBloodDriveEventModal: React.FC<
                     });
 
                     setCoordinatorOptions(coordOpts);
-                    if (coordOpts.length > 0) {
+                      if (coordOpts.length > 0) {
                       setCoordinator(coordOpts[0].key);
-                      console.log(
-                        "Coordinator set to:",
-                        coordOpts[0].key,
-                        coordOpts[0].label,
-                      );
                     }
                   } else {
                     console.error(
@@ -1570,6 +1572,31 @@ export const CreateBloodDriveEventModal: React.FC<
     // parent will close modal after create completes
   };
 
+  // Set isSysAdmin based on user role
+  useEffect(() => {
+    if (isOpen) {
+      const rawUser = localStorage.getItem("unite_user");
+      const user = rawUser ? JSON.parse(rawUser) : null;
+      const info = (() => {
+        try {
+          return getUserInfo();
+        } catch (e) {
+          return null;
+        }
+      })();
+
+      const isAdmin = !!(
+        (info && info.isAdmin) ||
+        (user &&
+          ((user.staff_type &&
+            String(user.staff_type).toLowerCase().includes("admin")) ||
+            (user.role && String(user.role).toLowerCase().includes("admin"))))
+      );
+
+      setIsSysAdmin(isAdmin);
+    }
+  }, [isOpen]);
+
   return (
     <Modal
       isOpen={isOpen}
@@ -1797,19 +1824,26 @@ export const CreateBloodDriveEventModal: React.FC<
             <div className="grid grid-cols-3 gap-3 items-end">
               <div className="col-span-1 space-y-1">
                 <label className="text-xs font-medium">Date</label>
-                <DatePicker
-                  hideTimeZone
-                  classNames={{
-                    base: "w-full",
-                    inputWrapper: "border-default-200 h-9",
-                  }}
-                  granularity="day"
-                  radius="md"
-                  size="sm"
-                  value={date}
-                  variant="bordered"
-                  onChange={setDate}
-                />
+                {isSysAdmin ? (
+                  <DatePicker
+                    hideTimeZone
+                    classNames={{
+                      base: "w-full",
+                      inputWrapper: "border-default-200 h-9",
+                    }}
+                    granularity="day"
+                    radius="md"
+                    size="sm"
+                    value={date}
+                    variant="bordered"
+                    onChange={setDate}
+                  />
+                ) : (
+                  <AppointmentDatePicker
+                    value={date}
+                    onChange={setDate}
+                  />
+                )}
                 {dateError && (
                   <p className="text-danger text-xs mt-1">{dateError}</p>
                 )}
@@ -2017,6 +2051,7 @@ export const CreateAdvocacyEventModal: React.FC<
   const [email, setEmail] = useState("");
   const [contactNumber, setContactNumber] = useState("");
   const [dateError, setDateError] = useState("");
+  const [isSysAdmin, setIsSysAdmin] = useState(false);
 
   const coordinators = [
     { key: "john", label: "John Doe" },
@@ -2120,14 +2155,7 @@ export const CreateAdvocacyEventModal: React.FC<
           (user?.id && user.id.toLowerCase().startsWith("stkh_"))
         );
 
-        console.log(
-          "Stakeholder check: isStakeholder =",
-          isStakeholder,
-          "user =",
-          user,
-          "info =",
-          info,
-        );
+        // diagnostic removed
         if (user && isStakeholder) {
           const sid =
             info?.raw?.id ||
@@ -2135,7 +2163,7 @@ export const CreateAdvocacyEventModal: React.FC<
             user.StakeholderId ||
             user.id;
 
-          console.log("Stakeholder detected: sid =", sid);
+          // diagnostic removed
           if (sid) {
             try {
               const stRes = await fetch(
@@ -2144,12 +2172,12 @@ export const CreateAdvocacyEventModal: React.FC<
               );
               const stBody = await stRes.json();
 
-              console.log("Stakeholder fetch response:", stRes.ok, stBody);
+              // diagnostic removed
               if (stRes.ok && stBody.data) {
                 const st = stBody.data;
                 const districtId = st.district;
 
-                console.log("Stakeholder district ID:", districtId);
+                // diagnostic removed
                 if (districtId) {
                   const coordRes = await fetch(
                     `${API_URL}/api/coordinators?district_id=${encodeURIComponent(districtId)}`,
@@ -2157,11 +2185,7 @@ export const CreateAdvocacyEventModal: React.FC<
                   );
                   const coordBody = await coordRes.json();
 
-                  console.log(
-                    "Coordinator fetch response:",
-                    coordRes.ok,
-                    coordBody,
-                  );
+                  // diagnostic removed
                   if (
                     coordRes.ok &&
                     coordBody.data &&
@@ -2190,11 +2214,6 @@ export const CreateAdvocacyEventModal: React.FC<
                     setCoordinatorOptions(coordOpts);
                     if (coordOpts.length > 0) {
                       setCoordinator(coordOpts[0].key);
-                      console.log(
-                        "Coordinator set to:",
-                        coordOpts[0].key,
-                        coordOpts[0].label,
-                      );
                     }
                   } else {
                     console.error(
@@ -2214,7 +2233,7 @@ export const CreateAdvocacyEventModal: React.FC<
                       `${st.firstName || st.First_Name || ""} ${st.lastName || st.Last_Name || ""}`.trim(),
                   },
                 ]);
-                console.log("Set stakeholder for stakeholder user");
+                // diagnostic removed
               }
             } catch (e) {
               console.error("Failed to fetch for stakeholder", e);
@@ -2522,6 +2541,31 @@ export const CreateAdvocacyEventModal: React.FC<
     // parent will close modal after create completes
   };
 
+  // Set isSysAdmin based on user role
+  useEffect(() => {
+    if (isOpen) {
+      const rawUser = localStorage.getItem("unite_user");
+      const user = rawUser ? JSON.parse(rawUser) : null;
+      const info = (() => {
+        try {
+          return getUserInfo();
+        } catch (e) {
+          return null;
+        }
+      })();
+
+      const isAdmin = !!(
+        (info && info.isAdmin) ||
+        (user &&
+          ((user.staff_type &&
+            String(user.staff_type).toLowerCase().includes("admin")) ||
+            (user.role && String(user.role).toLowerCase().includes("admin"))))
+      );
+
+      setIsSysAdmin(isAdmin);
+    }
+  }, [isOpen]);
+
   return (
     <Modal
       isOpen={isOpen}
@@ -2769,19 +2813,26 @@ export const CreateAdvocacyEventModal: React.FC<
             <div className="grid grid-cols-3 gap-3 items-end">
               <div className="col-span-1 space-y-1">
                 <label className="text-xs font-medium">Date</label>
-                <DatePicker
-                  hideTimeZone
-                  classNames={{
-                    base: "w-full",
-                    inputWrapper: "border-default-200 h-9",
-                  }}
-                  granularity="day"
-                  radius="md"
-                  size="sm"
-                  value={date}
-                  variant="bordered"
-                  onChange={setDate}
-                />
+                {isSysAdmin ? (
+                  <DatePicker
+                    hideTimeZone
+                    classNames={{
+                      base: "w-full",
+                      inputWrapper: "border-default-200 h-9",
+                    }}
+                    granularity="day"
+                    radius="md"
+                    size="sm"
+                    value={date}
+                    variant="bordered"
+                    onChange={setDate}
+                  />
+                ) : (
+                  <AppointmentDatePicker
+                    value={date}
+                    onChange={setDate}
+                  />
+                )}
                 {dateError && (
                   <p className="text-danger text-xs mt-1">{dateError}</p>
                 )}
@@ -2971,7 +3022,7 @@ export default function EventCreationModalsDemo() {
         isOpen={trainingOpen}
         onClose={() => setTrainingOpen(false)}
         onConfirm={(data) => {
-          debug("Training Event Created:", data);
+          // no-op: demo handler removed logging
         }}
       />
 
@@ -2979,7 +3030,7 @@ export default function EventCreationModalsDemo() {
         isOpen={bloodDriveOpen}
         onClose={() => setBloodDriveOpen(false)}
         onConfirm={(data) => {
-          debug("Blood Drive Event Created:", data);
+          // no-op: demo handler removed logging
         }}
       />
 
@@ -2987,7 +3038,7 @@ export default function EventCreationModalsDemo() {
         isOpen={advocacyOpen}
         onClose={() => setAdvocacyOpen(false)}
         onConfirm={(data) => {
-          debug("Advocacy Event Created:", data);
+          // no-op: demo handler removed logging
         }}
       />
     </div>

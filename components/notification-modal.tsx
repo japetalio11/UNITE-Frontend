@@ -238,10 +238,12 @@ export default function NotificationModal({
 
     if (!nid) return;
 
+    const recipientId = getRecipientId();
+
     try {
       await fetchJsonWithAuth(`${API_URL}/api/notifications/${nid}/read`, {
         method: "PUT",
-        body: JSON.stringify({ isRead: true }),
+        body: JSON.stringify({ isRead: true, recipientId }),
       });
 
       // Update local state
@@ -273,7 +275,7 @@ export default function NotificationModal({
   };
 
   const handleNotificationClick = async (n: any) => {
-    markAsRead(n);
+    await markAsRead(n);
 
     // If related to a request, open view modal
     const rid =
@@ -314,7 +316,7 @@ export default function NotificationModal({
 
     // Tabs
     if (selectedTab === "unread") {
-      base = base.filter((n) => !(n.IsRead || n.is_read));
+      // Show all notifications, no filter by read status
     } else if (selectedTab === "system") {
       // System notifications might include signup requests, cancellations, etc.
       base = base.filter((n) => {
@@ -716,7 +718,7 @@ export default function NotificationModal({
 
                                 {/* Content */}
                                 <div className="flex-1 min-w-0 pt-0.5">
-                                  <p className="text-xs  leading-snug">
+                                  <p className={`text-xs leading-snug ${isRead ? 'text-gray-500' : 'text-gray-900'}`}>
                                     {n.Message || n.message}
                                   </p>
                                   <div className="mt-2 flex items-center">
