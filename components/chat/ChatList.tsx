@@ -15,8 +15,6 @@ type ConversationItem = {
 };
 
 export default function ChatList({ onSelect }: { onSelect?: (id: string) => void }) {
-  console.log('📋 ChatList: Rendered with onSelect:', !!onSelect);
-
   const {
     recipients,
     conversations,
@@ -25,24 +23,18 @@ export default function ChatList({ onSelect }: { onSelect?: (id: string) => void
     currentUser
   } = useChat();
 
-  console.log('📋 ChatList: Context values - recipients:', recipients?.length || 0, 'conversations:', conversations?.length || 0, 'loadingRecipients:', loadingRecipients, 'loadingConversations:', loadingConversations, 'currentUser:', currentUser);
-
   const [searchTerm, setSearchTerm] = useState("");
   const [filter, setFilter] = useState<'all' | 'unread'>('all');
 
   // Combine recipients and conversations for display
   const getChatItems = (): ConversationItem[] => {
-    console.log('📋 ChatList: getChatItems called');
     const items: ConversationItem[] = [];
 
     // Add conversations (existing chats)
-    console.log('📋 ChatList: Processing conversations:', conversations.length);
     conversations.forEach(conv => {
       const otherParticipant = conv.participants.find(p =>
         p.userId !== currentUser?.id
       );
-
-      console.log('📋 ChatList: Conversation:', conv.conversationId, 'other participant:', otherParticipant);
 
       if (otherParticipant?.details) {
         const unreadCount = conv.unreadCount[currentUser?.id || ''] || 0;
@@ -66,14 +58,10 @@ export default function ChatList({ onSelect }: { onSelect?: (id: string) => void
     });
 
     // Add recipients that don't have conversations yet
-    console.log('📋 ChatList: Processing recipients:', recipients.length);
     recipients.forEach(recipient => {
-      console.log('📋 ChatList: Processing recipient:', recipient);
       const hasConversation = items.some(item =>
         item.name === recipient.name && item.role === recipient.role
       );
-
-      console.log('📋 ChatList: Recipient has conversation:', hasConversation);
 
       if (!hasConversation) {
         items.push({
@@ -89,7 +77,6 @@ export default function ChatList({ onSelect }: { onSelect?: (id: string) => void
       }
     });
 
-    console.log('📋 ChatList: Final items:', items);
     return items;
   };
 
@@ -173,7 +160,6 @@ export default function ChatList({ onSelect }: { onSelect?: (id: string) => void
             <button
               key={item.id}
               onClick={() => {
-                console.log('📋 ChatList: Item clicked:', item.id, item.name);
                 onSelect?.(item.id);
               }}
               className={`w-full text-left flex items-start space-x-3 p-3 rounded-xl transition-colors hover:bg-gray-50`}

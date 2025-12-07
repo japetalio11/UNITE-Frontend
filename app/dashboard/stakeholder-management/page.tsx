@@ -106,10 +106,11 @@ export default function StakeholderManagement() {
     return stakeholders;
   }
 
-  // 3. ALL TAB: Return all stakeholders (usually just the active ones)
-  // If you want "All" to combine Pending + Approved, you would concat them here,
-  // but typically "All" in this context means "All Active Stakeholders".
-  return stakeholders; 
+  // 3. ALL TAB: Combine both approved stakeholders and pending signup requests
+  // Mark stakeholders as approved and signup requests as pending
+  const approvedItems = stakeholders.map((s: any) => ({ ...s, _isRequest: false }));
+  const pendingItems = signupRequests.map((r: any) => ({ ...r, _isRequest: true }));
+  return [...approvedItems, ...pendingItems]; 
 }, [selectedTab, signupRequests, stakeholders]);
 
   // 2. Apply Search Filtering (Lifted from Table)
@@ -812,13 +813,8 @@ export default function StakeholderManagement() {
           json?.message ||
             `Failed to delete stakeholder (status ${res.status})`,
         );
-      // refresh page so all lists and server-side data are consistent
-      try {
-        router.refresh();
-      } catch (e) {
-        // fallback to full reload
-        if (typeof window !== "undefined") window.location.reload();
-      }
+      // Reload both stakeholders and signup requests
+      await Promise.all([fetchStakeholders(), fetchSignupRequests()]);
     } catch (err: any) {
       throw err;
     } finally {
@@ -2022,6 +2018,7 @@ export default function StakeholderManagement() {
         currentPage={currentPage}
         totalPages={totalPages}
         onPageChange={setCurrentPage}
+        pendingCount={signupRequests.length}
       />
 
       {/* Table Content */}
@@ -2086,9 +2083,15 @@ export default function StakeholderManagement() {
         }}
         onSaved={async () => {
           try {
-            router.refresh();
+            // Reload both stakeholders and signup requests
+            await Promise.all([fetchStakeholders(), fetchSignupRequests()]);
           } catch (e) {
-            if (typeof window !== "undefined") window.location.reload();
+            // Fallback to refresh if fetch fails
+            try {
+              router.refresh();
+            } catch (e2) {
+              if (typeof window !== "undefined") window.location.reload();
+            }
           }
           setIsEditModalOpen(false);
           setEditingStakeholder(null);

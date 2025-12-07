@@ -293,7 +293,7 @@ export default function StakeholderTable({
                       aria-label="Stakeholder actions"
                       variant="faded"
                     >
-                      {isRequests ? (
+                      {isRequests || (coordinator as any)._isRequest ? (
                         <DropdownSection title="Actions">
                           <DropdownItem
                             key="accept"

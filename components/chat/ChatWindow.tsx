@@ -4,8 +4,6 @@ import { Search, Phone, MoreVertical, Sidebar, Paperclip, Send } from "lucide-re
 import { useChat } from "@/contexts/ChatContext";
 
 export default function ChatWindow({ selected }: { selected?: string | null }) {
-  console.log('🗣️ ChatWindow: Rendered with selected:', selected);
-
   const {
     messages,
     selectedConversation,
@@ -19,8 +17,6 @@ export default function ChatWindow({ selected }: { selected?: string | null }) {
     selectConversation
   } = useChat();
 
-  console.log('🗣️ ChatWindow: Context values - messages:', messages?.length || 0, 'selectedConversation:', selectedConversation, 'currentUser:', currentUser, 'isConnected:', isConnected);
-
   const [text, setText] = useState("");
   const [isTyping, setIsTyping] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -28,13 +24,8 @@ export default function ChatWindow({ selected }: { selected?: string | null }) {
 
   // Handle conversation selection when selected prop changes
   useEffect(() => {
-    console.log('🗣️ ChatWindow: selected prop changed:', selected);
     if (selected) {
-      console.log('🗣️ ChatWindow: Calling selectConversation with:', selected);
       selectConversation(selected);
-    } else {
-      console.log('🗣️ ChatWindow: No selection, clearing conversation');
-      // Clear selection if selected is null
     }
   }, [selected, selectConversation]);
 
@@ -69,11 +60,7 @@ export default function ChatWindow({ selected }: { selected?: string | null }) {
 
   // Handle sending message
   const handleSendMessage = async () => {
-    console.log('📤 ChatWindow: handleSendMessage called');
-    console.log('📤 ChatWindow: text:', text, 'selectedConversation:', !!selectedConversation, 'currentUser:', !!currentUser);
-
     if (!text.trim() || !selectedConversation || !currentUser) {
-      console.log('📤 ChatWindow: Cannot send - missing requirements');
       return;
     }
 
@@ -81,10 +68,7 @@ export default function ChatWindow({ selected }: { selected?: string | null }) {
       p.userId !== currentUser.id
     );
 
-    console.log('📤 ChatWindow: Other participant:', otherParticipant);
-
     if (otherParticipant) {
-      console.log('📤 ChatWindow: Sending message to:', otherParticipant.userId);
       await sendMessage(otherParticipant.userId, text.trim());
       setText("");
 
@@ -93,8 +77,6 @@ export default function ChatWindow({ selected }: { selected?: string | null }) {
         setIsTyping(false);
         stopTyping(otherParticipant.userId);
       }
-    } else {
-      console.log('📤 ChatWindow: No other participant found');
     }
   };
 
@@ -122,10 +104,7 @@ export default function ChatWindow({ selected }: { selected?: string | null }) {
 
   // Get conversation display info
   const getConversationInfo = () => {
-    console.log('🗣️ ChatWindow: getConversationInfo - selectedConversation:', selectedConversation, 'currentUser:', currentUser);
-
     if (!selectedConversation || !currentUser) {
-      console.log('🗣️ ChatWindow: No conversation or user selected');
       return { name: "Select a conversation", role: "", type: "" };
     }
 
@@ -133,19 +112,14 @@ export default function ChatWindow({ selected }: { selected?: string | null }) {
       p.userId !== currentUser.id
     );
 
-    console.log('🗣️ ChatWindow: Other participant:', otherParticipant);
-
     if (otherParticipant?.details) {
-      const info = {
+      return {
         name: otherParticipant.details.name,
         role: otherParticipant.details.role,
         type: otherParticipant.details.type
       };
-      console.log('🗣️ ChatWindow: Conversation info:', info);
-      return info;
     }
 
-    console.log('🗣️ ChatWindow: No participant details found');
     return { name: "Unknown User", role: "", type: "" };
   };
 

@@ -92,21 +92,15 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
 
   // Initialize Socket.IO connection
   useEffect(() => {
-    console.log('🔌 ChatContext: Initializing Socket.IO connection...');
-
     const token = typeof window !== 'undefined'
       ? localStorage.getItem('unite_token') || sessionStorage.getItem('unite_token')
       : null;
 
-    console.log('🔑 ChatContext: Token available:', !!token);
-
     if (!token) {
-      console.log('❌ ChatContext: No token found, skipping connection');
       return;
     }
 
     const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:6700';
-    console.log('🌐 ChatContext: Connecting to:', apiUrl);
 
     const socketInstance = io(apiUrl, {
       auth: { token },
@@ -114,44 +108,30 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
     });
 
     socketInstance.on('connect', () => {
-      console.log('✅ ChatContext: Connected to chat server');
       setIsConnected(true);
     });
 
-    socketInstance.on('disconnect', (reason) => {
-      console.log('❌ ChatContext: Disconnected from chat server, reason:', reason);
-      setIsConnected(false);
-    });
-
-    socketInstance.on('connect_error', (error) => {
-      console.error('🚨 ChatContext: Connection error:', error);
-      setIsConnected(false);
-    });
-
     socketInstance.on('disconnect', () => {
-      console.log('Disconnected from chat server');
+      setIsConnected(false);
+    });
+
+    socketInstance.on('connect_error', () => {
       setIsConnected(false);
     });
 
     // Message events
     socketInstance.on('new_message', (message: Message) => {
-      console.log('📨 ChatContext: New message received:', message);
-      console.log('📨 ChatContext: Current messages before:', messages.length);
       setMessages(prev => {
         // Check if message already exists
         if (prev.some(m => m.messageId === message.messageId)) {
-          console.log('📨 ChatContext: Message already exists, skipping');
           return prev;
         }
-        const newMessages = [...prev, message].sort((a, b) =>
+        return [...prev, message].sort((a, b) =>
           new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
         );
-        console.log('📨 ChatContext: Messages after adding:', newMessages.length);
-        return newMessages;
       });
 
       // Update conversation last message
-      console.log('📨 ChatContext: Updating conversation last message for:', message.conversationId);
       setConversations(prev =>
         prev.map(conv =>
           conv.conversationId === message.conversationId
@@ -171,7 +151,6 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
     });
 
     socketInstance.on('message_sent', (message: Message) => {
-      console.log('📤 ChatContext: Message sent confirmation:', message);
       setMessages(prev => {
         if (prev.some(m => m.messageId === message.messageId)) {
           return prev;
@@ -212,12 +191,12 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
     });
 
     // Error events
-    socketInstance.on('message_error', (error: { error: string }) => {
-      console.error('Message error:', error.error);
+    socketInstance.on('message_error', () => {
+      // Silently handle message errors
     });
 
-    socketInstance.on('typing_error', (error: { error: string }) => {
-      console.error('Typing error:', error.error);
+    socketInstance.on('typing_error', () => {
+      // Silently handle typing errors
     });
 
     setSocket(socketInstance);
@@ -230,11 +209,9 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
   // Load current user info
   const loadCurrentUser = useCallback(async () => {
     try {
-      console.log('👤 ChatContext: Loading current user...');
       const response = await fetchWithAuth('/api/auth/me');
       if (response.ok) {
         const userData = await response.json();
-        console.log('👤 ChatContext: Raw user data:', userData);
 
         const processedUser: User = {
           id: userData.data.ID || userData.data.id,
@@ -243,34 +220,25 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
           email: userData.data.Email || userData.data.email,
           type: userData.data.StaffType ? 'staff' : 'stakeholder'
         };
-        console.log('👤 ChatContext: Processed user:', processedUser);
 
         setCurrentUser(processedUser);
-      } else {
-        console.error('👤 ChatContext: Failed to load user, response status:', response.status);
       }
     } catch (error) {
-      console.error('🚨 ChatContext: Failed to load current user:', error);
+      // Silently fail user loading
     }
   }, []);
 
   // Load recipients
   const refreshRecipients = useCallback(async () => {
-    console.log('👥 ChatContext: Loading recipients...');
     setLoadingRecipients(true);
     try {
       const response = await fetchWithAuth('/api/chat/recipients');
-      console.log('👥 ChatContext: Recipients response status:', response.status);
       if (response.ok) {
         const data = await response.json();
-        console.log('👥 ChatContext: Recipients data:', data);
         setRecipients(data.data || []);
-        console.log('👥 ChatContext: Recipients set to state:', data.data || []);
-      } else {
-        console.error('👥 ChatContext: Failed to load recipients, status:', response.status);
       }
     } catch (error) {
-      console.error('🚨 ChatContext: Failed to load recipients:', error);
+      // Silently fail recipient loading
     } finally {
       setLoadingRecipients(false);
     }
@@ -278,21 +246,15 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
 
   // Load conversations
   const refreshConversations = useCallback(async () => {
-    console.log('💬 ChatContext: Loading conversations...');
     setLoadingConversations(true);
     try {
       const response = await fetchWithAuth('/api/chat/conversations');
-      console.log('💬 ChatContext: Conversations response status:', response.status);
       if (response.ok) {
         const data = await response.json();
-        console.log('💬 ChatContext: Conversations data:', data);
         setConversations(data.data || []);
-        console.log('💬 ChatContext: Conversations set to state:', data.data || []);
-      } else {
-        console.error('💬 ChatContext: Failed to load conversations, status:', response.status);
       }
     } catch (error) {
-      console.error('🚨 ChatContext: Failed to load conversations:', error);
+      // Silently fail conversation loading
     } finally {
       setLoadingConversations(false);
     }
@@ -300,21 +262,15 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
 
   // Load messages for selected conversation
   const loadMessages = useCallback(async (conversationId: string) => {
-    console.log('💬 ChatContext: Loading messages for conversation:', conversationId);
     setLoadingMessages(true);
     try {
       const response = await fetchWithAuth(`/api/chat/messages/${conversationId}`);
-      console.log('💬 ChatContext: Messages response status:', response.status);
       if (response.ok) {
         const data = await response.json();
-        console.log('💬 ChatContext: Messages data:', data);
         setMessages(data.data || []);
-        console.log('💬 ChatContext: Messages set to state:', data.data || []);
-      } else {
-        console.error('💬 ChatContext: Failed to load messages, status:', response.status);
       }
     } catch (error) {
-      console.error('🚨 ChatContext: Failed to load messages:', error);
+      // Silently fail message loading
     } finally {
       setLoadingMessages(false);
     }
@@ -322,12 +278,9 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
 
   // Select conversation or recipient
   const selectConversation = useCallback((id: string) => {
-    console.log('🎯 ChatContext: Selecting conversation/recipient:', id);
-
     if (id.startsWith('recipient-')) {
       // This is a recipient selection - find or create conversation
       const recipientId = id.replace('recipient-', '');
-      console.log('🎯 ChatContext: Recipient ID:', recipientId);
 
       // Look for existing conversation with this recipient
       const existingConversation = conversations.find(conv => {
@@ -336,7 +289,6 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
       });
 
       if (existingConversation) {
-        console.log('🎯 ChatContext: Found existing conversation:', existingConversation.conversationId);
         setSelectedConversation(existingConversation);
         loadMessages(existingConversation.conversationId);
 
@@ -364,24 +316,16 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
       }
     } else {
       // This is a regular conversation ID
-      console.log('🎯 ChatContext: Regular conversation ID:', id);
       const conversation = conversations.find(c => c.conversationId === id);
-      console.log('🎯 ChatContext: Found conversation:', conversation);
 
       if (conversation) {
-        console.log('🎯 ChatContext: Setting selected conversation');
         setSelectedConversation(conversation);
         loadMessages(id);
 
         // Join conversation room
         if (socket) {
-          console.log('🎯 ChatContext: Joining conversation room:', id);
           socket.emit('join_conversation', { conversationId: id });
-        } else {
-          console.log('🎯 ChatContext: No socket available to join room');
         }
-      } else {
-        console.log('🎯 ChatContext: Conversation not found');
       }
     }
   }, [conversations, loadMessages, socket, currentUser, recipients]);
@@ -392,13 +336,10 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
     content: string,
     messageType: string = 'text'
   ) => {
-    console.log('📤 ChatContext: Sending message to:', receiverId, 'content:', content);
     if (!socket || !currentUser) {
-      console.log('📤 ChatContext: Cannot send - socket:', !!socket, 'currentUser:', !!currentUser);
       return;
     }
 
-    console.log('📤 ChatContext: Emitting send_message event');
     socket.emit('send_message', {
       receiverId,
       content,
@@ -426,7 +367,6 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
 
   // Initialize data on mount
   useEffect(() => {
-    console.log('🚀 ChatContext: Initializing chat data...');
     loadCurrentUser();
     refreshRecipients();
     refreshConversations();
