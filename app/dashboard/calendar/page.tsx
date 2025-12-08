@@ -884,21 +884,25 @@ export default function CalendarPage(props: any) {
         districtDisplay = `${makeOrdinal(num)} District`;
       } else if (typeof rawDistrictSource === "string") {
         const s = rawDistrictSource as string;
-        // Try to parse slug like 'camarines-sur-district-v'
+
+        // Helper: convert hyphen/underscore separated slug into humanized Title Case
+        const humanize = (inp: string) =>
+          inp
+            .replace(/[-_]+/g, " ")
+            .trim()
+            .split(/\s+/)
+            .map((w) => (w.length ? w.charAt(0).toUpperCase() + w.slice(1) : w))
+            .join(" ");
+
+        // Try to parse slug like 'camarines-sur-district-v' first
         const slugMatch = s.match(/^(.*)-district-(.+)$/i);
         if (slugMatch) {
           const provSlug = slugMatch[1];
           const distPart = slugMatch[2];
 
-          // Format province: replace hyphens with spaces and capitalize words
-          const prov = provSlug
-            .split("-")
-            .map((p) => (p.length ? p.charAt(0).toUpperCase() + p.slice(1) : p))
-            .join(" ");
-
+          const prov = humanize(provSlug);
           provinceDisplay = provinceDisplay || prov;
 
-          // district: if numeric use ordinal, else show as Roman/letter uppercased
           const distNum = Number(distPart);
           const distLabel = !isNaN(distNum)
             ? `${makeOrdinal(distNum)} District`
@@ -906,9 +910,35 @@ export default function CalendarPage(props: any) {
 
           districtDisplay = distLabel;
         } else {
-          // Fallback: if district looks like a plain name, use it
-          const simple = s.trim();
-          if (simple) districtDisplay = simple;
+          // If slug contains hyphens/underscores and looks like province + district (e.g. 'camarines-sur-naga-city'),
+          // attempt to split into province and district pieces.
+          try {
+            if (s.includes("-") || s.includes("_")) {
+              const parts = s.split(/[-_]+/).map((p) => p.trim()).filter(Boolean);
+
+              if (parts.length === 1) {
+                districtDisplay = humanize(parts[0]);
+              } else if (parts.length === 2) {
+                provinceDisplay = provinceDisplay || humanize(parts[0]);
+                districtDisplay = humanize(parts[1]);
+              } else if (parts.length >= 3) {
+                // if 3+ parts, assume province = first..(n-2), district = last two joined
+                const provinceParts = parts.slice(0, parts.length - 2);
+                const districtParts = parts.slice(parts.length - 2);
+                provinceDisplay = provinceDisplay || humanize(provinceParts.join(" "));
+                districtDisplay = humanize(districtParts.join(" "));
+              } else {
+                const simple = s.trim();
+                if (simple) districtDisplay = simple;
+              }
+            } else {
+              const simple = s.trim();
+              if (simple) districtDisplay = simple;
+            }
+          } catch (err) {
+            const simple = s.trim();
+            if (simple) districtDisplay = simple;
+          }
         }
       }
 

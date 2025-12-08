@@ -135,6 +135,46 @@ const EventCard: React.FC<EventCardProps> = ({
       typeof s === "string" && /^[a-f0-9]{24}$/i.test(s);
 
     if (!isObjectId(pickId)) {
+      // If pickId is a hyphenated slug like "camarines-sur-naga-city",
+      // try to split it into province and district parts.
+      const humanize = (s: string) =>
+        s
+          .replace(/[-_]+/g, " ")
+          .trim()
+          .split(/\s+/)
+          .map((w) => (w.length ? w.charAt(0).toUpperCase() + w.slice(1) : w))
+          .join(" ");
+
+      const splitHyphenated = (s: string) => {
+        const parts = s.split(/[-_]+/).map((p) => p.trim()).filter(Boolean);
+        if (parts.length === 0) return { province: null, district: null };
+        if (parts.length === 1) return { province: null, district: humanize(parts[0]) };
+
+        // If there are 2 parts assume province-district
+        if (parts.length === 2) {
+          return { province: humanize(parts[0]), district: humanize(parts[1]) };
+        }
+
+        // If >=3 parts: assume first..(n-2) -> province, last two -> district
+        if (parts.length >= 3) {
+          const provinceParts = parts.slice(0, parts.length - 2);
+          const districtParts = parts.slice(parts.length - 2);
+          return { province: humanize(provinceParts.join(" ")), district: humanize(districtParts.join(" ")) };
+        }
+
+        return { province: null, district: humanize(s) };
+      };
+
+      try {
+        const candidate = String(pickId);
+        if (candidate.includes("-") || candidate.includes("_")) {
+          const { province, district: d } = splitHyphenated(candidate);
+          return { district: d || null, province: province || null };
+        }
+      } catch (e) {
+        // fallthrough to default
+      }
+
       return { district: pickId, province: null };
     }
 
