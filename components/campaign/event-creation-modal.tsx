@@ -248,7 +248,11 @@ export const CreateTrainingEventModal: React.FC<
         ).toLowerCase();
 
         // diagnostic removed
-        if (user && roleStr.includes("stakeholder")) {
+        if (
+          user &&
+          (user.Stakeholder_ID ||
+            (user.id && user.id.toLowerCase().startsWith("stkh_")))
+        ) {
           const sid =
             info?.raw?.id ||
             user.Stakeholder_ID ||

@@ -25,6 +25,7 @@ interface StakeholderToolbarProps {
   currentPage: number;
   totalPages: number;
   onPageChange: (page: number) => void;
+  pendingCount?: number;
 }
 
 export default function StakeholderToolbar({
@@ -38,6 +39,7 @@ export default function StakeholderToolbar({
   currentPage,
   totalPages,
   onPageChange,
+  pendingCount = 0,
 }: StakeholderToolbarProps) {
   const handleTabChange = (key: React.Key) => {
     const k = String(key);
@@ -57,7 +59,10 @@ export default function StakeholderToolbar({
           >
             <Tab key="all" title="All" />
             <Tab key="approved" title="Approved" />
-            <Tab key="pending" title="Pending" />
+            <Tab 
+              key="pending" 
+              title={pendingCount > 0 ? `Pending (${pendingCount})` : "Pending"}
+            />
           </Tabs>
 
           {/* Render Pagination if we have multiple pages */}

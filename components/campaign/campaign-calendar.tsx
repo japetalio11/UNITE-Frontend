@@ -209,7 +209,7 @@ const CalendarComponent: React.FC<CampaignCalendarProps> = ({
   };
 
   return (
-    <Card className="w-full md:w-[480px] h-auto md:h-[calc(106vh-300px)] shadow-none border border-default-300">
+    <Card className="w-full md:w-[480px] h-auto shadow-none border border-default-300">
       <CardHeader className="flex justify-between items-center px-4 py-3">
         <h2 className="text-base font-medium">{monthYear}</h2>
         <div className="flex gap-2 items-center">
@@ -242,7 +242,7 @@ const CalendarComponent: React.FC<CampaignCalendarProps> = ({
         </div>
       </CardHeader>
 
-      <CardBody className="px-4 pb-4">
+      <CardBody className="px-4 pb-4 overflow-hidden">
         {/* Day labels */}
         <div className="grid grid-cols-7 gap-1 mb-2">
           {dayLabels.map((label) => (
@@ -256,7 +256,7 @@ const CalendarComponent: React.FC<CampaignCalendarProps> = ({
         </div>
 
         {/* Calendar Grid */}
-        <div className="grid grid-cols-7 gap-1">
+        <div className="grid grid-cols-7 gap-1 auto-rows-[48px]">
           {calendarDays.map((dayInfo, index) => {
             const today = isToday(dayInfo.date);
             const selected = isSelected(dayInfo.date);

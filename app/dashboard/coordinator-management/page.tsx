@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
+import { useRouter } from "next/navigation";
 
 import { getUserInfo } from "../../../utils/getUserInfo";
 
@@ -27,6 +28,7 @@ interface CoordinatorFormData {
 }
 
 export default function CoordinatorManagement() {
+  const router = useRouter();
   const [searchQuery, setSearchQuery] = useState("");
   const [selectedCoordinators, setSelectedCoordinators] = useState<string[]>(
     [],
@@ -84,6 +86,16 @@ export default function CoordinatorManagement() {
       setCanManageCoordinators(
         Boolean(isSystemAdmin || (isStaffAdmin && roleLower === "admin")),
       );
+      const resolvedCanManage = Boolean(isSystemAdmin || (isStaffAdmin && roleLower === "admin"));
+      setCanManageCoordinators(resolvedCanManage);
+      if (!resolvedCanManage) {
+        try {
+          router.replace('/error');
+        } catch (e) {
+          /* ignore navigation errors during SSR */
+        }
+        return;
+      }
       setDisplayName(info?.displayName || "Bicol Medical Center");
       setDisplayEmail(info?.email || "bmc@gmail.com");
     } catch (e) {

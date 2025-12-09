@@ -1,11 +1,10 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import { Input } from "@heroui/input";
 import { DatePicker, DateRangePicker } from "@heroui/date-picker";
 import { Tabs, Tab } from "@heroui/tabs";
 import { Button, ButtonGroup } from "@heroui/button";
-import { Pagination } from "@heroui/pagination";
 import {
   Dropdown,
   DropdownTrigger,
@@ -26,6 +25,8 @@ import {
 import { RangeValue } from "@react-types/shared";
 import { DateValue } from "@internationalized/date";
 import { useLocations } from "../locations-provider";
+import { getUserInfo } from "../../utils/getUserInfo";
+import { decodeJwt } from "../../utils/decodeJwt";
 
 import {
   CreateTrainingEventModal,
@@ -74,6 +75,8 @@ export default function CampaignToolbar({
     new Set(["blood-drive"]),
   );
 
+  const API_URL = process.env.NEXT_PUBLIC_API_URL || "";
+
   // Quick Filter States
   const [qEventType, setQEventType] = useState<string>("");
   const [qDateRange, setQDateRange] = useState<RangeValue<DateValue> | null>(
@@ -96,11 +99,15 @@ export default function CampaignToolbar({
   const [bloodDriveError, setBloodDriveError] = useState<string | null>(null);
   const [advocacyError, setAdvocacyError] = useState<string | null>(null);
   const [isAdvancedModalOpen, setIsAdvancedModalOpen] = useState(false);
-  const [advCity, setAdvCity] = useState("");
-  const [advProvince, setAdvProvince] = useState("");
-  const [advDistrict, setAdvDistrict] = useState("");
-  const [advMunicipality, setAdvMunicipality] = useState("");
-  const [advOrganizer, setAdvOrganizer] = useState("");
+  const [advTitle, setAdvTitle] = useState("");
+  const [advCoordinator, setAdvCoordinator] = useState("");
+  const [advStakeholder, setAdvStakeholder] = useState("");
+  const [advCoordinatorOptions, setAdvCoordinatorOptions] = useState<
+    { key: string; label: string }[]
+  >([]);
+  const [advStakeholderOptions, setAdvStakeholderOptions] = useState<
+    { key: string; label: string }[]
+  >([]);
   const [advDateRange, setAdvDateRange] =
     useState<RangeValue<DateValue> | null>(null);
 
@@ -231,6 +238,242 @@ export default function CampaignToolbar({
     onQuickFilter?.(filter);
   };
 
+  // Helper to clear all quick filters
+  const clearAllFilters = () => {
+    setQEventType("");
+    setQDateRange(null);
+    setQProvince("");
+    setQDistrict("");
+    setQMunicipality("");
+    applyQuickFilter("", null, "", "", "");
+  };
+
+  // Fetch coordinators for advanced filter when modal opens
+  useEffect(() => {
+    const fetchCoordinators = async () => {
+      try {
+        const rawUser = localStorage.getItem("unite_user");
+        const token =
+          localStorage.getItem("unite_token") ||
+          sessionStorage.getItem("unite_token");
+        const headers: any = { "Content-Type": "application/json" };
+
+        if (token) headers["Authorization"] = `Bearer ${token}`;
+        const user = rawUser ? JSON.parse(rawUser) : null;
+        const info = getUserInfo();
+
+        const isAdmin = !!(
+          (info && info.isAdmin) ||
+          (user &&
+            ((user.staff_type &&
+              String(user.staff_type).toLowerCase().includes("admin")) ||
+              (user.role && String(user.role).toLowerCase().includes("admin"))))
+        );
+
+        if (user && isAdmin) {
+          const res = await fetch(`${API_URL}/api/coordinators`, {
+            headers,
+            credentials: "include",
+          });
+          const body = await res.json();
+
+          if (res.ok) {
+            const list = body.data || body.coordinators || body;
+            const opts = (Array.isArray(list) ? list : []).map((c: any) => {
+              const staff = c.Staff || c.staff || null;
+              const district = c.District || c.district || null;
+              const fullName = staff
+                ? [staff.First_Name, staff.Middle_Name, staff.Last_Name]
+                    .filter(Boolean)
+                    .join(" ")
+                    .trim()
+                : c.StaffName || c.label || "";
+              const districtLabel = district?.District_Number
+                ? `District ${district.District_Number}`
+                : district?.District_Name || "";
+
+              return {
+                key: c.Coordinator_ID || (staff && staff.ID) || c.id,
+                label: `${fullName}${districtLabel ? " - " + districtLabel : ""}`,
+              };
+            });
+
+            setAdvCoordinatorOptions(opts);
+          }
+        }
+
+        // Non-admin flows
+        if (user) {
+          const candidateIds: Array<string | number | undefined> = [];
+
+          if (
+            (user.staff_type &&
+              String(user.staff_type).toLowerCase().includes("coordinator")) ||
+            (info &&
+              String(info.role || "")
+                .toLowerCase()
+                .includes("coordinator"))
+          )
+            candidateIds.push(user.id || info?.raw?.id);
+          candidateIds.push(
+            user.Coordinator_ID,
+            user.CoordinatorId,
+            user.CoordinatorID,
+            user.role_data?.coordinator_id,
+            user.MadeByCoordinatorID,
+            info?.raw?.Coordinator_ID,
+            info?.raw?.CoordinatorId,
+          );
+
+          let coordId = candidateIds.find(Boolean) as string | undefined;
+
+          if (!coordId) {
+            try {
+              const t =
+                token ||
+                (typeof window !== "undefined"
+                  ? localStorage.getItem("unite_token") ||
+                    sessionStorage.getItem("unite_token")
+                  : null);
+              const payload = decodeJwt(t);
+
+              if (payload) {
+                coordId = payload.coordinator_id || payload.Coordinator_ID;
+              }
+            } catch (e) {}
+          }
+
+          if (coordId) {
+            try {
+              let resolvedCoordId = String(coordId);
+
+              if (/^stkh_/i.test(resolvedCoordId)) {
+                // If it's a stakeholder ID, fetch the stakeholder to get coordinator
+                const stRes = await fetch(
+                  `${API_URL}/api/stakeholders/${encodeURIComponent(resolvedCoordId)}`,
+                  { headers, credentials: "include" },
+                );
+                const stBody = await stRes.json();
+
+                if (stRes.ok && stBody.data) {
+                  const st = stBody.data;
+                  resolvedCoordId = st.coordinator_id || st.Coordinator_ID || st.CoordinatorId;
+                }
+              }
+
+              const res = await fetch(
+                `${API_URL}/api/coordinators/${encodeURIComponent(resolvedCoordId)}`,
+                { headers, credentials: "include" },
+              );
+              const body = await res.json();
+
+              if (res.ok && body.data) {
+                const c = body.data;
+                const staff = c.Staff || c.staff || null;
+                const district = c.District || c.district || null;
+                const fullName = staff
+                  ? [staff.First_Name, staff.Middle_Name, staff.Last_Name]
+                      .filter(Boolean)
+                      .join(" ")
+                      .trim()
+                  : c.StaffName || c.label || "";
+                const districtLabel = district?.District_Number
+                  ? `District ${district.District_Number}`
+                  : district?.District_Name || "";
+
+                setAdvCoordinatorOptions([{
+                  key: c.Coordinator_ID || (staff && staff.ID) || c.id,
+                  label: `${fullName}${districtLabel ? " - " + districtLabel : ""}`,
+                }]);
+              }
+            } catch (e) {
+              console.error("Failed to fetch coordinator by id", coordId, e);
+            }
+          }
+        }
+      } catch (err) {
+        console.error("Failed to fetch coordinators", err);
+      }
+    };
+
+    if (isAdvancedModalOpen) {
+      fetchCoordinators();
+    }
+  }, [isAdvancedModalOpen]);
+
+  // Load stakeholders for selected coordinator's district when coordinator changes
+  useEffect(() => {
+    const fetchStakeholdersForCoordinator = async () => {
+      try {
+        if (!advCoordinator) {
+          setAdvStakeholderOptions([]);
+          return;
+        }
+
+        const token =
+          localStorage.getItem("unite_token") ||
+          sessionStorage.getItem("unite_token");
+        const headers: any = { "Content-Type": "application/json" };
+
+        if (token) headers["Authorization"] = `Bearer ${token}`;
+
+        // Fetch coordinator details to get district id
+        let districtId: any = null;
+
+        try {
+          const coordRes = await fetch(
+            `${API_URL}/api/coordinators/${encodeURIComponent(advCoordinator)}`,
+            { headers, credentials: "include" },
+          );
+          const coordBody = await coordRes.json();
+
+          const coordData = coordBody?.data || coordBody;
+
+          districtId =
+            coordData?.District_ID ||
+            coordData?.District?.District_ID ||
+            coordData?.District_Id ||
+            coordData?.district_id ||
+            coordData?.district ||
+            null;
+        } catch (e) {
+          // ignore
+        }
+
+        if (!districtId) {
+          setAdvStakeholderOptions([]);
+          return;
+        }
+
+        const stRes = await fetch(
+          `${API_URL}/api/stakeholders?district_id=${encodeURIComponent(String(districtId))}`,
+          { headers, credentials: "include" },
+        );
+        const stBody = await stRes.json();
+
+        if (stRes.ok && Array.isArray(stBody.data)) {
+          const opts = (stBody.data || []).map((s: any) => ({
+            key: s.Stakeholder_ID || s.StakeholderId || s.id,
+            label:
+              `${s.firstName || s.First_Name || ""} ${s.lastName || s.Last_Name || ""}`.trim(),
+          }));
+
+          setAdvStakeholderOptions(opts);
+          if (advStakeholder && !opts.find((o: any) => o.key === advStakeholder)) {
+            setAdvStakeholder("");
+          }
+        } else {
+          setAdvStakeholderOptions([]);
+        }
+      } catch (err) {
+        console.warn("Failed to load stakeholders", err);
+        setAdvStakeholderOptions([]);
+      }
+    };
+
+    fetchStakeholdersForCoordinator();
+  }, [advCoordinator]);
+
   return (
     <>
       <div className="w-full bg-white">
@@ -283,15 +526,105 @@ export default function CampaignToolbar({
 
             {/* Pagination and its buttons */}
             {totalPages > 1 && (
-              <div className="flex items-center gap-2">
-                <Pagination
-                  showControls
-                  page={currentPage}
+              <div className="flex items-center gap-1">
+                {/* Previous Button */}
+                <Button
+                  isIconOnly
                   size="sm"
-                  total={totalPages}
                   variant="light"
-                  onChange={onPageChange}
-                />
+                  isDisabled={currentPage === 1}
+                  onPress={() => onPageChange(currentPage - 1)}
+                  className="min-w-8 h-8"
+                >
+                  ‹
+                </Button>
+
+                {/* Page Numbers with ellipsis logic */}
+                {(() => {
+                  const pages = [];
+                  const maxVisible = 4; // Maximum number of page buttons to show
+
+                  if (totalPages <= maxVisible + 1) {
+                    // If total pages is small, show all pages
+                    for (let i = 1; i <= totalPages; i++) {
+                      pages.push(i);
+                    }
+                  } else {
+                    // Always start with page 1
+                    pages.push(1);
+
+                    // Calculate how many pages we can show in the middle
+                    const remainingSlots = maxVisible - 2; // -2 for first and last page
+                    const sidePages = Math.floor(remainingSlots / 2);
+
+                    // Calculate range around current page
+                    let startRange = Math.max(2, currentPage - sidePages);
+                    let endRange = Math.min(totalPages - 1, currentPage + sidePages);
+
+                    // Adjust to ensure we show the right number of pages
+                    const actualRange = endRange - startRange + 1;
+                    if (actualRange < remainingSlots) {
+                      if (startRange === 2) {
+                        endRange = Math.min(totalPages - 1, endRange + (remainingSlots - actualRange));
+                      } else if (endRange === totalPages - 1) {
+                        startRange = Math.max(2, startRange - (remainingSlots - actualRange));
+                      }
+                    }
+
+                    // Add ellipsis after 1 if there's a gap
+                    if (startRange > 2) {
+                      pages.push('...');
+                    }
+
+                    // Add the range
+                    for (let i = startRange; i <= endRange; i++) {
+                      pages.push(i);
+                    }
+
+                    // Add ellipsis before last page if there's a gap
+                    if (endRange < totalPages - 1) {
+                      pages.push('...');
+                    }
+
+                    // Always end with last page
+                    pages.push(totalPages);
+                  }
+
+                  // Render the pages
+                  return pages.map((page, index) => {
+                    if (page === '...') {
+                      return (
+                        <span key={`ellipsis-${index}`} className="px-2 text-gray-400">
+                          ...
+                        </span>
+                      );
+                    }
+                    return (
+                      <Button
+                        key={page}
+                        size="sm"
+                        variant={currentPage === page ? "solid" : "light"}
+                        color={currentPage === page ? "primary" : "default"}
+                        onPress={() => onPageChange(page as number)}
+                        className="min-w-8 h-8 px-2"
+                      >
+                        {page}
+                      </Button>
+                    );
+                  });
+                })()}
+
+                {/* Next Button */}
+                <Button
+                  isIconOnly
+                  size="sm"
+                  variant="light"
+                  isDisabled={currentPage === totalPages}
+                  onPress={() => onPageChange(currentPage + 1)}
+                  className="min-w-8 h-8"
+                >
+                  ›
+                </Button>
               </div>
             )}
           </div>
@@ -471,6 +804,16 @@ export default function CampaignToolbar({
                       ))}
                     </Select>
                   </div>
+
+                  <Button
+                    className="w-full mt-4"
+                    color="default"
+                    size="sm"
+                    variant="bordered"
+                    onPress={clearAllFilters}
+                  >
+                    Clear All Filters
+                  </Button>
                 </div>
               </PopoverContent>
             </Popover>
@@ -635,138 +978,71 @@ export default function CampaignToolbar({
           </ModalHeader>
           <ModalBody>
             <div className="space-y-12">
-              {/* Location Section */}
-              <div className="space-y-2">
-                <h4 className="text-xs font-semibold">Location</h4>
-
-                <div className="h-px w-full bg-default"></div>
-
-                {/* City and Province */}
-                <div className="flex gap-4">
-                  {/* City */}
-                  <div className="flex-1 space-y-1">
-                    <label className="text-xs font-medium">City</label>
-                    <Input
-                      classNames={{
-                        inputWrapper: "h-9 border-default-200",
-                      }}
-                      placeholder="Enter city"
-                      radius="md"
-                      size="sm"
-                      value={advCity}
-                      variant="bordered"
-                      onValueChange={setAdvCity}
-                    />
-                  </div>
-
-                  {/* Province */}
-                  <div className="flex-1 space-y-1">
-                    <label className="text-xs font-medium">Province</label>
-                    <Select
-                      className="h-9"
-                      classNames={{ trigger: "h-9 border-default-200" }}
-                      placeholder="Pick a province"
-                      radius="md"
-                      selectedKeys={advProvince ? [advProvince] : []}
-                      size="sm"
-                      variant="bordered"
-                      onChange={(e) => {
-                        const val = e.target.value;
-
-                        setAdvProvince(val);
-                        onDistrictFetch?.(val);
-                        setAdvDistrict("");
-                        setAdvMunicipality("");
-                      }}
-                    >
-                      {provinces.map((p) => (
-                        <SelectItem
-                          key={p._id}
-                        >
-                          {p.name}
-                        </SelectItem>
-                      ))}
-                    </Select>
-                  </div>
-                </div>
-
-                {/* District and Municipality */}
-                <div className="flex gap-4">
-                  {/* District */}
-                  <div className="flex-1">
-                    <label className="text-xs font-medium">District</label>
-                    <Select
-                      className="h-9"
-                      classNames={{ trigger: "h-9 border-default-200" }}
-                      isDisabled={!advProvince}
-                      placeholder="Pick a district"
-                      radius="md"
-                      selectedKeys={advDistrict ? [advDistrict] : []}
-                      size="sm"
-                      variant="bordered"
-                      onChange={(e) => {
-                        setAdvDistrict(e.target.value);
-                        setAdvMunicipality("");
-                      }}
-                    >
-                      {districts.map((d) => (
-                        <SelectItem
-                          key={d._id}
-                        >
-                          {d.name}
-                        </SelectItem>
-                      ))}
-                    </Select>
-                  </div>
-
-                  {/* Municipality */}
-                  <div className="flex-1">
-                    <label className="text-xs font-medium">Municipality</label>
-                    <Select
-                      className="h-9"
-                      classNames={{ trigger: "h-9 border-default-200" }}
-                      isDisabled={!advDistrict}
-                      placeholder="Pick a municipality"
-                      radius="md"
-                      selectedKeys={advMunicipality ? [advMunicipality] : []}
-                      size="sm"
-                      variant="bordered"
-                      onChange={(e) => setAdvMunicipality(e.target.value)}
-                    >
-                      {getMunicipalitiesForDistrict(advDistrict).map((m) => (
-                        <SelectItem
-                          key={m._id}
-                        >
-                          {m.name}
-                        </SelectItem>
-                      ))}
-                    </Select>
-                  </div>
-                </div>
-              </div>
-
               {/* Event Details Section */}
               <div className="space-y-2">
                 <h4 className="text-xs font-semibold">Event Details</h4>
 
                 <div className="h-px w-full bg-default"></div>
 
-                {/* Organizer */}
+                {/* Title */}
                 <div className="w-full space-y-1">
-                  <label className="text-xs font-medium">
-                    Organizer <span className="text-danger">*</span>
-                  </label>
+                  <label className="text-xs font-medium">Title</label>
                   <Input
                     classNames={{
                       inputWrapper: "h-9 border-default-200",
                     }}
-                    placeholder="Enter location"
+                    placeholder="Enter event title"
                     radius="md"
                     size="sm"
-                    value={advOrganizer}
+                    value={advTitle}
                     variant="bordered"
-                    onValueChange={setAdvOrganizer}
+                    onValueChange={setAdvTitle}
                   />
+                </div>
+
+                {/* Coordinator */}
+                <div className="w-full space-y-1">
+                  <label className="text-xs font-medium">Coordinator</label>
+                  <Select
+                    className="h-9"
+                    classNames={{ trigger: "h-9 border-default-200" }}
+                    placeholder="Pick a coordinator"
+                    radius="md"
+                    selectedKeys={advCoordinator ? [advCoordinator] : []}
+                    size="sm"
+                    variant="bordered"
+                    onChange={(e) => {
+                      setAdvCoordinator(e.target.value);
+                      setAdvStakeholder("");
+                    }}
+                  >
+                    {advCoordinatorOptions.map((c) => (
+                      <SelectItem key={c.key}>
+                        {c.label}
+                      </SelectItem>
+                    ))}
+                  </Select>
+                </div>
+
+                {/* Stakeholder */}
+                <div className="w-full space-y-1">
+                  <label className="text-xs font-medium">Stakeholder</label>
+                  <Select
+                    className="h-9"
+                    classNames={{ trigger: "h-9 border-default-200" }}
+                    placeholder="Pick a stakeholder"
+                    radius="md"
+                    selectedKeys={advStakeholder ? [advStakeholder] : []}
+                    size="sm"
+                    variant="bordered"
+                    onChange={(e) => setAdvStakeholder(e.target.value)}
+                  >
+                    {advStakeholderOptions.map((s) => (
+                      <SelectItem key={s.key}>
+                        {s.label}
+                      </SelectItem>
+                    ))}
+                  </Select>
                 </div>
 
                 {/* Date Range */}
@@ -789,16 +1065,30 @@ export default function CampaignToolbar({
           </ModalBody>
           <ModalFooter>
             <Button
-              className="w-full"
+              className="flex-1"
+              color="default"
+              variant="bordered"
+              radius="md"
+              onPress={() => {
+                setAdvTitle("");
+                setAdvCoordinator("");
+                setAdvStakeholder("");
+                setAdvDateRange(null);
+                onAdvancedFilter?.({});
+                setIsAdvancedModalOpen(false);
+              }}
+            >
+              Clear Filters
+            </Button>
+            <Button
+              className="flex-1"
               color="primary"
               radius="md"
               onPress={() => {
                 onAdvancedFilter?.({
-                  city: advCity || undefined,
-                  province: advProvince || undefined,
-                  district: advDistrict || undefined,
-                  municipality: advMunicipality || undefined,
-                  requester: advOrganizer || undefined,
+                  title: advTitle || undefined,
+                  coordinator: advCoordinator || undefined,
+                  stakeholder: advStakeholder || undefined,
                   startDate: advDateRange?.start?.toString(),
                   endDate: advDateRange?.end?.toString(),
                 });

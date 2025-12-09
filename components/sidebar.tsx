@@ -7,9 +7,9 @@ import {
   Persons,
   Ticket,
   Bell,
+  Comments,
   PersonPlanetEarth,
 } from "@gravity-ui/icons";
-import { ClipboardList } from "lucide-react"; 
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 
@@ -479,6 +479,12 @@ export default function Sidebar({
       key: "calendar",
       visible: true,
     },
+    {
+      href: "/dashboard/chat",
+      icon: Comments,
+      key: "chat",
+      visible: true,
+    },
     // Only show stakeholder-management to system admins OR coordinators.
     {
       href: "/dashboard/stakeholder-management",
@@ -491,13 +497,6 @@ export default function Sidebar({
       icon: Persons,
       key: "coordinator",
       visible: showCoordinatorLink,
-    },
-    // Add requisition management link - always visible or conditionally based on user role
-    {
-      href: "/dashboard/requisition",
-      icon: ClipboardList, 
-      key: "requisition",
-      visible: true, // Set to true to always show, or add conditional logic
     },
   ];
 

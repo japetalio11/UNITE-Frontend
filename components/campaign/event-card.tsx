@@ -135,6 +135,46 @@ const EventCard: React.FC<EventCardProps> = ({
       typeof s === "string" && /^[a-f0-9]{24}$/i.test(s);
 
     if (!isObjectId(pickId)) {
+      // If pickId is a hyphenated slug like "camarines-sur-naga-city",
+      // try to split it into province and district parts.
+      const humanize = (s: string) =>
+        s
+          .replace(/[-_]+/g, " ")
+          .trim()
+          .split(/\s+/)
+          .map((w) => (w.length ? w.charAt(0).toUpperCase() + w.slice(1) : w))
+          .join(" ");
+
+      const splitHyphenated = (s: string) => {
+        const parts = s.split(/[-_]+/).map((p) => p.trim()).filter(Boolean);
+        if (parts.length === 0) return { province: null, district: null };
+        if (parts.length === 1) return { province: null, district: humanize(parts[0]) };
+
+        // If there are 2 parts assume province-district
+        if (parts.length === 2) {
+          return { province: humanize(parts[0]), district: humanize(parts[1]) };
+        }
+
+        // If >=3 parts: assume first..(n-2) -> province, last two -> district
+        if (parts.length >= 3) {
+          const provinceParts = parts.slice(0, parts.length - 2);
+          const districtParts = parts.slice(parts.length - 2);
+          return { province: humanize(provinceParts.join(" ")), district: humanize(districtParts.join(" ")) };
+        }
+
+        return { province: null, district: humanize(s) };
+      };
+
+      try {
+        const candidate = String(pickId);
+        if (candidate.includes("-") || candidate.includes("_")) {
+          const { province, district: d } = splitHyphenated(candidate);
+          return { district: d || null, province: province || null };
+        }
+      } catch (e) {
+        // fallthrough to default
+      }
+
       return { district: pickId, province: null };
     }
 
@@ -171,19 +211,47 @@ const EventCard: React.FC<EventCardProps> = ({
     return "admin-action";
   };
 
+  const viewer = getViewer();
+  const viewerId = getViewerId();
+  const viewerRoleString = String(viewer.role || "").toLowerCase();
+
   const allowedActionSet = useAllowedActionSet({
     request,
     fullRequest,
     resolvedRequest,
   });
+  // Debug: log allowed actions for the current viewer
+  try {
+    // Log more detailed payload for troubleshooting coordinator vs admin flows
+    const dbg = {
+      requestId: resolvedRequestId,
+      viewerId,
+      viewerRoleString,
+      actions: Array.from(allowedActionSet || []),
+      status: resolvedRequest?.Status || resolvedRequest?.status,
+      reviewer: resolvedRequest?.reviewer,
+      coordinator_id: resolvedRequest?.coordinator_id,
+      resolvedAllowedActions: resolvedRequest?.allowedActions ?? resolvedRequest?.allowed_actions ?? null,
+      rootAllowedActions: request?.allowedActions ?? request?.allowed_actions ?? null,
+    };
+    console.debug("[EventCard] allowedActionSet", dbg);
+    // For coordinator/admin sessions, also print the whole request snapshot (trimmed)
+    if (viewerRoleString.includes("coordinator") || viewerRoleString.includes("admin")) {
+      try {
+        console.debug("[EventCard] resolvedRequest (trimmed)", {
+          Request_ID: resolvedRequest?.Request_ID || resolvedRequest?._id,
+          Status: resolvedRequest?.Status || resolvedRequest?.status,
+          reviewer: resolvedRequest?.reviewer,
+          allowedActions: resolvedRequest?.allowedActions || resolvedRequest?.allowed_actions || null,
+          event: resolvedRequest?.event ? { Event_ID: resolvedRequest.event.Event_ID || resolvedRequest.event._id, Status: resolvedRequest.event.Status || resolvedRequest.event.status } : null,
+        });
+      } catch (e) {}
+    }
+  } catch (e) {}
   const hasAllowedAction = React.useCallback(
     hasAllowedActionFactory(allowedActionSet),
     [allowedActionSet],
   );
-
-  const viewer = getViewer();
-  const viewerId = getViewerId();
-  const viewerRoleString = String(viewer.role || "").toLowerCase();
 
   const isReviewAccepted = (() => {
     try {
@@ -1233,35 +1301,67 @@ const EventCard: React.FC<EventCardProps> = ({
     };
 
     if (categoryCandidate.includes("blood")) {
-      let n = pickNumberFrom(bloodTargets);
-      // Fallback: try to parse number from reviewSummary text
+      let n = null;
+      const txt =
+        String(ev?.reviewSummary || ev?.reviewMessage || r?.reviewSummary || r?.reviewMessage || "");
+      const m = txt.match(/target\s+donation\s+of\s+(\d+)/i) || txt.match(/target\s+donation[^\d]*(\d+)/i) || txt.match(/target\s+(?:donation|donations)[^\d]*(\d+)/i);
+      if (m && m[1]) n = extractNumber(m[1]);
       if (n === null) {
-        const txt =
-          String(ev?.reviewSummary || ev?.reviewMessage || r?.reviewSummary || r?.reviewMessage || "");
-        const m = txt.match(/target\s+donation\s+of\s+(\d+)/i) || txt.match(/target\s+donation[^\d]*(\d+)/i) || txt.match(/target\s+(?:donation|donations)[^\d]*(\d+)/i);
-        if (m && m[1]) n = extractNumber(m[1]);
+        n = pickNumberFrom(bloodTargets);
       }
-      return { count: n, label: "u.", isBlood: true };
+      if (n === null) {
+        const m2 = txt.match(/(\d+)/g);
+        if (m2) {
+          const numbers = m2.map(extractNumber).filter((nn): nn is number => nn !== null);
+          if (numbers.length > 0) {
+            const last = numbers[numbers.length - 1];
+            if (last > 0) n = last;
+          }
+        }
+      }
+      return { count: n, label: "u.", isBlood: true, mainLabel: "Goal Count" };
     }
 
     if (categoryCandidate.includes("training")) {
-      let n = pickNumberFrom(trainingTargets);
+      let n = null;
+      const txt = String(ev?.reviewSummary || r?.reviewSummary || "");
+      const m = txt.match(/max(?:imum)?\s+participants?[^\d]*(\d+)/i) || txt.match(/participants?[^\d]*(\d+)/i);
+      if (m && m[1]) n = extractNumber(m[1]);
       if (n === null) {
-        const txt = String(ev?.reviewSummary || r?.reviewSummary || "");
-        const m = txt.match(/max(?:imum)?\s+participants?\s+of\s+(\d+)/i) || txt.match(/participants?[^\d]*(\d+)/i);
-        if (m && m[1]) n = extractNumber(m[1]);
+        n = pickNumberFrom(trainingTargets);
       }
-      return { count: n, label: "Participants", isBlood: false };
+      if (n === null) {
+        const m2 = txt.match(/(\d+)/g);
+        if (m2) {
+          const numbers = m2.map(extractNumber).filter((nn): nn is number => nn !== null);
+          if (numbers.length > 0) {
+            const last = numbers[numbers.length - 1];
+            if (last > 0) n = last;
+          }
+        }
+      }
+      return { count: n, label: "", isBlood: false, mainLabel: "Audience No." };
     }
 
     if (categoryCandidate.includes("advoc") || categoryCandidate.includes("advocacy")) {
-      let n = pickNumberFrom(advocacyTargets);
+      let n = null;
+      const txt = String(ev?.reviewSummary || r?.reviewSummary || "");
+      const m = txt.match(/expected\s+audience\s+size[^\d]*(\d+)/i) || txt.match(/audience[^\d]*(\d+)/i) || txt.match(/participants?[^\d]*(\d+)/i);
+      if (m && m[1]) n = extractNumber(m[1]);
       if (n === null) {
-        const txt = String(ev?.reviewSummary || r?.reviewSummary || "");
-        const m = txt.match(/expected\s+audience\s+size\s+of\s+(\d+)/i) || txt.match(/audience[^\d]*(\d+)/i) || txt.match(/participants?[^\d]*(\d+)/i);
-        if (m && m[1]) n = extractNumber(m[1]);
+        n = pickNumberFrom(advocacyTargets);
       }
-      return { count: n, label: "Participants", isBlood: false };
+      if (n === null) {
+        const m2 = txt.match(/(\d+)/g);
+        if (m2) {
+          const numbers = m2.map(extractNumber).filter((nn): nn is number => nn !== null);
+          if (numbers.length > 0) {
+            const last = numbers[numbers.length - 1];
+            if (last > 0) n = last;
+          }
+        }
+      }
+      return { count: n, label: "", isBlood: false, mainLabel: "Audience No." };
     }
 
     // Fallback: try any known fields
@@ -1271,7 +1371,20 @@ const EventCard: React.FC<EventCardProps> = ({
       ...advocacyTargets,
     ]);
 
-    return { count: fallback, label: fallback !== null ? "" : "", isBlood: false };
+    let n = fallback;
+    if (n === null) {
+      const txt = String(ev?.reviewSummary || ev?.reviewMessage || r?.reviewSummary || r?.reviewMessage || "");
+      const m = txt.match(/(\d+)/g);
+      if (m) {
+        const numbers = m.map(extractNumber).filter((nn): nn is number => nn !== null);
+        if (numbers.length > 0) {
+          const last = numbers[numbers.length - 1];
+          if (last > 0) n = last;
+        }
+      }
+    }
+
+    return { count: n, label: n !== null ? "" : "", isBlood: false, mainLabel: "Goal Count" };
   }, [resolvedRequest, request, fullRequest, category]);
 
   // Format the date/time for the card footer area (e.g. "Dec 1 8:00 AM - 4:00 PM")
@@ -1394,9 +1507,8 @@ const EventCard: React.FC<EventCardProps> = ({
               setRejectOpen={setRejectOpen}
               setCancelOpen={setCancelOpen}
               setDeleteOpen={setDeleteOpen}
-              showConfirmFallback={
-                isReviewAccepted && viewerIsAssignedCoordinator
-              }
+              // Do NOT show confirm fallback for reviewers; rely solely on allowed actions
+              showConfirmFallback={false}
               onConfirm={async () => {
                 try {
                   if (!resolvedRequestId)
@@ -1496,7 +1608,7 @@ const EventCard: React.FC<EventCardProps> = ({
         <CardFooter className="pt-4 flex-col items-stretch gap-3">
           <div className="h-px w-full bg-default-200"></div>
           <div className="flex justify-between w-full items-center">
-            <span className="text-xs">Goal Count</span>
+            <span className="text-xs">{goalInfo?.mainLabel || "Goal Count"}</span>
             <span
               className={`text-2xl font-bold ${
                 goalInfo?.isBlood ? "text-danger" : "text-default-800"

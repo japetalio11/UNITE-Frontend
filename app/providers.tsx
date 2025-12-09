@@ -9,6 +9,7 @@ import { ThemeProvider as NextThemesProvider } from "next-themes";
 
 import { LoadingProvider } from "@/components/loading-overlay";
 import LocationsProvider from "@/components/locations-provider";
+import { AuthProvider } from "@/components/AuthProvider";
 
 export interface ProvidersProps {
   children: React.ReactNode;
@@ -30,9 +31,11 @@ export function Providers({ children, themeProps }: ProvidersProps) {
     <HeroUIProvider navigate={router.push}>
       <NextThemesProvider {...themeProps}>
         <LoadingProvider>
-          <LocationsProvider>
-            {children}
-          </LocationsProvider>
+          <AuthProvider>
+            <LocationsProvider>
+              {children}
+            </LocationsProvider>
+          </AuthProvider>
         </LoadingProvider>
       </NextThemesProvider>
     </HeroUIProvider>
