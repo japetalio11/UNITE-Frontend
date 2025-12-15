@@ -77,9 +77,8 @@ export default function AboutPage() {
                 <div className="max-w-7xl mx-auto px-6 lg:px-8 relative z-10">
                     <div className="grid grid-cols-1 lg:grid-cols-2 gap-12 items-center">
                         <div className="space-y-8">
-                            <Chip color="danger" size="sm" className="px-2">PROJECT UNITE</Chip>
                             <h1 className="text-4xl md:text-6xl font-extrabold tracking-tight text-slate-900 leading-[1.1]">
-                                Unifying Neighborhoods in <span className="text-red-600">Transfusion Ecosystem</span>
+                                Unifying Neighborhoods In <span className="text-red-600">Transfusion Ecosystem</span>
                             </h1>
                             <p className="text-lg md:text-xl text-slate-500 max-w-xl leading-relaxed">
                                 Bridging the gap between Bicol Medical Center, local hospitals, and lifesavers like you. A centralized hub for smarter blood management.
@@ -275,7 +274,7 @@ export default function AboutPage() {
                                 <span className="font-bold text-xl text-white">UNITE</span>
                             </div>
                             <p className="text-sm text-slate-400 mb-4 max-w-sm">
-                                Unifying Neighborhoods in Transfusion Ecosystem. A project dedicated to modernizing blood banking in the Bicol Region through accessible technology.
+                                Unifying Neighborhoods In Transfusion Ecosystem. A project dedicated to modernizing blood banking in the Bicol Region through accessible technology.
                             </p>
                         </div>
                         
