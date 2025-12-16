@@ -290,9 +290,9 @@ const CalendarComponent: React.FC<CampaignCalendarProps> = ({
 
                     // Support multiple category formats like 'BloodDrive', 'blood drive', 'blood'
                     if (cat.includes("blood")) colorClass = "bg-red-500";
+                    else if (cat.includes("train")) colorClass = "bg-orange-500";
                     else if (cat.includes("advocacy"))
-                      colorClass = "bg-yellow-400";
-                    else if (cat.includes("train")) colorClass = "bg-blue-500";
+                      colorClass = "bg-blue-500";
 
                     return (
                       <span

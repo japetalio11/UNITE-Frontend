@@ -24,7 +24,7 @@ import {
 } from "@heroui/modal";
 import { RangeValue } from "@react-types/shared";
 import { DateValue } from "@internationalized/date";
-import { useLocations } from "../locations-provider";
+import { useLocations } from "../providers/locations-provider";
 import { getUserInfo } from "../../utils/getUserInfo";
 import { decodeJwt } from "../../utils/decodeJwt";
 
@@ -477,56 +477,56 @@ export default function CampaignToolbar({
   return (
     <>
       <div className="w-full bg-white">
-        <div className="flex flex-row flex-wrap items-center justify-between px-6 py-3 gap-3 overflow-visible pr-6 z-20">
-          {/* Left side: Tabs and Pagination group */}
-          <div className="flex-1 min-w-0 flex items-center gap-4">
+        <div className="flex flex-col md:flex-row md:items-center md:justify-between px-6 py-3 gap-3 overflow-visible pr-6 z-20">
+          {/* First Row: Tabs and Action Buttons (mobile) / Tabs and Pagination (desktop) */}
+          <div className="flex flex-row items-center justify-between gap-3 w-full md:flex-1 md:min-w-0">
             {/* Status Tabs */}
-            <div className="min-w-0 overflow-x-auto">
-            <Tabs
-              classNames={{
-                tabList: "bg-gray-100 p-1",
-                cursor: "bg-white shadow-sm",
-                tabContent:
-                  "group-data-[selected=true]:text-gray-900 text-xs font-medium",
-              }}
-              radius="md"
-              selectedKey={selectedTab}
-              size="sm"
-              variant="solid"
-              onSelectionChange={handleTabChange}
-            >
-              <Tab
-                key="all"
-                title={counts.all > 0 ? `All (${counts.all})` : "All"}
-              />
-              <Tab
-                key="approved"
-                title={
-                  counts.approved > 0
-                    ? `Approved (${counts.approved})`
-                    : "Approved"
-                }
-              />
-              <Tab
-                key="pending"
-                title={
-                  counts.pending > 0 ? `Pending (${counts.pending})` : "Pending"
-                }
-              />
-              <Tab
-                key="rejected"
-                title={
-                  counts.rejected > 0
-                    ? `Rejected (${counts.rejected})`
-                    : "Rejected"
-                }
-              />
-            </Tabs>
-          </div>
+            <div className="min-w-0 overflow-x-auto flex-1">
+              <Tabs
+                classNames={{
+                  tabList: "bg-gray-100 p-1",
+                  cursor: "bg-white shadow-sm",
+                  tabContent:
+                    "group-data-[selected=true]:text-gray-900 text-xs font-medium",
+                }}
+                radius="md"
+                selectedKey={selectedTab}
+                size="sm"
+                variant="solid"
+                onSelectionChange={handleTabChange}
+              >
+                <Tab
+                  key="all"
+                  title={counts.all > 0 ? `All (${counts.all})` : "All"}
+                />
+                <Tab
+                  key="approved"
+                  title={
+                    counts.approved > 0
+                      ? `Approved (${counts.approved})`
+                      : "Approved"
+                  }
+                />
+                <Tab
+                  key="pending"
+                  title={
+                    counts.pending > 0 ? `Pending (${counts.pending})` : "Pending"
+                  }
+                />
+                <Tab
+                  key="rejected"
+                  title={
+                    counts.rejected > 0
+                      ? `Rejected (${counts.rejected})`
+                      : "Rejected"
+                  }
+                />
+              </Tabs>
+            </div>
 
-            {/* Pagination and its buttons */}
+            {/* Pagination - Desktop only (shown on same row as tabs) */}
             {totalPages > 1 && (
-              <div className="flex items-center gap-1">
+              <div className="hidden md:flex items-center gap-1">
                 {/* Previous Button */}
                 <Button
                   isIconOnly
@@ -627,10 +627,9 @@ export default function CampaignToolbar({
                 </Button>
               </div>
             )}
-          </div>
 
-          {/* Right side - Action Buttons */}
-          <div className="flex items-center gap-2 flex-shrink-0 overflow-visible pr-2">
+            {/* Right side - Action Buttons */}
+            <div className="flex items-center gap-2 flex-shrink-0 overflow-visible md:pr-2">
             {/* Export Button */}
             {/*<Button
               <Button
@@ -915,10 +914,115 @@ export default function CampaignToolbar({
                   >
                     {eventLabelsMap["advocacy"]}
                   </DropdownItem>
-                </DropdownMenu>
-              </Dropdown>
-            </ButtonGroup>
+            </DropdownMenu>
+          </Dropdown>
+        </ButtonGroup>
           </div>
+        </div>
+
+        {/* Mobile Pagination - Shown below tabs and buttons on mobile */}
+        {totalPages > 1 && (
+          <div className="flex md:hidden items-center justify-center gap-1 w-full px-6 pb-2">
+            {/* Previous Button */}
+            <Button
+              isIconOnly
+              size="sm"
+              variant="light"
+              isDisabled={currentPage === 1}
+              onPress={() => onPageChange(currentPage - 1)}
+              className="min-w-8 h-8"
+            >
+              ‹
+            </Button>
+
+            {/* Page Numbers with ellipsis logic */}
+            {(() => {
+              const pages = [];
+              const maxVisible = 4; // Maximum number of page buttons to show
+
+              if (totalPages <= maxVisible + 1) {
+                // If total pages is small, show all pages
+                for (let i = 1; i <= totalPages; i++) {
+                  pages.push(i);
+                }
+              } else {
+                // Always start with page 1
+                pages.push(1);
+
+                // Calculate how many pages we can show in the middle
+                const remainingSlots = maxVisible - 2; // -2 for first and last page
+                const sidePages = Math.floor(remainingSlots / 2);
+
+                // Calculate range around current page
+                let startRange = Math.max(2, currentPage - sidePages);
+                let endRange = Math.min(totalPages - 1, currentPage + sidePages);
+
+                // Adjust to ensure we show the right number of pages
+                const actualRange = endRange - startRange + 1;
+                if (actualRange < remainingSlots) {
+                  if (startRange === 2) {
+                    endRange = Math.min(totalPages - 1, endRange + (remainingSlots - actualRange));
+                  } else if (endRange === totalPages - 1) {
+                    startRange = Math.max(2, startRange - (remainingSlots - actualRange));
+                  }
+                }
+
+                // Add ellipsis after 1 if there's a gap
+                if (startRange > 2) {
+                  pages.push('...');
+                }
+
+                // Add the range
+                for (let i = startRange; i <= endRange; i++) {
+                  pages.push(i);
+                }
+
+                // Add ellipsis before last page if there's a gap
+                if (endRange < totalPages - 1) {
+                  pages.push('...');
+                }
+
+                // Always end with last page
+                pages.push(totalPages);
+              }
+
+              // Render the pages
+              return pages.map((page, index) => {
+                if (page === '...') {
+                  return (
+                    <span key={`ellipsis-mobile-${index}`} className="px-2 text-gray-400">
+                      ...
+                    </span>
+                  );
+                }
+                return (
+                  <Button
+                    key={`mobile-${page}`}
+                    size="sm"
+                    variant={currentPage === page ? "solid" : "light"}
+                    color={currentPage === page ? "primary" : "default"}
+                    onPress={() => onPageChange(page as number)}
+                    className="min-w-8 h-8 px-2"
+                  >
+                    {page}
+                  </Button>
+                );
+              });
+            })()}
+
+            {/* Next Button */}
+            <Button
+              isIconOnly
+              size="sm"
+              variant="light"
+              isDisabled={currentPage === totalPages}
+              onPress={() => onPageChange(currentPage + 1)}
+              className="min-w-8 h-8"
+            >
+              ›
+            </Button>
+          </div>
+        )}
         </div>
       </div>
 
