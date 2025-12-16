@@ -1049,11 +1049,12 @@ export default function CalendarPage(props: any) {
       const baseTitle = e.Title || e.Event_Title || e.title || "Event Title";
       // For month view we keep the title as the event title only; tooltip will show times
       const displayTitle = baseTitle;
-      // color codes: blood-drive -> red, advocacy -> yellow, training -> blue
-      let color = "#3b82f6"; // default blue (training)
+      // color codes: blood-drive -> red, training -> orange, advocacy -> blue
+      let color = "#3b82f6"; // default blue (advocacy)
 
       if (typeKey === "blood-drive") color = "#ef4444";
-      else if (typeKey === "advocacy") color = "#f59e0b";
+      else if (typeKey === "training") color = "#f97316"; // orange-500
+      else if (typeKey === "advocacy") color = "#3b82f6"; // blue-500
 
       return {
         title: displayTitle,
