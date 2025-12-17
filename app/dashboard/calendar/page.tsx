@@ -40,9 +40,10 @@ import EditEventModal from "@/components/calendar/event-edit-modal";
 import EventManageStaffModal from "@/components/calendar/event-manage-staff-modal";
 import EventRescheduleModal from "@/components/calendar/event-reschedule-modal";
 import CalendarToolbar from "@/components/calendar/calendar-toolbar";
-import Topbar from "@/components/topbar";
+import Topbar from "@/components/layout/topbar";
 import { fetchWithAuth } from "@/utils/fetchWithAuth";
 import { getUserInfo } from "@/utils/getUserInfo";
+import MobileNav from "@/components/tools/mobile-nav";
 import {
   Ticket,
   Calendar as CalIcon,
@@ -169,7 +170,6 @@ export default function CalendarPage(props: any) {
   const [staffLoading, setStaffLoading] = useState(false);
 
   // Mobile navigation state (matches Campaign page pattern)
-  const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [isMobile, setIsMobile] = useState(false);
 
   // Set default view to month on mobile, week on desktop
@@ -1049,11 +1049,12 @@ export default function CalendarPage(props: any) {
       const baseTitle = e.Title || e.Event_Title || e.title || "Event Title";
       // For month view we keep the title as the event title only; tooltip will show times
       const displayTitle = baseTitle;
-      // color codes: blood-drive -> red, advocacy -> yellow, training -> blue
-      let color = "#3b82f6"; // default blue (training)
+      // color codes: blood-drive -> red, training -> orange, advocacy -> blue
+      let color = "#3b82f6"; // default blue (advocacy)
 
       if (typeKey === "blood-drive") color = "#ef4444";
-      else if (typeKey === "advocacy") color = "#f59e0b";
+      else if (typeKey === "training") color = "#f97316"; // orange-500
+      else if (typeKey === "advocacy") color = "#3b82f6"; // blue-500
 
       return {
         title: displayTitle,
@@ -1861,24 +1862,10 @@ export default function CalendarPage(props: any) {
       {/* Header: match campaign spacing with mobile hamburger */}
       <div className="px-4 sm:px-6 pt-6 pb-4 flex items-center justify-between">
         <h1 className="text-2xl font-semibold">{publicTitle ?? "Calendar"}</h1>
-        {/* Mobile hamburger at top-right next to Calendar title */}
-        <button
-          aria-label="Open navigation"
-          className="inline-flex items-center justify-center p-2 rounded-md md:hidden hover:bg-gray-100 transition-colors"
-          onClick={() => setMobileNavOpen(true)}
-        >
-          <svg
-            width="20"
-            height="20"
-            viewBox="0 0 20 20"
-            fill="none"
-            xmlns="http://www.w3.org/2000/svg"
-          >
-            <path d="M3 5H17" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
-            <path d="M3 10H17" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
-            <path d="M3 15H17" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
-          </svg>
-        </button>
+        {/* Mobile nav (bell + hamburger) - hide for public/embed usage */}
+        {!publicTitle && (
+          <MobileNav currentUserName={currentUserName} currentUserEmail={currentUserEmail} />
+        )}
       </div>
 
       <Topbar
@@ -1893,22 +1880,24 @@ export default function CalendarPage(props: any) {
           {/* Left side - View Toggle and Date Navigation */}
           <div className="flex flex-col sm:flex-row items-start sm:items-center gap-3">
             {/* View Toggle: hide week view on mobile, show only month */}
-            <Tabs
-              classNames={{
-                tabList: "bg-gray-100 p-1",
-                cursor: "bg-white shadow-sm",
-                tabContent: "group-data-[selected=true]:text-gray-900 text-xs font-medium",
-              }}
-              radius="md"
-              selectedKey={activeView}
-              size="sm"
-              variant="solid"
-              onSelectionChange={(key: React.Key) => handleViewChange(String(key))}
-            >
-              {/* Hide week tab on mobile */}
-              {!isMobile && <Tab key="week" title="Week" />}
-              <Tab key="month" title="Month" />
-            </Tabs>
+            {/* Hide the tab controls on mobile while keeping month active */}
+            {!isMobile && (
+              <Tabs
+                classNames={{
+                  tabList: "bg-gray-100 p-1",
+                  cursor: "bg-white shadow-sm",
+                  tabContent: "group-data-[selected=true]:text-gray-900 text-xs font-medium",
+                }}
+                radius="md"
+                selectedKey={activeView}
+                size="sm"
+                variant="solid"
+                onSelectionChange={(key: React.Key) => handleViewChange(String(key))}
+              >
+                <Tab key="week" title="Week" />
+                <Tab key="month" title="Month" />
+              </Tabs>
+            )}
 
             {/* Date Navigation - touch-friendly on mobile */}
             <div className="flex items-center gap-2 w-full sm:w-auto justify-between sm:justify-start">
@@ -1947,6 +1936,7 @@ export default function CalendarPage(props: any) {
             <CalendarToolbar
               showCreate={allowCreate}
               showExport={false}
+              isMobile={isMobile}
               onAdvancedFilter={handleAdvancedFilter}
               onCreateEvent={allowCreate ? handleCreateEvent : undefined}
               onExport={handleExport}
@@ -2467,61 +2457,7 @@ export default function CalendarPage(props: any) {
         </ModalContent>
       </Modal>
 
-      {/* Mobile Navigation Drawer (right-side) - matches Campaign page pattern */}
-      {mobileNavOpen && (
-        <div className="fixed inset-0 z-50 flex">
-          <div className="ml-auto w-3/4 max-w-sm bg-white h-full shadow-lg p-4">
-            <div className="flex items-center justify-between mb-4">
-              <div>
-                <div className="text-sm font-semibold">{currentUserName || "User"}</div>
-                <div className="text-xs text-default-500">{currentUserEmail || ""}</div>
-              </div>
-              <button
-                aria-label="Close navigation"
-                onClick={() => setMobileNavOpen(false)}
-                className="p-2 text-xl hover:bg-gray-100 rounded transition-colors"
-              >
-                ✕
-              </button>
-            </div>
-
-            <nav className="flex flex-col gap-3">
-              <a className="flex items-center gap-3 text-sm hover:bg-gray-100 p-2 rounded transition-colors" href="/dashboard/campaign">
-                <Ticket className="w-5 h-5" />
-                Campaign
-              </a>
-              <a className="flex items-center gap-3 text-sm hover:bg-gray-100 p-2 rounded transition-colors bg-gray-50 font-semibold" href="/dashboard/calendar">
-                <CalIcon className="w-5 h-5" />
-                Calendar
-              </a>
-              <a className="flex items-center gap-3 text-sm hover:bg-gray-100 p-2 rounded transition-colors" href="/dashboard/chat">
-                <Comments className="w-5 h-5" />
-                Chat
-              </a>
-              <a className="flex items-center gap-3 text-sm hover:bg-gray-100 p-2 rounded transition-colors" href="/dashboard/stakeholder-management">
-                <PersonPlanetEarth className="w-5 h-5" />
-                Stakeholders
-              </a>
-              <a className="flex items-center gap-3 text-sm hover:bg-gray-100 p-2 rounded transition-colors" href="/dashboard/coordinator-management">
-                <Persons className="w-5 h-5" />
-                Coordinators
-              </a>
-              <a className="flex items-center gap-3 text-sm hover:bg-gray-100 p-2 rounded transition-colors" href="/dashboard/notification">
-                <Bell className="w-5 h-5" />
-                Notifications
-              </a>
-              <a className="flex items-center gap-3 text-sm hover:bg-gray-100 p-2 rounded transition-colors" href="/dashboard/settings">
-                <Gear className="w-5 h-5" />
-                Settings
-              </a>
-              <a className="flex items-center gap-3 text-sm text-danger hover:bg-red-50 p-2 rounded transition-colors" href="/auth/login">
-                Logout
-              </a>
-            </nav>
-          </div>
-          <div className="flex-1" onClick={() => setMobileNavOpen(false)} />
-        </div>
-      )}
+      {/* Mobile navigation is provided by the reusable MobileNav component */}
 
       <style jsx>{`
         .hide-scrollbar::-webkit-scrollbar {

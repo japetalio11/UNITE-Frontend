@@ -2,7 +2,6 @@
 
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-// use native inputs here for tighter visual control
 import { Button } from "@heroui/button";
 import { Link } from "@heroui/link";
 import { Eye, EyeSlash, Check } from "@gravity-ui/icons";
@@ -47,7 +46,7 @@ export default function SignUp() {
     Field: "",
     Email: "",
     Verification_Code: "",
-    Account_Type: "", // Added account type field
+    Account_Type: "", 
   });
 
   const update = (patch: Partial<typeof formData>) =>
@@ -73,11 +72,11 @@ export default function SignUp() {
         formData.Last_Name.trim() &&
         formData.Phone_Number.trim() &&
         formData.Email.trim() &&
-        formData.Account_Type.trim() // Added account type validation
+        formData.Account_Type.trim() 
       );
     }
     if (step === 1) {
-      return !!(formData.Province && formData.District && formData.Municipality);
+      return !!(formData.Account_Type && formData.Province && formData.District && formData.Municipality);
     }
     if (step === 2) {
       return (
@@ -363,6 +362,27 @@ export default function SignUp() {
           >
             <div className="space-y-3">
               <div>
+                <label className="text-sm font-medium block mb-1" htmlFor="accountType">Account Type <span className="text-danger-500">*</span></label>
+                <Select
+                  id="accountType"
+                  className="h-10"
+                  placeholder="Select Account Type"
+                  selectedKeys={formData.Account_Type ? [formData.Account_Type] : []}
+                  radius="md"
+                  size="sm"
+                  variant="bordered"
+                  onChange={(e) => {
+                    const val = e.target.value;
+                    update({ Account_Type: val, Province: "", District: "", Municipality: "" });
+                    setDistricts([]);
+                    setMunicipalities([]);
+                  }}
+                >
+                  <SelectItem key="LGU">LGU</SelectItem>
+                  <SelectItem key="Others">Others</SelectItem>
+                </Select>
+              </div>
+              <div>
                 <label className="text-sm font-medium block mb-1" htmlFor="province">Province <span className="text-danger-500">*</span></label>
                 <Select
                   id="province"
@@ -372,6 +392,7 @@ export default function SignUp() {
                   radius="md"
                   size="sm"
                   variant="bordered"
+                  isDisabled={!formData.Account_Type}
                   onChange={(e) => {
                     const val = e.target.value;
                     update({ Province: val, District: "", Municipality: "" });
@@ -383,7 +404,7 @@ export default function SignUp() {
                 </Select>
               </div>
               <div>
-                <label className="text-sm font-medium block mb-1" htmlFor="district">District / Category (or Sector) <span className="text-danger-500">*</span></label>
+                <label className="text-sm font-medium block mb-1" htmlFor="district">District / City <span className="text-danger-500">*</span></label>
                 <Select
                   id="district"
                   className="h-10"
@@ -392,7 +413,7 @@ export default function SignUp() {
                   radius="md"
                   size="sm"
                   variant="bordered"
-                  isDisabled={!formData.Province}
+                  isDisabled={!formData.Province || !formData.Account_Type}
                   onChange={(e) => {
                     const val = e.target.value;
                     update({ District: val, Municipality: "" });
@@ -404,7 +425,7 @@ export default function SignUp() {
                 </Select>
               </div>
               <div>
-                <label className="text-sm font-medium block mb-1" htmlFor="municipality">City / Municipality / Type <span className="text-danger-500">*</span></label>
+                <label className="text-sm font-medium block mb-1" htmlFor="municipality">Municipality / City <span className="text-danger-500">*</span></label>
                 <Select
                   id="municipality"
                   className="h-10"
@@ -413,7 +434,7 @@ export default function SignUp() {
                   radius="md"
                   size="sm"
                   variant="bordered"
-                  isDisabled={!formData.District}
+                  isDisabled={!formData.District || !formData.Account_Type}
                   onChange={(e) => update({ Municipality: e.target.value })}
                 >
                   {municipalities.map((mun) => (

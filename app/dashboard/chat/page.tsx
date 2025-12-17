@@ -12,10 +12,10 @@ import {
   Gear,
   Comments,
 } from "@gravity-ui/icons";
+import MobileNav from "@/components/tools/mobile-nav";
 
 export default function ChatPage() {
   const [selected, setSelected] = useState<string | null>(null);
-  const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [isMobile, setIsMobile] = useState(false);
   const [currentUserName, setCurrentUserName] = useState<string>("");
   const [currentUserEmail, setCurrentUserEmail] = useState<string>("");
@@ -83,62 +83,11 @@ export default function ChatPage() {
 
   return (
     <ChatProvider>
-      <div className="h-screen w-full flex bg-white font-sans text-slate-900 overflow-hidden">
-        {/* Mobile Navigation Drawer (right-side) - matches Calendar page pattern */}
-        {mobileNavOpen && (
-          <div className="fixed inset-0 z-50 flex">
-            <div className="ml-auto w-3/4 max-w-sm bg-white h-full shadow-lg p-4">
-              <div className="flex items-center justify-between mb-4">
-                <div>
-                  <div className="text-sm font-semibold">{currentUserName || "User"}</div>
-                  <div className="text-xs text-default-500">{currentUserEmail || ""}</div>
-                </div>
-                <button
-                  aria-label="Close navigation"
-                  onClick={() => setMobileNavOpen(false)}
-                  className="p-2 text-xl hover:bg-gray-100 rounded transition-colors"
-                >
-                  ✕
-                </button>
-              </div>
-
-              <nav className="flex flex-col gap-3">
-                <a className="flex items-center gap-3 text-sm hover:bg-gray-100 p-2 rounded transition-colors" href="/dashboard/campaign">
-                  <Ticket className="w-5 h-5" />
-                  Campaign
-                </a>
-                <a className="flex items-center gap-3 text-sm hover:bg-gray-100 p-2 rounded transition-colors" href="/dashboard/calendar">
-                  <CalIcon className="w-5 h-5" />
-                  Calendar
-                </a>
-                <a className="flex items-center gap-3 text-sm hover:bg-gray-100 p-2 rounded transition-colors bg-gray-50 font-semibold" href="/dashboard/chat">
-                  <Comments className="w-5 h-5" />
-                  Chat
-                </a>
-                <a className="flex items-center gap-3 text-sm hover:bg-gray-100 p-2 rounded transition-colors" href="/dashboard/stakeholder-management">
-                  <PersonPlanetEarth className="w-5 h-5" />
-                  Stakeholders
-                </a>
-                <a className="flex items-center gap-3 text-sm hover:bg-gray-100 p-2 rounded transition-colors" href="/dashboard/coordinator-management">
-                  <Persons className="w-5 h-5" />
-                  Coordinators
-                </a>
-                <a className="flex items-center gap-3 text-sm hover:bg-gray-100 p-2 rounded transition-colors" href="/dashboard/notification">
-                  <Bell className="w-5 h-5" />
-                  Notifications
-                </a>
-                <a className="flex items-center gap-3 text-sm hover:bg-gray-100 p-2 rounded transition-colors" href="/dashboard/settings">
-                  <Gear className="w-5 h-5" />
-                  Settings
-                </a>
-                <a className="flex items-center gap-3 text-sm text-danger hover:bg-red-50 p-2 rounded transition-colors" href="/auth/login">
-                  Logout
-                </a>
-              </nav>
-            </div>
-            <div className="flex-1" onClick={() => setMobileNavOpen(false)} />
-          </div>
-        )}
+      <div className="relative h-screen w-full flex bg-white font-sans text-slate-900 overflow-hidden">
+        {/* Mobile nav component (positioned top-right) */}
+        <div className="absolute top-4 right-4 md:hidden z-[9999]">
+          <MobileNav currentUserName={currentUserName} currentUserEmail={currentUserEmail} />
+        </div>
 
         {/* Left column: Chat list - visible on desktop, conditionally on mobile */}
         <div
@@ -154,8 +103,8 @@ export default function ChatPage() {
             onSelect={(id) => {
               setSelected(id);
             }}
-            onMobileNavOpen={() => setMobileNavOpen(true)}
-            showMobileNav={isMobile}
+            onMobileNavOpen={() => {}}
+            showMobileNav={false}
           />
         </div>
 

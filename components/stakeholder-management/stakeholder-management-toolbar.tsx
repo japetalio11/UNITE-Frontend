@@ -59,7 +59,9 @@ export default function StakeholderToolbar({
             variant="solid"
             onSelectionChange={handleTabChange}
             classNames={{
-              tabList: "gap-1",
+              tabList: "gap-2",
+              // further reduce horizontal padding on small screens so numeric badge doesn't cause overlap
+              tab: "px-1 sm:px-2 py-1",
             }}
           >
             <Tab key="all" title="All" />

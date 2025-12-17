@@ -31,7 +31,7 @@ import {
   FileText,
 } from "@gravity-ui/icons";
 
-import ManageStaffModal from "../manage-staff-modal";
+import ManageStaffModal from "../modals/manage-staff-modal";
 import EventActionMenu from "./event-action-menu";
 import RescheduleModal from "./reschedule-modal";
 import ConfirmModal from "./confirm-modal";
@@ -43,7 +43,7 @@ import {
   deleteRequest as svcDeleteRequest,
 } from "./services/requestsService";
 
-import { useLocations } from "../locations-provider";
+import { useLocations } from "../providers/locations-provider";
 
 import { fetchWithAuth } from "@/utils/fetchWithAuth";
 
@@ -1096,17 +1096,32 @@ const EventCard: React.FC<EventCardProps> = ({
       requestStatus.includes("pending_review") ||
       requestStatus.includes("pending_review")
     ) {
-      if (
-        r?.reviewer?.role &&
-        String(r.reviewer.role).toLowerCase().includes("coordinator")
-      )
+      // Check for Coordinator-Stakeholder case: if creator is Coordinator and stakeholder_id exists, Stakeholder is reviewer
+      const creatorRole = r?.made_by_role || r?.creator?.role;
+      const isCoordinatorRequest = creatorRole && String(creatorRole).toLowerCase().includes("coordinator");
+      const hasStakeholder = !!(r?.stakeholder_id || r?.Stakeholder_ID || r?.stakeholderId);
+      const isCoordinatorStakeholderCase = isCoordinatorRequest && hasStakeholder;
+      
+      // Check reviewer role
+      const reviewerRole = r?.reviewer?.role ? String(r.reviewer.role).toLowerCase() : null;
+      
+      // For Coordinator-Stakeholder cases, prioritize Stakeholder reviewer
+      if (isCoordinatorStakeholderCase && (reviewerRole?.includes("stakeholder") || !reviewerRole)) {
+        return "Waiting for Stakeholder review";
+      }
+      
+      if (reviewerRole?.includes("stakeholder")) {
+        return "Waiting for Stakeholder review";
+      }
+      if (reviewerRole?.includes("coordinator")) {
         return "Waiting for Coordinator review";
+      }
       if (
-        r?.reviewer?.role &&
-        (String(r.reviewer.role).toLowerCase().includes("admin") ||
-          String(r.reviewer.role).toLowerCase().includes("systemadmin"))
-      )
+        reviewerRole?.includes("admin") ||
+        reviewerRole?.includes("systemadmin")
+      ) {
         return "Waiting for Admin review";
+      }
       return "Waiting for Admin or Coordinator review";
     }
 
@@ -1117,11 +1132,45 @@ const EventCard: React.FC<EventCardProps> = ({
         requestStatus.includes("resched") ||
         requestStatus.includes("reschedule") ||
         requestStatus.includes("rescheduled")
-      )
-        return r?.reviewer?.role &&
-          String(r.reviewer.role).toLowerCase().includes("coordinator")
-          ? "Waiting for Coordinator review (reschedule)"
-          : "Waiting for Admin review (reschedule)";
+      ) {
+        const reviewerRole = r?.reviewer?.role ? String(r.reviewer.role).toLowerCase() : null;
+        // Check for Coordinator-Stakeholder case
+        const creatorRole = r?.made_by_role || r?.creator?.role;
+        const isCoordinatorRequest = creatorRole && String(creatorRole).toLowerCase().includes("coordinator");
+        const hasStakeholder = !!(r?.stakeholder_id || r?.Stakeholder_ID || r?.stakeholderId);
+        const isCoordinatorStakeholderCase = isCoordinatorRequest && hasStakeholder;
+        
+        if (isCoordinatorStakeholderCase && (reviewerRole?.includes("stakeholder") || !reviewerRole)) {
+          return "Waiting for Stakeholder review (reschedule)";
+        }
+        if (reviewerRole?.includes("stakeholder")) {
+          return "Waiting for Stakeholder review (reschedule)";
+        }
+        if (reviewerRole?.includes("coordinator")) {
+          return "Waiting for Coordinator review (reschedule)";
+        }
+        return "Waiting for Admin review (reschedule)";
+      }
+      
+      // Check for Coordinator-Stakeholder case for general review status
+      const creatorRole = r?.made_by_role || r?.creator?.role;
+      const isCoordinatorRequest = creatorRole && String(creatorRole).toLowerCase().includes("coordinator");
+      const hasStakeholder = !!(r?.stakeholder_id || r?.Stakeholder_ID || r?.stakeholderId);
+      const isCoordinatorStakeholderCase = isCoordinatorRequest && hasStakeholder;
+      const reviewerRole = r?.reviewer?.role ? String(r.reviewer.role).toLowerCase() : null;
+      
+      if (isCoordinatorStakeholderCase && (reviewerRole?.includes("stakeholder") || !reviewerRole)) {
+        return "Waiting for Stakeholder review";
+      }
+      if (reviewerRole?.includes("stakeholder")) {
+        return "Waiting for Stakeholder review";
+      }
+      if (reviewerRole?.includes("coordinator")) {
+        return "Waiting for Coordinator review";
+      }
+      if (reviewerRole?.includes("admin") || reviewerRole?.includes("systemadmin")) {
+        return "Waiting for Admin review";
+      }
       return "Waiting for Admin or Coordinator review";
     }
 
@@ -1130,10 +1179,23 @@ const EventCard: React.FC<EventCardProps> = ({
       requestStatus.includes("rescheduled_by_admin") ||
       requestStatus.includes("rescheduled_by_admin")
     ) {
-      return r?.reviewer?.role &&
-        String(r.reviewer.role).toLowerCase().includes("coordinator")
-        ? "Waiting for Coordinator review (reschedule)"
-        : "Waiting for Admin review (reschedule)";
+      const reviewerRole = r?.reviewer?.role ? String(r.reviewer.role).toLowerCase() : null;
+      // Check for Coordinator-Stakeholder case
+      const creatorRole = r?.made_by_role || r?.creator?.role;
+      const isCoordinatorRequest = creatorRole && String(creatorRole).toLowerCase().includes("coordinator");
+      const hasStakeholder = !!(r?.stakeholder_id || r?.Stakeholder_ID || r?.stakeholderId);
+      const isCoordinatorStakeholderCase = isCoordinatorRequest && hasStakeholder;
+      
+      if (isCoordinatorStakeholderCase && (reviewerRole?.includes("stakeholder") || !reviewerRole)) {
+        return "Waiting for Stakeholder review (reschedule)";
+      }
+      if (reviewerRole?.includes("stakeholder")) {
+        return "Waiting for Stakeholder review (reschedule)";
+      }
+      if (reviewerRole?.includes("coordinator")) {
+        return "Waiting for Coordinator review (reschedule)";
+      }
+      return "Waiting for Admin review (reschedule)";
     }
     if (requestStatus.includes("rescheduled_by_coordinator")) {
       return "Rescheduled by coordinator";
@@ -1550,12 +1612,14 @@ const EventCard: React.FC<EventCardProps> = ({
               color={
                 category === "Blood Drive"
                   ? "danger"
-                  : category === "Training"
-                    ? "success"
-                    : "default" // Fallback to default when not Blood Drive or Training
+                  : "default" // Training and Advocacy use custom colors via className
               }
               className={
-                category === "Advocacy" ? "bg-blue-100 text-blue-500" : ""
+                category === "Training"
+                  ? "bg-orange-100 text-orange-600"
+                  : category === "Advocacy"
+                    ? "bg-blue-100 text-blue-600"
+                    : ""
               }
               radius="sm"
               size="sm"
