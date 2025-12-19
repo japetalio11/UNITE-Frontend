@@ -1,7 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
-import { getUserInfo } from "@/utils/getUserInfo";
+import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Modal, ModalContent, ModalHeader, ModalBody } from "@heroui/modal";
 import { Button } from "@heroui/button";
@@ -11,131 +10,104 @@ import { DatePicker } from "@heroui/date-picker";
 import { DateValue } from "@react-types/datepicker";
 import { CheckboxGroup, Checkbox } from "@heroui/checkbox";
 import { Chip } from "@heroui/chip";
-import { Xmark, TrashBin } from "@gravity-ui/icons";
+import { TrashBin, Plus as PlusIcon } from "@gravity-ui/icons";
 import { parseDate } from "@internationalized/date";
-import { fetchJsonWithAuth } from "@/utils/fetchWithAuth";
-
-interface Settings {
-  notificationsEnabled: boolean;
-  maxPendingRequests: number;
-  maxEventsPerDay: number;
-  maxBloodBagsPerDay: number;
-  advanceBookingDays: number;
-  blockedWeekdays: number[];
-  blockedDates: string[];
-}
+import { useSettings } from "@/hooks/useSettings";
+import { useRoles, Role } from "@/hooks/useRoles";
+import RoleManagementTable from "@/components/settings/role-management-table";
+import RoleFormModal from "@/components/settings/role-form-modal";
 
 interface SettingsModalProps {
   isOpen: boolean;
   onClose: () => void;
 }
 
+type TabType = "general" | "requesting" | "location" | "staff";
+
 export default function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
   const router = useRouter();
-  const [settings, setSettings] = useState<Settings>({
-    notificationsEnabled: true,
-    maxPendingRequests: 100,
-    maxEventsPerDay: 3,
-    maxBloodBagsPerDay: 200,
-    advanceBookingDays: 30,
-    blockedWeekdays: [1, 0, 0, 0, 0, 0, 1], // Sun and Sat blocked
-    blockedDates: [],
-  });
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  const [loading, setLoading] = useState(false);
+  const {
+    settings,
+    loading,
+    permissions,
+    permissionsLoading,
+    updateSettings,
+  } = useSettings(isOpen);
+  
+  // Role management
+  const {
+    roles,
+    permissions: allPermissions,
+    loading: rolesLoading,
+    permissionsLoading: permissionsListLoading,
+    error: rolesError,
+    createRole,
+    updateRole,
+    deleteRole,
+    getRoleUsersCount,
+    checkPermission,
+  } = useRoles(isOpen);
+  
+  // Tab state management
+  const [activeTab, setActiveTab] = useState<TabType>("general");
+  
+  // Role form state
+  const [showRoleForm, setShowRoleForm] = useState(false);
+  const [editingRole, setEditingRole] = useState<Role | null>(null);
+  const [isSubmittingRole, setIsSubmittingRole] = useState(false);
+  const [roleFormError, setRoleFormError] = useState<string | null>(null);
+  
+  // Permission checks for role management
+  const [canCreateRole, setCanCreateRole] = useState(false);
+  const [canUpdateRole, setCanUpdateRole] = useState(false);
+  const [canDeleteRole, setCanDeleteRole] = useState(false);
+
+  // Check role management permissions
+  useEffect(() => {
+    if (isOpen && permissions.canEditStaff) {
+      Promise.all([
+        checkPermission("role", "create"),
+        checkPermission("role", "update"),
+        checkPermission("role", "delete"),
+      ]).then(([create, update, del]) => {
+        setCanCreateRole(create);
+        setCanUpdateRole(update);
+        setCanDeleteRole(del);
+      });
+    }
+  }, [isOpen, permissions.canEditStaff, checkPermission]);
 
   // Prevent background scrolling when modal is open
   useEffect(() => {
     if (isOpen) {
       document.body.style.overflow = "hidden";
+      // Set initial tab based on available permissions
+      if (permissions.canAccessSettings) {
+        setActiveTab("general");
+      } else if (permissions.canEditRequesting) {
+        setActiveTab("requesting");
+      } else if (permissions.canEditLocation) {
+        setActiveTab("location");
+      } else if (permissions.canEditStaff) {
+        setActiveTab("staff");
+      }
     } else {
       document.body.style.overflow = "";
+      // Reset role form state when modal closes
+      setShowRoleForm(false);
+      setEditingRole(null);
+      setRoleFormError(null);
     }
     return () => {
       document.body.style.overflow = "";
     };
-  }, [isOpen]);
-
-  useEffect(() => {
-    if (isOpen && isAdmin) {
-      loadSettings();
-    }
-  }, [isOpen]);
-
-  // determine admin status on mount
-  const [isAdmin, setIsAdmin] = useState(false);
-
-  useEffect(() => {
-    try {
-      const info = getUserInfo();
-      const raw = info?.raw || info || null;
-      const staffType =
-        raw?.StaffType ||
-        raw?.Staff_Type ||
-        raw?.staff_type ||
-        raw?.role ||
-        null;
-      const roleStr = (info?.role || "").toString().toLowerCase();
-      const staffLower = staffType ? String(staffType).toLowerCase() : "";
-
-      const detected = Boolean(
-        (info && info.isAdmin) ||
-          staffLower === "admin" ||
-          roleStr === "admin" ||
-          (roleStr.includes("sys") && roleStr.includes("admin")),
-      );
-
-      setIsAdmin(Boolean(detected));
-    } catch (e) {
-      setIsAdmin(false);
-    }
-  }, []);
-
-  const loadSettings = async () => {
-    try {
-      setLoading(true);
-      const response = await fetchJsonWithAuth("/api/settings");
-
-      if (response.success) {
-        setSettings({
-          notificationsEnabled: response.data.notificationsEnabled ?? true,
-          maxPendingRequests: response.data.maxPendingRequests ?? 100,
-          maxEventsPerDay: response.data.maxEventsPerDay ?? 3,
-          maxBloodBagsPerDay: response.data.maxBloodBagsPerDay ?? 200,
-          advanceBookingDays: response.data.advanceBookingDays ?? 30,
-          blockedWeekdays:
-            response.data.blockedWeekdays ?? [1, 0, 0, 0, 0, 0, 1],
-          blockedDates: response.data.blockedDates ?? [],
-        });
-      }
-    } catch (error) {
-      console.error("Failed to load settings:", error);
-    } finally {
-      setLoading(false);
-    }
-  };
+  }, [isOpen, permissions]);
 
   const handleLogout = () => {
     localStorage.removeItem("unite_token");
     sessionStorage.removeItem("unite_token");
     onClose();
     router.push("/");
-  };
-
-  const updateSettings = async (updates: Partial<Settings>) => {
-    try {
-      const newSettings = { ...settings, ...updates };
-
-      setSettings(newSettings);
-      await fetchJsonWithAuth("/api/settings", {
-        method: "POST",
-        body: JSON.stringify(updates),
-      });
-    } catch (error) {
-      console.error("Failed to update settings:", error);
-      // Revert on error
-      setSettings(settings);
-    }
   };
 
   const handleBlockedDateAdd = (date: DateValue | null) => {
@@ -174,9 +146,68 @@ export default function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
     )
     .filter(Boolean) as string[];
 
+  // Role management handlers
+  const handleCreateRole = () => {
+    setEditingRole(null);
+    setRoleFormError(null);
+    setShowRoleForm(true);
+  };
+
+  const handleEditRole = (role: Role) => {
+    setEditingRole(role);
+    setRoleFormError(null);
+    setShowRoleForm(true);
+  };
+
+  const handleDeleteRole = async (role: Role) => {
+    try {
+      // Check user count first
+      const userCount = await getRoleUsersCount(role._id);
+      
+      if (userCount > 0) {
+        const message = `Cannot delete "${role.name}": ${userCount} user(s) are currently assigned to this role. Please reassign users before deleting.`;
+        if (window.confirm(message + "\n\nDo you want to proceed anyway?")) {
+          // User confirmed, but backend will still reject if users exist
+          await deleteRole(role._id);
+        }
+      } else {
+        if (window.confirm(`Are you sure you want to delete "${role.name}"? This action cannot be undone.`)) {
+          await deleteRole(role._id);
+        }
+      }
+    } catch (error: any) {
+      alert(error.message || "Failed to delete role");
+    }
+  };
+
+  const handleRoleSubmit = async (roleData: Omit<Role, '_id' | 'createdAt' | 'updatedAt'>) => {
+    setIsSubmittingRole(true);
+    setRoleFormError(null);
+    
+    try {
+      if (editingRole) {
+        await updateRole(editingRole._id, roleData);
+      } else {
+        await createRole(roleData);
+      }
+      setShowRoleForm(false);
+      setEditingRole(null);
+    } catch (error: any) {
+      setRoleFormError(error.message || "Failed to save role");
+      throw error; // Re-throw to let form handle it
+    } finally {
+      setIsSubmittingRole(false);
+    }
+  };
+
+  const handleViewRole = (role: Role) => {
+    // For now, just open edit modal in view mode
+    // Could create a separate view modal later
+    handleEditRole(role);
+  };
+
   const blockedDateValues = settings.blockedDates.map((dateStr) => {
     const [year, month, day] = dateStr.split("-").map(Number);
-
     return parseDate(`${year}-${month}-${day}`);
   });
 
@@ -184,8 +215,8 @@ export default function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
     label: string,
     description: string,
     value: number,
-    key: keyof Settings,
-    hasRefresh = false,
+    key: keyof typeof settings,
+    disabled = false,
   ) => (
     <div className="flex flex-col md:flex-row md:items-center justify-between py-4 gap-2 md:gap-0">
       <div className="flex-1 pr-0 md:pr-8">
@@ -201,17 +232,43 @@ export default function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
           onChange={(e) =>
             updateSettings({ [key]: parseInt(e.target.value) || 0 })
           }
-          endContent={
-            hasRefresh ? (
-              <Button isIconOnly size="sm" variant="light">
-                <TrashBin className="h-4 w-4 text-gray-500" />
-              </Button>
-            ) : undefined
-          }
+          isDisabled={disabled}
         />
       </div>
     </div>
   );
+
+  // Check if user has any settings access
+  const hasAnyAccess =
+    permissions.canAccessSettings ||
+    permissions.canEditRequesting ||
+    permissions.canEditLocation ||
+    permissions.canEditStaff;
+
+  // Show loading state
+  if (permissionsLoading || loading) {
+    return (
+      <Modal
+        backdrop="opaque"
+        isOpen={isOpen}
+        scrollBehavior="inside"
+        size="5xl"
+        classNames={{
+          base: "!m-0 !p-0 !w-full !h-full !max-h-full !max-w-none !rounded-none md:!rounded-xl md:!h-auto md:!m-auto md:!w-auto",
+          wrapper: "!p-0 md:!p-10",
+        }}
+        onClose={onClose}
+      >
+        <ModalContent className="h-full md:h-auto min-h-full md:min-h-0">
+          <ModalBody className="p-6">
+            <div className="text-center">
+              <p className="text-sm text-gray-600">Loading settings...</p>
+            </div>
+          </ModalBody>
+        </ModalContent>
+      </Modal>
+    );
+  }
 
   return (
     <Modal
@@ -219,8 +276,6 @@ export default function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
       isOpen={isOpen}
       scrollBehavior="inside"
       size="5xl"
-      // Force full screen on mobile, but revert to "auto" sizing logic on desktop
-      // so 'size="5xl"' takes precedence again.
       classNames={{
         base: "!m-0 !p-0 !w-full !h-full !max-h-full !max-w-none !rounded-none md:!rounded-xl md:!h-auto md:!m-auto md:!w-auto",
         wrapper: "!p-0 md:!p-10",
@@ -234,20 +289,60 @@ export default function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
               <h2 className="text-lg font-semibold">Settings</h2>
             </ModalHeader>
             <ModalBody className="p-0 md:p-6 overflow-y-auto">
-              {isAdmin ? (
-                // Switch flex direction on mobile, keep row on desktop
-                <div className="flex flex-col md:flex-row min-h-full">
-                  {/* Sidebar: Full width on top (mobile) vs w-64 on left (desktop) */}
-                  <div className="w-full md:w-64 border-b md:border-b-0 md:border-r border-gray-200 p-4 md:p-6 bg-gray-50 md:bg-transparent shrink-0">
+              {hasAnyAccess ? (
+                <div className="flex flex-col md:flex-row min-h-full w-full">
+                  {/* Sidebar */}
+                  <div className="w-full md:w-64 border-b md:border-b-0 md:border-r border-gray-200 p-4 md:p-6 bg-gray-50 md:bg-transparent shrink-0 flex-shrink-0">
                     <nav className="space-y-1">
-                      <a
-                        href="#"
-                        className="block rounded-md bg-white md:bg-gray-100 border md:border-none border-gray-200 px-3 py-2 text-sm font-semibold text-gray-900 text-center md:text-left shadow-sm md:shadow-none"
-                      >
-                        General
-                      </a>
+                      {permissions.canAccessSettings && (
+                        <button
+                          onClick={() => setActiveTab("general")}
+                          className={`w-full block rounded-md px-3 py-2 text-sm font-semibold text-center md:text-left transition-colors ${
+                            activeTab === "general"
+                              ? "bg-white md:bg-gray-100 border border-gray-200 text-gray-900 shadow-sm md:shadow-none"
+                              : "text-gray-600 hover:bg-gray-100 hover:text-gray-900"
+                          }`}
+                        >
+                          General
+                        </button>
+                      )}
+                      {permissions.canEditRequesting && (
+                        <button
+                          onClick={() => setActiveTab("requesting")}
+                          className={`w-full block rounded-md px-3 py-2 text-sm font-semibold text-center md:text-left transition-colors mt-1 ${
+                            activeTab === "requesting"
+                              ? "bg-white md:bg-gray-100 border border-gray-200 text-gray-900 shadow-sm md:shadow-none"
+                              : "text-gray-600 hover:bg-gray-100 hover:text-gray-900"
+                          }`}
+                        >
+                          Requesting
+                        </button>
+                      )}
+                      {permissions.canEditLocation && (
+                        <button
+                          onClick={() => setActiveTab("location")}
+                          className={`w-full block rounded-md px-3 py-2 text-sm font-semibold text-center md:text-left transition-colors mt-1 ${
+                            activeTab === "location"
+                              ? "bg-white md:bg-gray-100 border border-gray-200 text-gray-900 shadow-sm md:shadow-none"
+                              : "text-gray-600 hover:bg-gray-100 hover:text-gray-900"
+                          }`}
+                        >
+                          Location
+                        </button>
+                      )}
+                      {permissions.canEditStaff && (
+                        <button
+                          onClick={() => setActiveTab("staff")}
+                          className={`w-full block rounded-md px-3 py-2 text-sm font-semibold text-center md:text-left transition-colors mt-1 ${
+                            activeTab === "staff"
+                              ? "bg-white md:bg-gray-100 border border-gray-200 text-gray-900 shadow-sm md:shadow-none"
+                              : "text-gray-600 hover:bg-gray-100 hover:text-gray-900"
+                          }`}
+                        >
+                          Staff
+                        </button>
+                      )}
                     </nav>
-                    {/* Hide desktop logout on mobile to save space at top, move to bottom */}
                     <div className="mt-4 hidden md:block">
                       <Button
                         color="danger"
@@ -261,157 +356,229 @@ export default function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                   </div>
 
                   {/* Right Content */}
-                  <div className="flex-1 p-4 md:p-8 pb-10 md:pb-8">
-                    <div className="max-w-full md:max-w-3xl mx-auto">
-                      {/* Notifications Section */}
-                      <section>
-                        <div className="flex items-center justify-between pb-6 border-b border-gray-200 gap-4">
-                          <div>
-                            <h3 className="text-base font-semibold text-gray-900">
-                              Notifications
-                            </h3>
-                            <p className="mt-1 text-sm text-gray-500">
-                              Enable or disable application notifications.
-                            </p>
-                          </div>
-                          <Switch
-                            isSelected={settings.notificationsEnabled}
-                            onValueChange={(isSelected) =>
-                              updateSettings({
-                                notificationsEnabled: isSelected,
-                              })
-                            }
-                            aria-label="Enable notifications"
-                          />
-                        </div>
-                      </section>
-
-                      {/* Events Section */}
-                      <section className="pt-6">
-                        <h3 className="text-base font-semibold text-gray-900 mb-2 md:mb-0">
-                          Events
-                        </h3>
-                        <div className="divide-y divide-gray-200">
-                          {renderField(
-                            "Maximum pending requests allowed",
-                            "Maximum number of pending requests a user can have.",
-                            settings.maxPendingRequests,
-                            "maxPendingRequests",
-                            true,
-                          )}
-                          {renderField(
-                            "Maximum events per day",
-                            "The maximum number of separate events per day.",
-                            settings.maxEventsPerDay,
-                            "maxEventsPerDay",
-                          )}
-                          {renderField(
-                            "Maximum blood bags per day",
-                            "The maximum number of blood bags the facility can process.",
-                            settings.maxBloodBagsPerDay,
-                            "maxBloodBagsPerDay",
-                          )}
-                          {renderField(
-                            "Minimum days in advance for a request",
-                            "Days before an event a request must be made.",
-                            settings.advanceBookingDays,
-                            "advanceBookingDays",
-                          )}
-                        </div>
-                      </section>
-
-                      {/* Calendar Section */}
-                      <section className="pt-6">
-                        <h3 className="text-base font-semibold text-gray-900">
-                          Calendar
-                        </h3>
-                        <div className="divide-y divide-gray-200">
-                          {/* Blocked Operational Days */}
-                          <div className="py-4">
-                            <h4 className="text-sm font-medium text-gray-900">
-                              Permanently blocked weekdays
-                            </h4>
-                            <p className="text-sm text-gray-500 mb-3 md:mb-0">
-                              Select weekdays that should never be available.
-                            </p>
-                            <div className="overflow-x-auto pb-2 -mx-2 px-2 md:mx-0 md:px-0 md:pb-0">
-                              <CheckboxGroup
-                                className="mt-2 md:mt-4"
-                                value={selectedWeekdays}
-                                onChange={handleWeekdayChange}
-                                orientation="horizontal"
-                                classNames={{
-                                  wrapper:
-                                    "gap-4 md:gap-2 flex-nowrap md:flex-wrap",
-                                }}
-                              >
-                                <Checkbox value="sun">Sun</Checkbox>
-                                <Checkbox value="mon">Mon</Checkbox>
-                                <Checkbox value="tue">Tue</Checkbox>
-                                <Checkbox value="wed">Wed</Checkbox>
-                                <Checkbox value="thu">Thu</Checkbox>
-                                <Checkbox value="fri">Fri</Checkbox>
-                                <Checkbox value="sat">Sat</Checkbox>
-                              </CheckboxGroup>
-                            </div>
-                          </div>
-
-                          {/* Specified Blocked Dates */}
-                          <div className="py-4">
-                            <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
-                              <div>
+                  <div className="flex-1 p-4 md:p-8 pb-10 md:pb-8 w-full min-w-0">
+                    <div className="w-full min-h-[600px] max-w-none">
+                      {/* General Settings Tab */}
+                      {activeTab === "general" && permissions.canAccessSettings && (
+                        <section className="min-h-[600px] w-full">
+                          <h3 className="text-base font-semibold text-gray-900 mb-6">
+                            General Settings
+                          </h3>
+                          <div className="divide-y divide-gray-200 w-full">
+                            <div className="flex flex-col md:flex-row md:items-center justify-between py-4 gap-2 md:gap-0 w-full">
+                              <div className="flex-1 pr-0 md:pr-8">
                                 <h4 className="text-sm font-medium text-gray-900">
-                                  Specific blocked dates
+                                  Notifications
                                 </h4>
-                                <p className="text-sm text-gray-500">
-                                  Add specific calendar dates (one-off).
+                                <p className="text-sm text-gray-500 mt-1 md:mt-0">
+                                  Enable or disable application notifications.
                                 </p>
                               </div>
-                              <DatePicker
-                                aria-label="Pick a date"
-                                className="w-full md:w-auto min-w-[200px]"
-                                hideTimeZone
-                                label={null}
-                                showMonthAndYearPickers
-                                variant="bordered"
-                                onChange={handleBlockedDateAdd}
-                              />
-                            </div>
-                            <div className="mt-4 flex flex-wrap gap-2">
-                              {blockedDateValues.map((date) => (
-                                <Chip
-                                  key={date.toString()}
-                                  color="danger"
-                                  endContent={<TrashBin className="h-4 w-4" />}
-                                  variant="flat"
-                                  onClose={() =>
-                                    handleBlockedDateRemove(
-                                      `${date.year}-${String(date.month).padStart(2, "0")}-${String(date.day).padStart(2, "0")}`,
-                                    )
+                              <div className="w-full md:w-auto mt-2 md:mt-0">
+                                <Switch
+                                  isSelected={settings.notificationsEnabled}
+                                  onValueChange={(isSelected) =>
+                                    updateSettings({
+                                      notificationsEnabled: isSelected,
+                                    })
                                   }
-                                >
-                                  {new Date(
-                                    date.year,
-                                    date.month - 1,
-                                    date.day,
-                                  ).toLocaleDateString("en-US", {
-                                    year: "numeric",
-                                    month: "long",
-                                    day: "numeric",
-                                  })}
-                                </Chip>
-                              ))}
-                              {blockedDateValues.length === 0 && (
-                                <span className="text-xs text-gray-400 italic">
-                                  No dates blocked
-                                </span>
-                              )}
+                                  aria-label="Enable notifications"
+                                />
+                              </div>
                             </div>
                           </div>
-                        </div>
-                      </section>
+                        </section>
+                      )}
 
-                      {/* Mobile Logout (visible only on mobile) */}
+                      {/* Requesting Settings Tab */}
+                      {activeTab === "requesting" && permissions.canEditRequesting && (
+                        <section className="min-h-[600px] w-full">
+                          <h3 className="text-base font-semibold text-gray-900 mb-6">
+                            Requesting Settings
+                          </h3>
+                          <div className="divide-y divide-gray-200 w-full">
+                            {renderField(
+                              "Maximum pending requests allowed",
+                              "Maximum number of pending requests a user can have.",
+                              settings.maxPendingRequests,
+                              "maxPendingRequests",
+                            )}
+                            {renderField(
+                              "Minimum days in advance for a request",
+                              "Days before an event a request must be made.",
+                              settings.advanceBookingDays,
+                              "advanceBookingDays",
+                            )}
+                            {renderField(
+                              "Maximum events per day",
+                              "The maximum number of separate events per day.",
+                              settings.maxEventsPerDay,
+                              "maxEventsPerDay",
+                            )}
+                            {renderField(
+                              "Maximum blood bags per day",
+                              "The maximum number of blood bags the facility can process.",
+                              settings.maxBloodBagsPerDay,
+                              "maxBloodBagsPerDay",
+                            )}
+                            
+                            {/* Blocked Operational Days */}
+                            <div className="py-4">
+                              <h4 className="text-sm font-medium text-gray-900">
+                                Permanently blocked weekdays
+                              </h4>
+                              <p className="text-sm text-gray-500 mb-3 md:mb-0">
+                                Select weekdays that should never be available.
+                              </p>
+                              <div className="overflow-x-auto pb-2 -mx-2 px-2 md:mx-0 md:px-0 md:pb-0">
+                                <CheckboxGroup
+                                  className="mt-2 md:mt-4"
+                                  value={selectedWeekdays}
+                                  onChange={handleWeekdayChange}
+                                  orientation="horizontal"
+                                  classNames={{
+                                    wrapper:
+                                      "gap-4 md:gap-2 flex-nowrap md:flex-wrap",
+                                  }}
+                                >
+                                  <Checkbox value="sun">Sun</Checkbox>
+                                  <Checkbox value="mon">Mon</Checkbox>
+                                  <Checkbox value="tue">Tue</Checkbox>
+                                  <Checkbox value="wed">Wed</Checkbox>
+                                  <Checkbox value="thu">Thu</Checkbox>
+                                  <Checkbox value="fri">Fri</Checkbox>
+                                  <Checkbox value="sat">Sat</Checkbox>
+                                </CheckboxGroup>
+                              </div>
+                            </div>
+
+                            {/* Specified Blocked Dates */}
+                            <div className="py-4">
+                              <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+                                <div>
+                                  <h4 className="text-sm font-medium text-gray-900">
+                                    Specific blocked dates
+                                  </h4>
+                                  <p className="text-sm text-gray-500">
+                                    Add specific calendar dates (one-off).
+                                  </p>
+                                </div>
+                                <DatePicker
+                                  aria-label="Pick a date"
+                                  className="w-full md:w-auto min-w-[200px]"
+                                  hideTimeZone
+                                  label={null}
+                                  showMonthAndYearPickers
+                                  variant="bordered"
+                                  onChange={handleBlockedDateAdd}
+                                />
+                              </div>
+                              <div className="mt-4 flex flex-wrap gap-2">
+                                {blockedDateValues.map((date) => (
+                                  <Chip
+                                    key={date.toString()}
+                                    color="danger"
+                                    endContent={<TrashBin className="h-4 w-4" />}
+                                    variant="flat"
+                                    onClose={() =>
+                                      handleBlockedDateRemove(
+                                        `${date.year}-${String(date.month).padStart(2, "0")}-${String(date.day).padStart(2, "0")}`,
+                                      )
+                                    }
+                                  >
+                                    {new Date(
+                                      date.year,
+                                      date.month - 1,
+                                      date.day,
+                                    ).toLocaleDateString("en-US", {
+                                      year: "numeric",
+                                      month: "long",
+                                      day: "numeric",
+                                    })}
+                                  </Chip>
+                                ))}
+                                {blockedDateValues.length === 0 && (
+                                  <span className="text-xs text-gray-400 italic">
+                                    No dates blocked
+                                  </span>
+                                )}
+                              </div>
+                            </div>
+                          </div>
+                        </section>
+                      )}
+
+                      {/* Location Settings Tab */}
+                      {activeTab === "location" && permissions.canEditLocation && (
+                        <section className="min-h-[600px] w-full">
+                          <h3 className="text-base font-semibold text-gray-900 mb-6">
+                            Location Settings
+                          </h3>
+                          <div className="divide-y divide-gray-200 w-full">
+                            <div className="py-4 w-full">
+                              <p className="text-sm text-gray-500">
+                                Location management settings will be available here.
+                              </p>
+                            </div>
+                          </div>
+                        </section>
+                      )}
+
+                      {/* Staff Settings Tab */}
+                      {activeTab === "staff" && permissions.canEditStaff && (
+                        <section className="min-h-[600px] w-full">
+                          <div className="flex items-center justify-between mb-6">
+                            <h3 className="text-base font-semibold text-gray-900">
+                              Staff Type Management
+                            </h3>
+                            {canCreateRole && (
+                              <Button
+                                color="primary"
+                                onClick={handleCreateRole}
+                                startContent={<PlusIcon className="h-4 w-4" />}
+                                size="sm"
+                              >
+                                Create Staff Type
+                              </Button>
+                            )}
+                          </div>
+                          
+                          {rolesError && (
+                            <div className="mb-4 p-3 bg-red-50 border border-red-200 rounded-md">
+                              <p className="text-sm text-red-800">{rolesError}</p>
+                            </div>
+                          )}
+
+                          <RoleManagementTable
+                            roles={roles}
+                            loading={rolesLoading || permissionsListLoading}
+                            onEdit={handleEditRole}
+                            onDelete={handleDeleteRole}
+                            onView={handleViewRole}
+                            canCreate={canCreateRole}
+                            canUpdate={canUpdateRole}
+                            canDelete={canDeleteRole}
+                          />
+
+                          {showRoleForm && (
+                            <RoleFormModal
+                              isOpen={showRoleForm}
+                              onClose={() => {
+                                setShowRoleForm(false);
+                                setEditingRole(null);
+                                setRoleFormError(null);
+                              }}
+                              role={editingRole}
+                              allPermissions={allPermissions}
+                              onSubmit={handleRoleSubmit}
+                              isSubmitting={isSubmittingRole}
+                              error={roleFormError}
+                            />
+                          )}
+                        </section>
+                      )}
+
+                      {/* Mobile Logout */}
                       <div className="mt-8 md:hidden border-t border-gray-200 pt-6">
                         <Button
                           color="danger"
@@ -429,8 +596,8 @@ export default function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
               ) : (
                 <div className="text-center p-6 h-full flex flex-col justify-center">
                   <p className="text-sm text-gray-600 mb-6">
-                    You are not allowed to change settings. Only system
-                    administrators can change settings.
+                    You are not allowed to change settings. You need appropriate
+                    permissions to access settings.
                   </p>
                   <div className="flex justify-center">
                     <Button
