@@ -16,7 +16,7 @@ import { Chip } from "@heroui/chip";
 import { useRoles } from "@/hooks/useRoles";
 import CoverageAssignmentModal from "./coverage-assignment-modal";
 import type { StaffListItem, UpdateStaffData, Role, CoverageArea } from "@/types/coordinator.types";
-import { getUserRoles, getUserCoverageAreas, assignRole, revokeRole } from "@/services/coordinatorService";
+import { getUserRoles, getUserCoverageAreas, assignRole, revokeRole, getAssignableRoles } from "@/services/coordinatorService";
 
 interface EditStaffModalProps {
   isOpen: boolean;
@@ -41,7 +41,9 @@ export default function EditStaffModal({
   onAssignCoverageArea,
   onRevokeCoverageArea,
 }: EditStaffModalProps) {
-  const { roles, loading: rolesLoading } = useRoles(isOpen);
+  const { roles: allRoles, loading: allRolesLoading } = useRoles(isOpen);
+  const [assignableRoles, setAssignableRoles] = useState<Role[]>([]);
+  const [loadingAssignable, setLoadingAssignable] = useState(false);
   const [firstName, setFirstName] = useState("");
   const [middleName, setMiddleName] = useState("");
   const [lastName, setLastName] = useState("");
@@ -59,6 +61,27 @@ export default function EditStaffModal({
   const [availableRoles, setAvailableRoles] = useState<Role[]>([]);
   const [isAddingRole, setIsAddingRole] = useState(false);
   const [selectedRoleToAdd, setSelectedRoleToAdd] = useState<string>("");
+
+  // Load assignable roles (authority-filtered) when modal opens
+  useEffect(() => {
+    if (isOpen) {
+      const loadAssignable = async () => {
+        try {
+          setLoadingAssignable(true);
+          const response = await getAssignableRoles();
+          if (response.success && response.data) {
+            setAssignableRoles(response.data);
+          }
+        } catch (err) {
+          console.error('Failed to load assignable roles:', err);
+          setAssignableRoles([]);
+        } finally {
+          setLoadingAssignable(false);
+        }
+      };
+      loadAssignable();
+    }
+  }, [isOpen]);
 
   // Coverage areas management
   const [currentCoverageAreas, setCurrentCoverageAreas] = useState<Array<{
@@ -88,15 +111,18 @@ export default function EditStaffModal({
     }
   }, [isOpen, staff]);
 
-  // Update available roles (roles not yet assigned)
+  // Update available roles (assignable roles not yet assigned)
   useEffect(() => {
-    if (roles.length > 0 && currentRoles.length > 0) {
+    // Use assignable roles (authority-filtered) instead of all roles
+    const rolesToUse = assignableRoles.length > 0 ? assignableRoles : allRoles;
+    
+    if (rolesToUse.length > 0 && currentRoles.length > 0) {
       const assignedRoleIds = new Set(currentRoles.map((r) => r.id));
-      setAvailableRoles(roles.filter((r) => !assignedRoleIds.has(r._id)));
-    } else if (roles.length > 0) {
-      setAvailableRoles(roles);
+      setAvailableRoles(rolesToUse.filter((r) => !assignedRoleIds.has(r._id)));
+    } else if (rolesToUse.length > 0) {
+      setAvailableRoles(rolesToUse);
     }
-  }, [roles, currentRoles]);
+  }, [assignableRoles, allRoles, currentRoles]);
 
   const loadStaffDetails = async () => {
     if (!staff) return;

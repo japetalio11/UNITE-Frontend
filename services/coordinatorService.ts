@@ -400,6 +400,13 @@ export async function getAllowedStaffTypes(userId: string): Promise<AllowedStaff
 }
 
 /**
+ * Get assignable roles for current user (filtered by authority)
+ */
+export async function getAssignableRoles(): Promise<ListRolesResponse> {
+  return await fetchJsonWithAuth('/api/rbac/authority/assignable-roles');
+}
+
+/**
  * List coverage areas
  */
 export async function listCoverageAreas(filters?: {

@@ -3,7 +3,7 @@
 import { useState, useEffect, useMemo } from "react";
 import { Radio, RadioGroup } from "@heroui/radio";
 import { useRoles } from "@/hooks/useRoles";
-import { roleHasCapability } from "@/services/coordinatorService";
+import { roleHasCapability, getAssignableRoles } from "@/services/coordinatorService";
 import type { Role } from "@/types/coordinator.types";
 
 interface RoleAssignmentSectionProps {
@@ -13,6 +13,7 @@ interface RoleAssignmentSectionProps {
   requiredCapabilities?: string[]; // Required permission capabilities (e.g., ['request.review'])
   isRequired?: boolean;
   error?: string;
+  useAssignableRoles?: boolean; // NEW: Use authority-filtered assignable roles
 }
 
 export default function RoleAssignmentSection({
@@ -22,16 +23,44 @@ export default function RoleAssignmentSection({
   requiredCapabilities,
   isRequired = true,
   error,
+  useAssignableRoles = true, // Default to using authority filtering
 }: RoleAssignmentSectionProps) {
-  const { roles, loading } = useRoles(true); // Always load roles
+  const { roles: allRoles, loading: allRolesLoading } = useRoles(true);
+  const [assignableRoles, setAssignableRoles] = useState<Role[]>([]);
+  const [loadingAssignable, setLoadingAssignable] = useState(false);
+
+  // Load assignable roles (authority-filtered) if enabled
+  useEffect(() => {
+    if (useAssignableRoles) {
+      const loadAssignable = async () => {
+        try {
+          setLoadingAssignable(true);
+          const response = await getAssignableRoles();
+          if (response.success && response.data) {
+            setAssignableRoles(response.data);
+          }
+        } catch (err) {
+          console.error('Failed to load assignable roles:', err);
+          setAssignableRoles([]);
+        } finally {
+          setLoadingAssignable(false);
+        }
+      };
+      loadAssignable();
+    }
+  }, [useAssignableRoles]);
+
+  // Use assignable roles if enabled, otherwise use all roles
+  const baseRoles = useAssignableRoles ? assignableRoles : allRoles;
+  const loading = useAssignableRoles ? loadingAssignable : allRolesLoading;
 
   // Filter roles based on capabilities or allowed staff types
   const availableRoles = useMemo(() => {
-    let filtered = roles;
+    let filtered = baseRoles;
 
     // Priority: Use capability-based filtering if provided
     if (requiredCapabilities && requiredCapabilities.length > 0) {
-      filtered = roles.filter((role) => {
+      filtered = baseRoles.filter((role) => {
         // Role must have at least one of the required capabilities
         return requiredCapabilities.some((capability) =>
           roleHasCapability(role, capability)
@@ -40,14 +69,14 @@ export default function RoleAssignmentSection({
     } else if (allowedStaffTypes && allowedStaffTypes.length > 0) {
       // Fallback to role code filtering (backward compatibility)
       if (allowedStaffTypes.includes("*")) {
-        filtered = roles; // "*" means all roles allowed
+        filtered = baseRoles; // "*" means all roles allowed
       } else {
-        filtered = roles.filter((role) => allowedStaffTypes.includes(role.code));
+        filtered = baseRoles.filter((role) => allowedStaffTypes.includes(role.code));
       }
     }
 
     return filtered;
-  }, [roles, allowedStaffTypes, requiredCapabilities]);
+  }, [baseRoles, allowedStaffTypes, requiredCapabilities]);
 
   const handleRoleChange = (roleId: string) => {
     onSelectionChange(roleId);
