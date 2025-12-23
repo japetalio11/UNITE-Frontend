@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation";
 
 import { getUserInfo } from "../../../utils/getUserInfo";
 import { debug, warn } from "../../../utils/devLogger";
-import { listStakeholders } from "@/services/stakeholderService";
+import { listStakeholders, deleteStakeholder } from "@/services/stakeholderService";
 import { useStakeholderManagement } from "@/hooks/useStakeholderManagement";
 
 import Topbar from "@/components/layout/topbar";
@@ -646,27 +646,11 @@ export default function StakeholderManagement() {
   const confirmDeleteStakeholder = async (id: string) => {
     try {
       setLoading(true);
-      const base = (process.env.NEXT_PUBLIC_API_URL || "").replace(/\/$/, "");
-      const url = base
-        ? `${base}/api/stakeholders/${encodeURIComponent(id)}`
-        : `/api/stakeholders/${encodeURIComponent(id)}`;
-      const token =
-        typeof window !== "undefined"
-          ? localStorage.getItem("unite_token") ||
-            sessionStorage.getItem("unite_token")
-          : null;
-      const headers: any = { "Content-Type": "application/json" };
-
-      if (token) headers["Authorization"] = `Bearer ${token}`;
-      const res = await fetch(url, { method: "DELETE", headers });
-      const text = await res.text();
-      const json = text ? JSON.parse(text) : null;
-
-      if (!res.ok)
-        throw new Error(
-          json?.message ||
-            `Failed to delete stakeholder (status ${res.status})`,
-        );
+      // Use centralized stakeholderService delete helper which calls DELETE /api/users/:id
+      const resp = await deleteStakeholder(id);
+      if (!resp || !resp.success) {
+        throw new Error(resp?.message || 'Failed to delete stakeholder');
+      }
       // Reload both stakeholders and signup requests
       await Promise.all([fetchStakeholders(), fetchSignupRequests()]);
     } catch (err: any) {
@@ -703,7 +687,21 @@ export default function StakeholderManagement() {
       }
 
       // Transform response data to match expected format
-      const items = response.data || [];
+      let items = response.data || [];
+
+      // Defensive client-side filter: remove any users that are system admins or coordinators
+      // (server should already enforce this, but double-check on client for safety)
+      items = items.filter((s: any) => {
+        if (s.isSystemAdmin) return false;
+        const roles = s.roles || s.Roles || s.rolesAssigned || null;
+        if (Array.isArray(roles)) {
+          for (const r of roles) {
+            const code = (r.code || r.code?.toLowerCase?.() || r || '').toString().toLowerCase();
+            if (code === 'coordinator' || code === 'system-admin' || code === 'system_admin') return false;
+          }
+        }
+        return true;
+      });
       
       // Map users to stakeholder format
       const mapped = items.map((s: any) => {
