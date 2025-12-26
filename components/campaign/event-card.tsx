@@ -125,13 +125,212 @@ const EventCard: React.FC<EventCardProps> = ({
   const { getDistrictName, getProvinceName, locations } = useLocations();
 
   // Resolve district and province names using the centralized provider
+  // Enhanced to handle ObjectId references and nested location structures
   const resolvedGeo = useMemo(() => {
-    const pickId =
-      (request && (request as any).district) || district || null;
+    // Helper to extract ObjectId from various formats
+    const extractId = (val: any): string | null => {
+      if (!val && val !== 0) return null;
+      
+      // Handle Mongo Extended JSON format: { "$oid": "..." }
+      if (typeof val === "object" && val !== null) {
+        if (val.$oid) {
+          return String(val.$oid);
+        }
+        // Populated object with _id
+        if (val._id) {
+          // Handle nested _id that might also be in Mongo Extended JSON format
+          if (typeof val._id === "object" && val._id.$oid) {
+            return String(val._id.$oid);
+          }
+          return String(val._id);
+        }
+        // Direct ObjectId reference (try toString)
+        if (val.toString && typeof val.toString === "function") {
+          const str = val.toString();
+          if (/^[a-f0-9]{24}$/i.test(str)) {
+            return str;
+          }
+        }
+      }
+      
+      // Handle string ObjectId
+      if (typeof val === "string") {
+        if (/^[a-f0-9]{24}$/i.test(val)) return val;
+      }
+      
+      return null;
+    };
 
+    // Check multiple paths for district and province
+    let districtId = 
+      extractId(request?.district) ||
+      extractId(request?.location?.district) ||
+      extractId(request?.event?.district) ||
+      extractId((request as any)?.district) ||
+      null;
+
+    let provinceId = 
+      extractId(request?.province) ||
+      extractId(request?.location?.province) ||
+      extractId(request?.event?.province) ||
+      extractId((request as any)?.province) ||
+      null;
+
+    // Fallback: If location is missing, try to derive from coordinator's coverage area
+    // This works if backend enriches the request with coordinator location data
+    if (!districtId || !provinceId) {
+      // Check reviewer's location (if enriched by backend)
+      const reviewer = request?.reviewer;
+      if (reviewer) {
+        // Check if reviewer has location data in coverageAreas (if backend enriches)
+        const reviewerDistrictId = extractId(reviewer.district) || 
+                                   extractId(reviewer.coverageArea?.districtIds?.[0]) ||
+                                   extractId((reviewer as any)?.location?.district);
+        const reviewerProvinceId = extractId(reviewer.province) ||
+                                   extractId(reviewer.coverageArea?.province) ||
+                                   extractId((reviewer as any)?.location?.province);
+
+        if (!districtId && reviewerDistrictId) {
+          districtId = reviewerDistrictId;
+        }
+        if (!provinceId && reviewerProvinceId) {
+          provinceId = reviewerProvinceId;
+        }
+
+        // If we have reviewer userId, check if it's populated with location data
+        if (reviewer.userId && typeof reviewer.userId === "object") {
+          const coordUser = reviewer.userId as any;
+          const coordDistrictId = extractId(coordUser.coverageAreas?.[0]?.districtIds?.[0]) ||
+                                 extractId(coordUser.locations?.district);
+          const coordProvinceId = extractId(coordUser.coverageAreas?.[0]?.province) ||
+                                 extractId(coordUser.locations?.province);
+
+          if (!districtId && coordDistrictId) {
+            districtId = coordDistrictId;
+          }
+          if (!provinceId && coordProvinceId) {
+            provinceId = coordProvinceId;
+          }
+        }
+      }
+
+      // Check assignedCoordinator (alternative field)
+      const assignedCoord = request?.assignedCoordinator;
+      if (assignedCoord) {
+        const coordDistrictId = extractId(assignedCoord.district) ||
+                               extractId(assignedCoord.coverageArea?.districtIds?.[0]);
+        const coordProvinceId = extractId(assignedCoord.province) ||
+                               extractId(assignedCoord.coverageArea?.province);
+
+        if (!districtId && coordDistrictId) {
+          districtId = coordDistrictId;
+        }
+        if (!provinceId && coordProvinceId) {
+          provinceId = coordProvinceId;
+        }
+
+        // Check if userId is populated
+        if (assignedCoord.userId && typeof assignedCoord.userId === "object") {
+          const coordUser = assignedCoord.userId as any;
+          const coordDistrictId = extractId(coordUser.coverageAreas?.[0]?.districtIds?.[0]) ||
+                                 extractId(coordUser.locations?.district);
+          const coordProvinceId = extractId(coordUser.coverageAreas?.[0]?.province) ||
+                                 extractId(coordUser.locations?.province);
+
+          if (!districtId && coordDistrictId) {
+            districtId = coordDistrictId;
+          }
+          if (!provinceId && coordProvinceId) {
+            provinceId = coordProvinceId;
+          }
+        }
+      }
+
+      // Last fallback: Check requester's location
+      if (!districtId || !provinceId) {
+        const requester = request?.requester;
+        if (requester?.userId && typeof requester.userId === "object") {
+          const reqUser = requester.userId as any;
+          const reqDistrictId = extractId(reqUser.locations?.municipalityId) ||
+                               extractId(reqUser.coverageAreas?.[0]?.districtIds?.[0]);
+          const reqProvinceId = extractId(reqUser.locations?.province) ||
+                               extractId(reqUser.coverageAreas?.[0]?.province);
+
+          if (!districtId && reqDistrictId) {
+            districtId = reqDistrictId;
+          }
+          if (!provinceId && reqProvinceId) {
+            provinceId = reqProvinceId;
+          }
+        }
+      }
+    }
+
+    // If district is available but province is not, try to get province from district
+    let finalProvinceId = provinceId;
+    if (districtId && !finalProvinceId) {
+      // First try to find district in the locations cache
+      const districtObj = Object.values(locations.districts).find(
+        (d: any) => String(d._id) === String(districtId)
+      );
+      if (districtObj) {
+        if (districtObj.province) {
+          finalProvinceId = String(districtObj.province);
+        }
+        // If district is found in cache but no province, try to get from parent
+        if (!finalProvinceId && districtObj.parent) {
+          const parentLocation = Object.values(locations.provinces).find(
+            (p: any) => String(p._id) === String(districtObj.parent)
+          ) || Object.values(locations.districts).find(
+            (d: any) => String(d._id) === String(districtObj.parent)
+          );
+          if (parentLocation && parentLocation.type === 'province') {
+            finalProvinceId = String(parentLocation._id);
+          }
+        }
+      }
+    }
+
+    // If we have ObjectIds, resolve them - prefer backend-provided names, fallback to provider
+    if (districtId || finalProvinceId) {
+      // First try backend-provided names (from populated location objects)
+      let districtName = request?.districtName || 
+        (request?.district?.name) || 
+        (districtId ? getDistrictName(String(districtId)) : null);
+      let provinceName = request?.provinceName || 
+        (request?.province?.name) || 
+        (finalProvinceId ? getProvinceName(String(finalProvinceId)) : null);
+
+      // If district name resolution failed, try to find it directly in the cache
+      if (districtId && (!districtName || districtName === "Unknown District")) {
+        const districtObj = Object.values(locations.districts).find(
+          (d: any) => String(d._id) === String(districtId)
+        );
+        if (districtObj && districtObj.name) {
+          districtName = districtObj.name;
+        }
+      }
+
+      // If province name resolution failed but we have finalProvinceId, try cache
+      if (finalProvinceId && (!provinceName || provinceName === "Unknown Province")) {
+        const provinceObj = Object.values(locations.provinces).find(
+          (p: any) => String(p._id) === String(finalProvinceId)
+        );
+        if (provinceObj && provinceObj.name) {
+          provinceName = provinceObj.name;
+        }
+      }
+
+      return {
+        district: districtName && districtName !== "Unknown District" ? districtName : null,
+        province: provinceName && provinceName !== "Unknown Province" ? provinceName : null,
+      };
+    }
+
+    // Fallback: check if district prop is a friendly name (not ObjectId)
+    const pickId = (request && (request as any).district) || district || null;
     if (!pickId) return { district: null, province: null };
 
-    // If it's already a friendly name (not an ObjectId), use it
     const isObjectId = (s: any) =>
       typeof s === "string" && /^[a-f0-9]{24}$/i.test(s);
 
@@ -179,17 +378,20 @@ const EventCard: React.FC<EventCardProps> = ({
       return { district: pickId, province: null };
     }
 
-    // Use provider lookups
-    const districtName = getDistrictName(pickId);
-    // For province, we need to find the district's province
-    const districtObj = Object.values(locations.districts).find(d => d._id === pickId);
-    const provinceName = districtObj ? getProvinceName(districtObj.province) : null;
+    // Last resort: try to resolve as ObjectId
+    const districtName = getDistrictName(String(pickId));
+    const districtObj = Object.values(locations.districts).find(
+      (d: any) => String(d._id) === String(pickId)
+    );
+    const provinceName = districtObj && districtObj.province 
+      ? getProvinceName(String(districtObj.province)) 
+      : null;
 
     return {
       district: districtName !== "Unknown District" ? districtName : null,
       province: provinceName !== "Unknown Province" ? provinceName : null,
     };
-  }, [request, district, getDistrictName, getProvinceName, locations.districts]);
+  }, [request, district, getDistrictName, getProvinceName, locations.districts, locations.provinces]);
 
   const resolvedRequest =
     fullRequest || request || (request && (request as any).event) || null;
@@ -901,12 +1103,9 @@ const EventCard: React.FC<EventCardProps> = ({
       );
     }
 
-    // Show Confirm action when allowed, or as a fallback when request is review-accepted
-    // and the current viewer is the assigned coordinator (ensures quick-action availability).
-    if (
-      flagFor("canConfirm", "confirm") ||
-      (isReviewAccepted && viewerIsAssignedCoordinator)
-    ) {
+    // Show Confirm action when permission-based check allows it
+    // Backend validates permissions when action is performed
+    if (flagFor("canConfirm", "confirm")) {
       actions.push(
         <DropdownItem
           key="confirm"
@@ -1002,7 +1201,8 @@ const EventCard: React.FC<EventCardProps> = ({
     const buttons: JSX.Element[] = [];
     // Only show the core action set: Accept, Reschedule, Reject
     // Reject is styled as a danger action to make it visually distinct.
-    if (isReviewAccepted && viewerIsAssignedCoordinator) {
+    // Use permission-based check for confirm action instead of role-based check
+    if (hasAllowedAction("confirm") || flagFor("canConfirm", "confirm")) {
       buttons.push(
         <Button
           key="footer-confirm"
@@ -1399,12 +1599,47 @@ const EventCard: React.FC<EventCardProps> = ({
       return null;
     };
 
+    // Helper to parse date from various formats including Mongo Extended JSON
+    const parseDate = (v: any): Date | null => {
+      if (!v && v !== 0) return null;
+      try {
+        if (typeof v === "string" || typeof v === "number") {
+          const d = new Date(v);
+          if (!isNaN(d.getTime())) return d;
+        }
+        if (typeof v === "object" && v !== null) {
+          // Handle Mongo Extended JSON format: { $date: "..." } or { $date: { $numberLong: "..." } }
+          if (v.$date) {
+            const inner = v.$date.$numberLong || v.$date;
+            const n = typeof inner === "string" ? Number(inner) : inner;
+            const d = new Date(Number(n));
+            if (!isNaN(d.getTime())) return d;
+          }
+          if (v.$numberLong) {
+            const d = new Date(Number(v.$numberLong));
+            if (!isNaN(d.getTime())) return d;
+          }
+          // Try direct Date conversion
+          const maybeNum = Number(v);
+          if (!isNaN(maybeNum)) {
+            const d = new Date(maybeNum);
+            if (!isNaN(d.getTime())) return d;
+          }
+        }
+      } catch (e) {
+        // fall through
+      }
+      return null;
+    };
+
     const startVal = pick(
       r?.Start_Date,
+      r?.Date, // Add Date field support
       r?.Start,
       r?.start,
       r?.StartTime,
       r?.event?.Start_Date,
+      r?.event?.Date,
       r?.event?.Start,
       r?.event?.StartTime,
     );
@@ -1422,9 +1657,15 @@ const EventCard: React.FC<EventCardProps> = ({
     const formatDateShort = (d?: any) => {
       if (!d) return null;
       try {
+        // Use parseDate helper to handle Mongo Extended JSON
+        const parsed = parseDate(d);
+        if (parsed) {
+          return parsed.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+        }
+        // Fallback to direct Date conversion
         const dt = new Date(d);
         if (isNaN(dt.getTime())) return String(d);
-        return dt.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+        return dt.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
       } catch (e) {
         return String(d);
       }
@@ -1433,6 +1674,12 @@ const EventCard: React.FC<EventCardProps> = ({
     const formatTimeShort = (t?: any) => {
       if (!t) return null;
       try {
+        // Use parseDate helper to handle Mongo Extended JSON
+        const parsed = parseDate(t);
+        if (parsed) {
+          return parsed.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
+        }
+        // Fallback to direct Date conversion
         const dt = new Date(t);
         if (isNaN(dt.getTime())) return String(t);
         return dt.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
@@ -1588,7 +1835,7 @@ const EventCard: React.FC<EventCardProps> = ({
             <div className="flex justify-between items-center">
               <p className="text-xs">District</p>
               <p className="text-xs text-default-800 font-medium">
-                {resolvedGeo?.district || district}
+                {resolvedGeo?.district || (district && !/^[a-f0-9]{24}$/i.test(String(district)) ? district : "N/A")}
               </p>
             </div>
             <div className="flex justify-between items-start">

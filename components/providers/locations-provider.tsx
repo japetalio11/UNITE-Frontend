@@ -91,8 +91,11 @@ export function LocationsProvider({ children }: { children: React.ReactNode }) {
       const provinces = Array.isArray(provincesData) ? provincesData : provincesData.data || provincesData.provinces || [];
       const provincesMap: Record<string, Province> = {};
       provinces.forEach((p: any) => {
-        const id = p._id || p.id;
-        if (id) provincesMap[id] = p;
+        // Normalize ID to string for consistent matching
+        const id = String(p._id || p.id || '');
+        if (id && id !== 'undefined' && id !== 'null' && id !== '') {
+          provincesMap[id] = { ...p, _id: id };
+        }
       });
 
       // Fetch all districts (assume API supports fetching all, e.g., with high limit)
@@ -100,8 +103,11 @@ export function LocationsProvider({ children }: { children: React.ReactNode }) {
       const districts = Array.isArray(districtsData) ? districtsData : districtsData.data || districtsData.districts || [];
       const districtsMap: Record<string, District> = {};
       districts.forEach((d: any) => {
-        const id = d._id || d.id;
-        if (id) districtsMap[id] = d;
+        // Normalize ID to string for consistent matching
+        const id = String(d._id || d.id || '');
+        if (id && id !== 'undefined' && id !== 'null' && id !== '') {
+          districtsMap[id] = { ...d, _id: id };
+        }
       });
 
       // Fetch all municipalities
@@ -109,8 +115,11 @@ export function LocationsProvider({ children }: { children: React.ReactNode }) {
       const municipalities = Array.isArray(municipalitiesData) ? municipalitiesData : municipalitiesData.data || municipalitiesData.municipalities || [];
       const municipalitiesMap: Record<string, Municipality> = {};
       municipalities.forEach((m: any) => {
-        const id = m._id || m.id;
-        if (id) municipalitiesMap[id] = m;
+        // Normalize ID to string for consistent matching
+        const id = String(m._id || m.id || '');
+        if (id && id !== 'undefined' && id !== 'null' && id !== '') {
+          municipalitiesMap[id] = { ...m, _id: id };
+        }
       });
 
       const newData: LocationData = {
