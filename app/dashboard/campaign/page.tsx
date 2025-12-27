@@ -98,22 +98,60 @@ export default function CampaignPage() {
   // Only depend on the actual data, not the callbacks (which are stable but change reference)
   useEffect(() => {
     const provincesList = Object.values(locations.provinces || {});
-    if (provincesList.length > 0) {
-      setProvinces(provincesList);
+    // Ensure provinces have _id and name fields
+    const normalizedProvinces = provincesList
+      .filter(p => p && p._id && p.name)
+      .map(p => ({
+        _id: String(p._id),
+        name: String(p.name),
+        ...p
+      }));
+    
+    if (normalizedProvinces.length > 0) {
+      setProvinces(normalizedProvinces);
       hasRefreshedRef.current = false; // Reset when we have data
     }
     // Remove auto-refresh logic - trust LocationsProvider to handle loading
     // The provider will fetch on mount and refresh every 30 minutes
   }, [locations.provinces]);
 
-  useEffect(() => {
-    const municipalitiesList = Object.values(locations.municipalities || {});
-    setMunicipalities(municipalitiesList);
-  }, [locations.municipalities]);
+  // Municipalities are fetched dynamically when district is selected, not from global cache
+  // This useEffect is kept for backward compatibility but municipalities should be fetched via API
 
   const fetchDistricts = async (provinceId: number | string) => {
-    const districtsForProvince = getDistrictsForProvince(provinceId.toString());
-    setDistricts(districtsForProvince);
+    if (!provinceId) {
+      setDistricts([]);
+      return;
+    }
+
+    try {
+      const token =
+        localStorage.getItem("unite_token") ||
+        sessionStorage.getItem("unite_token");
+      const headers: any = { "Content-Type": "application/json" };
+      if (token) headers["Authorization"] = `Bearer ${token}`;
+
+      // Fetch districts from API for the selected province
+      const res = await fetch(`${API_URL}/api/locations/provinces/${provinceId}/districts`, {
+        headers,
+        credentials: "include",
+      });
+      const body = await res.json();
+
+      if (res.ok && body.data) {
+        const districtsList = Array.isArray(body.data) ? body.data : [];
+        setDistricts(districtsList);
+      } else {
+        // Fallback: use provider's cached districts
+        const districtsForProvince = getDistrictsForProvince(provinceId.toString());
+        setDistricts(districtsForProvince);
+      }
+    } catch (err) {
+      console.error("Error fetching districts:", err);
+      // Fallback: use provider's cached districts
+      const districtsForProvince = getDistrictsForProvince(provinceId.toString());
+      setDistricts(districtsForProvince);
+    }
   };
 
   // Helper to parse a variety of date shapes (ISO string, ms timestamp,

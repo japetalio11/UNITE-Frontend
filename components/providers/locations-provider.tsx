@@ -151,7 +151,13 @@ export function LocationsProvider({ children }: { children: React.ReactNode }) {
         // Normalize ID to string for consistent matching
         const id = String(d._id || d.id || '');
         if (id && id !== 'undefined' && id !== 'null' && id !== '') {
-          districtsMap[id] = { ...d, _id: id };
+          // Normalize province reference to string (can be ObjectId or string)
+          const provinceId = d.province ? String(d.province._id || d.province) : (d.parent ? String(d.parent._id || d.parent) : null);
+          districtsMap[id] = { 
+            ...d, 
+            _id: id,
+            province: provinceId || ''
+          };
         }
       });
 
@@ -163,7 +169,15 @@ export function LocationsProvider({ children }: { children: React.ReactNode }) {
         // Normalize ID to string for consistent matching
         const id = String(m._id || m.id || '');
         if (id && id !== 'undefined' && id !== 'null' && id !== '') {
-          municipalitiesMap[id] = { ...m, _id: id };
+          // Normalize district and province references to strings (can be ObjectId or string)
+          const districtId = m.district ? String(m.district._id || m.district) : (m.parent ? String(m.parent._id || m.parent) : null);
+          const provinceId = m.province ? String(m.province._id || m.province) : null;
+          municipalitiesMap[id] = { 
+            ...m, 
+            _id: id,
+            district: districtId || '',
+            province: provinceId || ''
+          };
         }
       });
 
@@ -244,12 +258,22 @@ export function LocationsProvider({ children }: { children: React.ReactNode }) {
 
   const getDistrictsForProvince = useCallback((provinceId: string): District[] => {
     if (!provinceId) return [];
-    return Object.values(locations.districts).filter(d => d.province === provinceId);
+    const provinceIdStr = String(provinceId);
+    return Object.values(locations.districts).filter(d => {
+      // Normalize both IDs to strings for comparison
+      const dProvince = d.province || d.parent;
+      return dProvince && String(dProvince) === provinceIdStr;
+    });
   }, [locations.districts]);
 
   const getMunicipalitiesForDistrict = useCallback((districtId: string): Municipality[] => {
     if (!districtId) return [];
-    return Object.values(locations.municipalities).filter(m => m.district === districtId);
+    const districtIdStr = String(districtId);
+    return Object.values(locations.municipalities).filter(m => {
+      // Normalize both IDs to strings for comparison
+      const mDistrict = m.district || m.parent;
+      return mDistrict && String(mDistrict) === districtIdStr;
+    });
   }, [locations.municipalities]);
 
   const getAllProvinces = useCallback((): Province[] => {

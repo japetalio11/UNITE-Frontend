@@ -326,6 +326,7 @@ export default function CampaignToolbar({
   const [qProvince, setQProvince] = useState<string>("");
   const [qDistrict, setQDistrict] = useState<string>("");
   const [qMunicipality, setQMunicipality] = useState<string>("");
+  const [qMunicipalitiesList, setQMunicipalitiesList] = useState<any[]>([]);
 
   // Modal states
   const [isTrainingModalOpen, setIsTrainingModalOpen] = useState(false);
@@ -540,8 +541,11 @@ export default function CampaignToolbar({
             }
             
             const opts = (Array.isArray(coordinatorList) ? coordinatorList : []).map((c: any) => {
-              const fullName = `${c.firstName || c.First_Name || ""} ${c.lastName || c.Last_Name || ""}`.trim();
-              const userId = c._id || c.id;
+              // Get human-readable name from various possible fields
+              const firstName = c.firstName || c.First_Name || c.first_name || "";
+              const lastName = c.lastName || c.Last_Name || c.last_name || "";
+              const fullName = `${firstName} ${lastName}`.trim() || c.name || c.Name || "Unknown Coordinator";
+              const userId = String(c._id || c.id || "");
               
               // Get district info from coverage areas if available
               let districtLabel = "";
@@ -556,7 +560,7 @@ export default function CampaignToolbar({
 
               return {
                 key: userId,
-                label: `${fullName || "Unknown"}${districtLabel}`,
+                label: `${fullName}${districtLabel}`,
               };
             });
 
@@ -633,13 +637,14 @@ export default function CampaignToolbar({
                       .filter(Boolean)
                       .join(" ")
                       .trim()
-                  : c.StaffName || c.label || "";
+                  : c.StaffName || c.label || c.firstName || c.First_Name || c.name || c.Name || "Unknown Coordinator";
                 const districtLabel = district?.District_Number
                   ? `District ${district.District_Number}`
                   : district?.District_Name || "";
 
+                const coordinatorId = String(c.Coordinator_ID || (staff && staff.ID) || c.id || c._id || "");
                 setAdvCoordinatorOptions([{
-                  key: c.Coordinator_ID || (staff && staff.ID) || c.id,
+                  key: coordinatorId,
                   label: `${fullName}${districtLabel ? " - " + districtLabel : ""}`,
                 }]);
               }
@@ -695,10 +700,18 @@ export default function CampaignToolbar({
             return authority < 60;
           });
           
-          const opts = stakeholderList.map((s: any) => ({
-            key: s._id || s.id,
-            label: `${s.firstName || s.First_Name || ""} ${s.lastName || s.Last_Name || ""}`.trim() || "Unknown",
-          }));
+          const opts = stakeholderList.map((s: any) => {
+            // Get human-readable name from various possible fields
+            const firstName = s.firstName || s.First_Name || s.first_name || "";
+            const lastName = s.lastName || s.Last_Name || s.last_name || "";
+            const fullName = `${firstName} ${lastName}`.trim() || s.name || s.Name || "Unknown Stakeholder";
+            const userId = String(s._id || s.id || "");
+            
+            return {
+              key: userId,
+              label: fullName,
+            };
+          });
 
           setAdvStakeholderOptions(opts);
           if (advStakeholder && !opts.find((o: any) => o.key === advStakeholder)) {
@@ -971,19 +984,28 @@ export default function CampaignToolbar({
                         setQProvince(val);
                         // Fetch districts
                         onDistrictFetch?.(val);
-                        // Clear district
+                        // Clear district and municipality
                         setQDistrict("");
                         setQMunicipality("");
+                        setQMunicipalitiesList([]);
                         applyQuickFilter(qEventType, qDateRange, val, "", "");
                       }}
                     >
-                      {provinces.map((p) => (
-                        <SelectItem
-                          key={p._id}
-                        >
-                          {p.name}
+                      {provinces && provinces.length > 0 ? (
+                        provinces.map((p) => {
+                          const provinceId = String(p._id || p.id || '');
+                          const provinceName = String(p.name || p.Name || 'Unknown Province');
+                          return (
+                            <SelectItem key={provinceId}>
+                              {provinceName}
+                            </SelectItem>
+                          );
+                        })
+                      ) : (
+                        <SelectItem key="no-provinces" isDisabled>
+                          No provinces available
                         </SelectItem>
-                      ))}
+                      )}
                     </Select>
                   </div>
 
@@ -992,16 +1014,50 @@ export default function CampaignToolbar({
                     <Select
                       className="h-9"
                       isDisabled={!qProvince}
-                      placeholder="Pick a district"
+                      placeholder={qProvince ? "Pick a district" : "Select a province first"}
                       selectedKeys={qDistrict ? [qDistrict] : []}
                       size="sm"
                       variant="bordered"
                       radius="md"
-                      onChange={(e) => {
+                      onChange={async (e) => {
                         const val = e.target.value;
 
                         setQDistrict(val);
                         setQMunicipality("");
+                        
+                        // Fetch municipalities for selected district
+                        if (val) {
+                          try {
+                            const token =
+                              localStorage.getItem("unite_token") ||
+                              sessionStorage.getItem("unite_token");
+                            const headers: any = { "Content-Type": "application/json" };
+                            if (token) headers["Authorization"] = `Bearer ${token}`;
+
+                            const res = await fetch(`${API_URL}/api/locations/districts/${val}/municipalities`, {
+                              headers,
+                              credentials: "include",
+                            });
+                            const body = await res.json();
+
+                            if (res.ok && body.data) {
+                              const municipalitiesList = Array.isArray(body.data) ? body.data : [];
+                              setQMunicipalitiesList(municipalitiesList);
+                            } else {
+                              // Fallback: use provider's cached municipalities
+                              const municipalitiesFromProvider = getMunicipalitiesForDistrict(val);
+                              setQMunicipalitiesList(municipalitiesFromProvider);
+                            }
+                          } catch (err) {
+                            console.error("Error fetching municipalities:", err);
+                            // Fallback: use provider's cached municipalities
+                            const municipalitiesFromProvider = getMunicipalitiesForDistrict(val);
+                            setQMunicipalitiesList(municipalitiesFromProvider);
+                          }
+                        } else {
+                          setQMunicipalitiesList([]);
+                        }
+                        
                         applyQuickFilter(
                           qEventType,
                           qDateRange,
@@ -1011,13 +1067,21 @@ export default function CampaignToolbar({
                         );
                       }}
                     >
-                      {districts.map((d) => (
-                        <SelectItem
-                          key={d._id}
-                        >
-                          {d.name}
+                      {districts && districts.length > 0 ? (
+                        districts.map((d) => {
+                          const districtId = String(d._id || d.id || '');
+                          const districtName = String(d.name || d.Name || 'Unknown District');
+                          return (
+                            <SelectItem key={districtId}>
+                              {districtName}
+                            </SelectItem>
+                          );
+                        })
+                      ) : (
+                        <SelectItem key="no-districts" isDisabled>
+                          {qProvince ? "No districts available" : "Select a province first"}
                         </SelectItem>
-                      ))}
+                      )}
                     </Select>
                   </div>
 
@@ -1026,7 +1090,7 @@ export default function CampaignToolbar({
                     <Select
                       className="h-9"
                       isDisabled={!qDistrict}
-                      placeholder="Pick a municipality"
+                      placeholder={qDistrict ? "Pick a municipality" : "Select a district first"}
                       selectedKeys={qMunicipality ? [qMunicipality] : []}
                       size="sm"
                       variant="bordered"
@@ -1038,13 +1102,21 @@ export default function CampaignToolbar({
                         applyQuickFilter(qEventType, qDateRange, qProvince, qDistrict, val);
                       }}
                     >
-                      {getMunicipalitiesForDistrict(qDistrict).map((m) => (
-                        <SelectItem
-                          key={m._id}
-                        >
-                          {m.name}
+                      {qMunicipalitiesList && qMunicipalitiesList.length > 0 ? (
+                        qMunicipalitiesList.map((m) => {
+                          const municipalityId = String(m._id || m.id || '');
+                          const municipalityName = String(m.name || m.Name || 'Unknown Municipality');
+                          return (
+                            <SelectItem key={municipalityId}>
+                              {municipalityName}
+                            </SelectItem>
+                          );
+                        })
+                      ) : (
+                        <SelectItem key="no-municipalities" isDisabled>
+                          {qDistrict ? "No municipalities available" : "Select a district first"}
                         </SelectItem>
-                      ))}
+                      )}
                     </Select>
                   </div>
 

@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useRef, useEffect } from "react";
+import React, { useState, useRef, useEffect, useMemo } from "react";
 import { useRouter } from "next/navigation";
 import {
   ChevronDown,
@@ -40,10 +40,13 @@ import EditEventModal from "@/components/calendar/event-edit-modal";
 import EventManageStaffModal from "@/components/calendar/event-manage-staff-modal";
 import EventRescheduleModal from "@/components/calendar/event-reschedule-modal";
 import CalendarToolbar from "@/components/calendar/calendar-toolbar";
+import CalendarEventCard from "@/components/calendar/calendar-event-card";
+import { transformEventData } from "@/components/calendar/calendar-event-utils";
 import Topbar from "@/components/layout/topbar";
 import { fetchWithAuth } from "@/utils/fetchWithAuth";
 import { getUserInfo } from "@/utils/getUserInfo";
 import MobileNav from "@/components/tools/mobile-nav";
+import { useLocations } from "@/components/providers/locations-provider";
 import {
   Ticket,
   Calendar as CalIcon,
@@ -121,6 +124,10 @@ export default function CalendarPage(props: any) {
       // ignore malformed localStorage entry
     }
   }, []);
+  
+  // Initialize locations provider for location resolution
+  const { getProvinceName, getDistrictName, getMunicipalityName, locations } = useLocations();
+  
   const [isDateTransitioning, setIsDateTransitioning] = useState(false);
   const [isViewTransitioning, setIsViewTransitioning] = useState(false);
   const [slideDirection, setSlideDirection] = useState<"left" | "right">(
@@ -262,6 +269,9 @@ export default function CalendarPage(props: any) {
     }
   };
 
+  // Note: extractId and parseServerDate are now in calendar-event-utils.ts
+  // parseServerDate is kept here for backward compatibility with other parts of the page
+
   const normalizeEventsMap = (
     input: Record<string, any> | undefined,
   ): Record<string, any[]> => {
@@ -386,107 +396,7 @@ export default function CalendarPage(props: any) {
 
   // Fetch real events from backend and populate week/month maps
   useEffect(() => {
-    let mounted = true;
-
-    const fetchData = async () => {
-      const startTime = Date.now();
-      setEventsLoading(true);
-      // Fetch all public events and filter client-side for approved events in the current month
-      let normalizedMonth: Record<string, any[]> = {};
-
-      try {
-        // Fetch public events only for the current month range (server-side filtering)
-        const year = currentDate.getFullYear();
-        const monthIndex = currentDate.getMonth(); // 0-based month
-        const monthStart = new Date(year, monthIndex, 1);
-        const monthEnd = new Date(year, monthIndex + 1, 0, 23, 59, 59, 999);
-
-        const publicUrl = `${API_BASE}/api/public/events?date_from=${encodeURIComponent(monthStart.toISOString())}&date_to=${encodeURIComponent(monthEnd.toISOString())}`;
-        const publicResp = await fetch(publicUrl, { credentials: "include" });
-        const publicJson = await publicResp.json();
-
-        if (
-          mounted &&
-          publicResp.ok &&
-          publicJson &&
-          Array.isArray(publicJson.data)
-        ) {
-          const monthEvents = publicJson.data;
-
-          // Batch fetch detailed info for all events in the month (single request)
-          const eventIds = monthEvents
-            .map((e: any) => e.Event_ID || e.EventId)
-            .filter(Boolean);
-          if (eventIds.length > 0) {
-            await fetchEventDetails(eventIds);
-          }
-
-          // Group by date
-          const eventsByDate: Record<string, any[]> = {};
-          monthEvents.forEach((event: any) => {
-            const startDate = parseServerDate(event.Start_Date);
-            if (!startDate) return;
-            const dateKey = dateToLocalKey(startDate);
-            if (!eventsByDate[dateKey]) eventsByDate[dateKey] = [];
-            eventsByDate[dateKey].push(event);
-          });
-
-          // Normalize keys to local YYYY-MM-DD
-          normalizedMonth = normalizeEventsMap(eventsByDate);
-          setMonthEventsByDate(normalizedMonth);
-
-          // Create week view by filtering month events to current week
-          const wkStart = new Date(currentDate);
-          const dayOfWeek = wkStart.getDay();
-          wkStart.setDate(wkStart.getDate() - dayOfWeek);
-          wkStart.setHours(0, 0, 0, 0);
-          const wkEnd = new Date(wkStart);
-          wkEnd.setDate(wkStart.getDate() + 6);
-
-          const weekEvents: Record<string, any[]> = {};
-
-          // First, collect all events that naturally fall within the current week dates
-          Object.keys(normalizedMonth).forEach((dateKey) => {
-            const events = normalizedMonth[dateKey] || [];
-            const eventDate = new Date(dateKey + "T00:00:00");
-
-            // Check if this date falls within the current week
-            if (eventDate >= wkStart && eventDate <= wkEnd) {
-              weekEvents[dateKey] = events;
-            }
-          });
-
-          setWeekEventsByDate(weekEvents);
-        } else if (mounted) {
-          setMonthEventsByDate({});
-          setWeekEventsByDate({});
-        }
-      } catch (error) {
-        if (mounted) {
-          setWeekEventsByDate({});
-          setMonthEventsByDate({});
-        }
-        // Optionally log: console.error('Failed to fetch calendar data', error);
-      } finally {
-        if (mounted) {
-          // Ensure minimum 1.5 second loading time for better UX
-          const elapsed = Date.now() - startTime;
-          const minDuration = 1000; // shorten artificial minimum loading time
-          if (elapsed < minDuration) {
-            await new Promise((resolve) =>
-              setTimeout(resolve, minDuration - elapsed),
-            );
-          }
-          setEventsLoading(false);
-        }
-      }
-    };
-
-    fetchData();
-
-    return () => {
-      mounted = false;
-    };
+    refreshCalendarData();
   }, [currentDate]);
 
   const navigateWeek = async (direction: "prev" | "next") => {
@@ -671,6 +581,21 @@ export default function CalendarPage(props: any) {
       activeView === "month" ? monthEventsByDate : weekEventsByDate;
     // Prefer normalized local key; fallback to ISO UTC key or raw date string if present
     const isoKey = date.toISOString().split("T")[0];
+    
+    // Debug logging for event lookup
+    if (process.env.NODE_ENV === "development") {
+      console.log("[getEventsForDate] Looking up events:", {
+        date: date.toISOString(),
+        key,
+        isoKey,
+        activeView,
+        sourceKeys: Object.keys(source),
+        sourceHasKey: key in source,
+        sourceHasIsoKey: isoKey in source,
+        sourceSize: Object.keys(source).length,
+      });
+    }
+    
     let raw: any =
       source[key] || source[isoKey] || source[date.toString()] || [];
 
@@ -682,6 +607,19 @@ export default function CalendarPage(props: any) {
     }
 
     raw = Array.isArray(raw) ? raw : [];
+
+    // Debug logging for raw events found
+    if (process.env.NODE_ENV === "development") {
+      console.log("[getEventsForDate] Raw events found:", {
+        date: key,
+        rawCount: raw.length,
+        rawEvents: raw.map((e: any) => ({
+          id: e.Event_ID || e.EventId,
+          title: e.Event_Title || e.title,
+          startDate: e.Start_Date,
+        })),
+      });
+    }
 
     // Events from public API are already approved, no additional filtering needed
     const approved = raw;
@@ -700,20 +638,65 @@ export default function CalendarPage(props: any) {
     }
 
     // For both week and month views, avoid showing events on days other than their Start_Date
+    // Since events are already grouped by date key in weekEventsByDate/monthEventsByDate,
+    // this filter is mainly a safety check. However, we should be lenient to avoid filtering
+    // out events that should be displayed.
     const filterByStartDate = (ev: any) => {
+      // If we found events in the source for this date key, they're already filtered correctly
+      // Only filter if the event's start date clearly doesn't match
       let start: Date | null = null;
 
       try {
-        if (ev.Start_Date) start = parseServerDate(ev.Start_Date);
+        if (ev.Start_Date) {
+          start = parseServerDate(ev.Start_Date);
+        } else {
+          // If no Start_Date, but event is in the source for this date, allow it
+          // (might be a data inconsistency, but don't hide the event)
+          return true;
+        }
       } catch (err) {
-        start = null;
+        // If parsing fails, but event is in source for this date, allow it
+        if (process.env.NODE_ENV === "development") {
+          console.warn("[filterByStartDate] Failed to parse start date, allowing event:", {
+            eventId: ev.Event_ID || ev.EventId,
+            Start_Date: ev.Start_Date,
+            error: err,
+          });
       }
-      if (!start) return false;
+        return true; // Be lenient - if it's in the source for this date, show it
+      }
+      
+      if (!start) {
+        // No valid start date, but if it's in source for this date, allow it
+        return true;
+      }
 
-      return dateToLocalKey(start) === key;
+      const eventKey = dateToLocalKey(start);
+      const matches = eventKey === key;
+      
+      if (process.env.NODE_ENV === "development" && !matches) {
+        console.log("[filterByStartDate] Date mismatch (filtering out):", {
+          eventId: ev.Event_ID || ev.EventId,
+          eventKey,
+          targetKey: key,
+          matches,
+        });
+      }
+
+      return matches;
     };
 
     const finalList = deduped.filter(filterByStartDate);
+    
+    // Debug logging for filtering results
+    if (process.env.NODE_ENV === "development") {
+      console.log("[getEventsForDate] Filtering results:", {
+        date: key,
+        dedupedCount: deduped.length,
+        finalListCount: finalList.length,
+        filteredOut: deduped.length - finalList.length,
+      });
+    }
 
     // Apply quick / advanced filters
     const afterQuick = finalList
@@ -806,275 +789,50 @@ export default function CalendarPage(props: any) {
         return true;
       });
 
+    // Transform events using utility functions
     return afterQuick.map((e: any) => {
       const eventId = e.Event_ID || e.EventId;
-      const detailedEvent = eventId ? detailedEvents[eventId] : null;
+      
+      // Since new endpoints return complete data with category and categoryData,
+      // use the event itself as detailedEvent (it already has all the data we need)
+      // Only use detailedEvents cache if it exists (for backward compatibility)
+      const detailedEvent = (eventId && detailedEvents[eventId]) ? detailedEvents[eventId] : e;
 
-      // Start date may come in different shapes (ISO, number, or mongo export object)
-      let start: Date | null = null;
-
-      if (e.Start_Date) {
-        try {
-          if (typeof e.Start_Date === "object" && e.Start_Date.$date) {
-            // mongo export shape: { $date: { $numberLong: '...' } } or { $date: 12345 }
-            const d = e.Start_Date.$date;
-
-            if (typeof d === "object" && d.$numberLong)
-              start = new Date(Number(d.$numberLong));
-            else start = new Date(d as any);
-          } else {
-            start = new Date(e.Start_Date as any);
-          }
-        } catch (err) {
-          start = null;
+      // Use transformEventData utility to create well-structured event object
+      const transformed = transformEventData(
+        e,
+        detailedEvent,
+        {
+          getProvinceName,
+          getDistrictName,
+          getMunicipalityName,
         }
+      );
+
+      // Debug logging
+      if (process.env.NODE_ENV === "development") {
+        console.log("[getEventsForDate] Transformed event for date:", {
+          date: key,
+          eventId,
+          title: transformed.title,
+          ownerName: transformed.ownerName,
+          category: transformed.category,
+          categoryLabel: transformed.categoryLabel,
+          countType: transformed.countType,
+          count: transformed.count,
+          hasDetailedEvent: !!detailedEvent,
+          eventCategory: e.category || e.Category,
+          eventCategoryData: e.categoryData,
+        });
       }
 
-      const startTime = start
-        ? start.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })
-        : "";
-      // End time (if provided)
-      let end: Date | null = null;
-
-      if (e.End_Date) {
-        try {
-          if (typeof e.End_Date === "object" && e.End_Date.$date) {
-            const d = e.End_Date.$date;
-
-            if (typeof d === "object" && d.$numberLong)
-              end = new Date(Number(d.$numberLong));
-            else end = new Date(d as any);
-          } else {
-            end = new Date(e.End_Date as any);
-          }
-        } catch (err) {
-          end = null;
-        }
-      }
-      const endTime = end
-        ? end.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })
-        : "";
-
-      // Coordinator / stakeholder name — prioritize stakeholder over coordinator
-      const coordinatorName =
-        detailedEvent?.stakeholder?.Stakeholder_Name ||
-        detailedEvent?.stakeholder?.name ||
-        detailedEvent?.Stakeholder_Name ||
-        detailedEvent?.createdByName ||
-        detailedEvent?.raw?.createdByName ||
-        e.StakeholderName ||
-        e.stakeholder?.name ||
-        detailedEvent?.coordinator?.Coordinator_Name ||
-        detailedEvent?.coordinator?.name ||
-        detailedEvent?.Coordinator_Name ||
-        e.coordinator?.name ||
-        e.MadeByCoordinatorName ||
-        e.coordinatorName ||
-        e.Email ||
-        "Coordinator";
-
-      // District number — prefer detailed event coordinator district, then stakeholder district, then fall back to basic event data
-      const rawDistrictSource =
-        detailedEvent?.coordinator?.district_number ??
-        detailedEvent?.stakeholder?.district_number ??
-        detailedEvent?.coordinator?.District_Number ??
-        (detailedEvent?.coordinator?.district?.name
-          ? extractDistrictNumber(detailedEvent.coordinator.district.name)
-          : null) ??
-        (detailedEvent?.stakeholder?.district?.name
-          ? extractDistrictNumber(detailedEvent.stakeholder.district.name)
-          : null) ??
-        e.coordinator?.district_number ??
-        e.stakeholder?.district_number ??
-        e.district_number ??
-        e.DistrictNumber ??
-        e.district ??
-        (e.coordinator?.district?.name
-          ? extractDistrictNumber(e.coordinator.district.name)
-          : null) ??
-        (e.stakeholder?.district?.name
-          ? extractDistrictNumber(e.stakeholder.district.name)
-          : null);
-
-      // Compute a user-friendly district display. If `rawDistrictSource` is numeric, show ordinal style
-      // Otherwise it may be a slug like 'camarines-sur-district-v' — try to parse province and district from it.
-      let districtDisplay = "District TBD";
-      let provinceDisplay: string | null =
-        detailedEvent?.province ||
-        detailedEvent?.Province ||
-        detailedEvent?.coordinator?.province ||
-        detailedEvent?.stakeholder?.province ||
-        e.province ||
-        e.Province ||
-        null;
-
-      // If rawDistrictSource is a number (or parsable to number), use ordinal formatting
-      if (typeof rawDistrictSource === "number" || !isNaN(Number(rawDistrictSource))) {
-        const num = Number(rawDistrictSource);
-        districtDisplay = `${makeOrdinal(num)} District`;
-      } else if (typeof rawDistrictSource === "string") {
-        const s = rawDistrictSource as string;
-
-        // Helper: convert hyphen/underscore separated slug into humanized Title Case
-        const humanize = (inp: string) =>
-          inp
-            .replace(/[-_]+/g, " ")
-            .trim()
-            .split(/\s+/)
-            .map((w) => (w.length ? w.charAt(0).toUpperCase() + w.slice(1) : w))
-            .join(" ");
-
-        // Try to parse slug like 'camarines-sur-district-v' first
-        const slugMatch = s.match(/^(.*)-district-(.+)$/i);
-        if (slugMatch) {
-          const provSlug = slugMatch[1];
-          const distPart = slugMatch[2];
-
-          const prov = humanize(provSlug);
-          provinceDisplay = provinceDisplay || prov;
-
-          const distNum = Number(distPart);
-          const distLabel = !isNaN(distNum)
-            ? `${makeOrdinal(distNum)} District`
-            : `District ${distPart.toUpperCase()}`;
-
-          districtDisplay = distLabel;
-        } else {
-          // If slug contains hyphens/underscores and looks like province + district (e.g. 'camarines-sur-naga-city'),
-          // attempt to split into province and district pieces.
-          try {
-            if (s.includes("-") || s.includes("_")) {
-              const parts = s.split(/[-_]+/).map((p) => p.trim()).filter(Boolean);
-
-              if (parts.length === 1) {
-                districtDisplay = humanize(parts[0]);
-              } else if (parts.length === 2) {
-                provinceDisplay = provinceDisplay || humanize(parts[0]);
-                districtDisplay = humanize(parts[1]);
-              } else if (parts.length >= 3) {
-                // if 3+ parts, assume province = first..(n-2), district = last two joined
-                const provinceParts = parts.slice(0, parts.length - 2);
-                const districtParts = parts.slice(parts.length - 2);
-                provinceDisplay = provinceDisplay || humanize(provinceParts.join(" "));
-                districtDisplay = humanize(districtParts.join(" "));
-              } else {
-                const simple = s.trim();
-                if (simple) districtDisplay = simple;
-              }
-            } else {
-              const simple = s.trim();
-              if (simple) districtDisplay = simple;
-            }
-          } catch (err) {
-            const simple = s.trim();
-            if (simple) districtDisplay = simple;
-          }
-        }
-      }
-
-      // Province display only (derived from detailed event or parsed slug)
-      // `provinceDisplay` already contains the parsed province name when available
-
-      // Determine category (case-insensitive, check both Category and category)
-      const rawCat = (e.Category ?? e.category ?? "").toString().toLowerCase();
-      let typeKey: string = "event";
-
-      if (rawCat.includes("blood")) typeKey = "blood-drive";
-      else if (rawCat.includes("train")) typeKey = "training";
-      else if (rawCat.includes("advoc")) typeKey = "advocacy";
-
-      // Helper to find count values across shapes (main event or categoryData)
-      const getVal = (keys: string[]) => {
-        // First check detailed event data
-        for (const k of keys) {
-          if (
-            detailedEvent &&
-            detailedEvent[k] !== undefined &&
-            detailedEvent[k] !== null
-          )
-            return detailedEvent[k];
-          if (
-            detailedEvent?.categoryData &&
-            detailedEvent.categoryData[k] !== undefined &&
-            detailedEvent.categoryData[k] !== null
-          )
-            return detailedEvent.categoryData[k];
-        }
-        // Then check basic event data
-        for (const k of keys) {
-          if (e[k] !== undefined && e[k] !== null) return e[k];
-          if (
-            e.categoryData &&
-            e.categoryData[k] !== undefined &&
-            e.categoryData[k] !== null
-          )
-            return e.categoryData[k];
-        }
-
-        return undefined;
-      };
-
-      let countType = "";
-      let count = "";
-      const targetDonation = getVal([
-        "Target_Donation",
-        "TargetDonation",
-        "Target_Donations",
-      ]);
-      const maxParticipants = getVal([
-        "MaxParticipants",
-        "Max_Participants",
-        "MaxParticipant",
-      ]);
-      const expectedAudience = getVal([
-        "ExpectedAudienceSize",
-        "Expected_AudienceSize",
-        "ExpectedAudience",
-      ]);
-
-      if (typeKey === "blood-drive" && targetDonation !== undefined) {
-        countType = "Goal Count";
-        count = `${targetDonation} u.`;
-      } else if (typeKey === "training" && maxParticipants !== undefined) {
-        countType = "Participant Count";
-        count = `${maxParticipants} no.`;
-      } else if (typeKey === "advocacy" && expectedAudience !== undefined) {
-        countType = "Audience Count";
-        count = `${expectedAudience} no.`;
-      } else {
-        countType = "Details";
-        count = "View event";
-      }
-
-      const baseTitle = e.Title || e.Event_Title || e.title || "Event Title";
-      // For month view we keep the title as the event title only; tooltip will show times
-      const displayTitle = baseTitle;
-      // color codes: blood-drive -> red, training -> orange, advocacy -> blue
-      let color = "#3b82f6"; // default blue (advocacy)
-
-      if (typeKey === "blood-drive") color = "#ef4444";
-      else if (typeKey === "training") color = "#f97316"; // orange-500
-      else if (typeKey === "advocacy") color = "#3b82f6"; // blue-500
-
+      // Return transformed event with backward-compatible fields for month view
       return {
-        title: displayTitle,
-        startTime,
-        endTime,
-        time: startTime,
-        type: typeKey,
-        district: districtDisplay,
-        province: provinceDisplay,
-        location:
-          detailedEvent?.Location ||
-          detailedEvent?.location ||
-          e.Location ||
-          e.location ||
-          "Location to be determined",
-        countType,
-        count,
-        coordinatorName,
-        raw: e,
-        color,
+        ...transformed,
+        time: transformed.startTime, // For backward compatibility
+        type: transformed.category, // For backward compatibility
+        coordinatorName: transformed.ownerName, // For backward compatibility
+        raw: e, // Keep raw event for actions/modals
       };
     });
   };
@@ -1148,20 +906,43 @@ export default function CalendarPage(props: any) {
       const monthStart = new Date(year, monthIndex, 1);
       const monthEnd = new Date(year, monthIndex + 1, 0, 23, 59, 59, 999);
 
-      const publicUrl = `${API_BASE}/api/public/events?date_from=${encodeURIComponent(monthStart.toISOString())}&date_to=${encodeURIComponent(monthEnd.toISOString())}`;
-      const publicResp = await fetch(publicUrl, { credentials: "include" });
-      const publicJson = await publicResp.json();
+      // Check if user is authenticated to use /api/me/events, otherwise use /api/events/all
+      const token =
+        typeof window !== "undefined" &&
+        (localStorage.getItem("unite_token") ||
+          sessionStorage.getItem("unite_token"));
 
-      if (publicResp.ok && Array.isArray(publicJson.data)) {
-        const monthEvents = publicJson.data;
+      const headers: any = { "Content-Type": "application/json" };
+      if (token) headers["Authorization"] = `Bearer ${token}`;
 
-        // Batch fetch detailed information for all events in the month
-        const eventIds = monthEvents
-          .map((e: any) => e.Event_ID || e.EventId)
-          .filter(Boolean);
-        if (eventIds.length > 0) {
-          await fetchEventDetails(eventIds);
+      // Use /api/me/events if authenticated, otherwise /api/events/all
+      const eventsUrl = token
+        ? `${API_BASE}/api/me/events?date_from=${encodeURIComponent(monthStart.toISOString())}&date_to=${encodeURIComponent(monthEnd.toISOString())}`
+        : `${API_BASE}/api/events/all?date_from=${encodeURIComponent(monthStart.toISOString())}&date_to=${encodeURIComponent(monthEnd.toISOString())}`;
+
+      const eventsResp = await fetch(eventsUrl, {
+        headers,
+        credentials: token ? undefined : "include",
+      });
+      const eventsJson = await eventsResp.json();
+
+      if (eventsResp.ok && eventsJson.success && Array.isArray(eventsJson.data)) {
+        const monthEvents = eventsJson.data;
+
+        // Debug logging: log first event to see backend response structure
+        if (process.env.NODE_ENV === "development" && monthEvents.length > 0) {
+          console.log("[refreshCalendarData] First event from backend:", {
+            Event_ID: monthEvents[0].Event_ID,
+            Event_Title: monthEvents[0].Event_Title,
+            category: monthEvents[0].category,
+            Category: monthEvents[0].Category,
+            categoryData: monthEvents[0].categoryData,
+            hasCategoryData: !!monthEvents[0].categoryData,
+          });
         }
+
+        // Events from new endpoints are already populated with location names, category data, etc.
+        // No need for batch fetch - data is already complete
 
         // Group by date
         const eventsByDate: Record<string, any[]> = {};
@@ -1183,22 +964,53 @@ export default function CalendarPage(props: any) {
         wkStart.setHours(0, 0, 0, 0);
         const wkEnd = new Date(wkStart);
         wkEnd.setDate(wkStart.getDate() + 6);
+        wkEnd.setHours(23, 59, 59, 999);
+
+        // Generate all date keys for the week to ensure consistent matching
+        const weekDateKeys = new Set<string>();
+        for (let i = 0; i < 7; i++) {
+          const weekDate = new Date(wkStart);
+          weekDate.setDate(wkStart.getDate() + i);
+          weekDateKeys.add(dateToLocalKey(weekDate));
+        }
 
         const weekEvents: Record<string, any[]> = {};
 
+        // Use date key matching instead of Date object comparison to avoid timezone issues
         Object.keys(normalizedMonth).forEach((dateKey) => {
           const events = normalizedMonth[dateKey] || [];
-          const eventDate = new Date(dateKey + "T00:00:00");
 
-          if (eventDate >= wkStart && eventDate <= wkEnd) {
+          // Check if this date key falls within the current week using key matching
+          if (weekDateKeys.has(dateKey)) {
             weekEvents[dateKey] = events;
           }
         });
 
+        // Debug logging for week events population
+        if (process.env.NODE_ENV === "development") {
+          console.log("[refreshCalendarData] Setting weekEventsByDate:", {
+            weekStart: wkStart.toISOString(),
+            weekEnd: wkEnd.toISOString(),
+            weekDateKeys: Array.from(weekDateKeys),
+            weekEventsKeys: Object.keys(weekEvents),
+            weekEventsCount: Object.values(weekEvents).reduce((sum, arr) => sum + arr.length, 0),
+            normalizedMonthKeys: Object.keys(normalizedMonth),
+            normalizedMonthCount: Object.values(normalizedMonth).reduce((sum, arr) => sum + arr.length, 0),
+            endpoint: token ? "/api/me/events" : "/api/events/all",
+            totalEvents: monthEvents.length,
+          });
+        }
+
         setWeekEventsByDate(weekEvents);
+      } else {
+        // If new endpoint fails, fall back to empty state
+        setMonthEventsByDate({});
+        setWeekEventsByDate({});
       }
     } catch (e) {
-      // ignore
+      console.error("[refreshCalendarData] Error fetching events:", e);
+      setMonthEventsByDate({});
+      setWeekEventsByDate({});
     }
   };
 
@@ -1983,6 +1795,20 @@ export default function CalendarPage(props: any) {
               <div className="grid grid-cols-7 gap-1.5 sm:gap-2 md:gap-4 mt-3 sm:mt-4 md:mt-6 w-full min-w-[320px] sm:min-w-[600px]">
                 {days.map((day, index) => {
                   const dayEvents = getEventsForDate(day.fullDate);
+                  
+                  // Debug logging for day events before rendering
+                  if (process.env.NODE_ENV === "development") {
+                    console.log("[WeekView] Rendering day:", {
+                      dayIndex: index,
+                      dayDate: day.fullDate.toISOString(),
+                      dayKey: dateToLocalKey(day.fullDate),
+                      dayEventsCount: dayEvents.length,
+                      dayEvents: dayEvents.map((e: any) => ({
+                        title: e.title,
+                        eventId: e.raw?.Event_ID || e.raw?.EventId,
+                      })),
+                    });
+                  }
 
                   return (
                     <div key={index} className="min-h-[300px] sm:min-h-[400px] md:min-h-[500px]">
@@ -2030,107 +1856,26 @@ export default function CalendarPage(props: any) {
                       ) : (
                         <div className="space-y-2 sm:space-y-3">
                           {dayEvents.map((event, eventIndex) => (
-                            <div
+                            <CalendarEventCard
                               key={eventIndex}
-                              className="bg-white rounded-lg border border-gray-200 p-2 sm:p-3 hover:shadow-md active:shadow-sm transition-shadow touch-manipulation"
-                            >
-                              {/* Three-dot menu */}
-                              <div className="flex justify-between items-start mb-1">
-                                <h4 className="font-semibold text-gray-900 text-xs leading-tight pr-2 line-clamp-2 flex-1">
-                                  {event.title}
-                                </h4>
-                                <Dropdown>
-                                  <DropdownTrigger>
-                                    <Button
-                                      isIconOnly
-                                      aria-label="Event actions"
-                                      className="hover:text-default-800 min-w-6 h-6 flex-shrink-0"
-                                      size="sm"
-                                      variant="light"
-                                    >
-                                      <MoreVertical className="w-3 h-3 sm:w-4 sm:h-4" />
-                                    </Button>
-                                  </DropdownTrigger>
-                                  {getMenuByStatus(event)}
-                                </Dropdown>
-                              </div>
-
-                              {/* Profile */}
-                              <div className="flex items-center gap-1 mb-2">
-                                <div
-                                  className="h-4 w-4 sm:h-6 sm:w-6 rounded-full flex-shrink-0 flex items-center justify-center"
-                                  style={{
-                                    backgroundColor: getProfileColor(
-                                      event.coordinatorName,
-                                    ),
-                                  }}
-                                >
-                                  <span className="text-white text-[10px] sm:text-xs">
-                                    {getProfileInitial(event.coordinatorName)}
-                                  </span>
-                                </div>
-                                <span className="text-[10px] sm:text-xs text-gray-600 truncate">
-                                  {event.coordinatorName}
-                                </span>
-                              </div>
-
-                              {/* Time and Type Badges */}
-                              <div className="flex gap-2 mb-3">
-                                <div className="bg-gray-100 rounded px-2 py-1 flex items-center gap-1">
-                                  <Clock className="w-3 h-3 text-gray-500" />
-                                  <span className="text-xs text-gray-700">
-                                    {event.time}
-                                  </span>
-                                </div>
-                                <div className="bg-gray-100 rounded px-1.5 sm:px-2 py-0.5 sm:py-1">
-                                  <span className="text-xs text-gray-700">
-                                    {eventLabelsMap[event.type as EventType]}
-                                  </span>
-                                </div>
-                              </div>
-
-                              {/* Province (new) */}
-                              <div className="mb-1">
-                                <div className="text-xs font-medium text-gray-700 mb-0.5">
-                                  Province
-                                </div>
-                                <div className="text-xs text-gray-600 line-clamp-1">
-                                  {event.province || "-"}
-                                </div>
-                              </div>
-
-                              {/* District (legacy) */}
-                              <div className="mb-1">
-                                <div className="text-xs font-medium text-gray-700 mb-0.5">
-                                  District
-                                </div>
-                                <div className="text-xs text-gray-600 line-clamp-1">
-                                  {event.district}
-                                </div>
-                              </div>
-
-                              {/* Location */}
-                              <div className="mb-2">
-                                <div className="text-xs font-medium text-gray-700 mb-0.5">
-                                  Location
-                                </div>
-                                <div className="text-xs text-gray-600 line-clamp-2">
-                                  {event.location}
-                                </div>
-                              </div>
-
-                              {/* Count */}
-                              <div className="border-t border-gray-200 pt-1 sm:pt-2">
-                                <div className="flex justify-between items-center">
-                                  <span className="text-xs text-gray-600">
-                                    {event.countType}
-                                  </span>
-                                  <span className="text-sm sm:text-lg font-bold text-red-500">
-                                    {event.count}
-                                  </span>
-                                </div>
-                              </div>
-                            </div>
+                              title={event.title}
+                              ownerName={event.coordinatorName || event.ownerName || "Coordinator"}
+                              startTime={event.startTime || event.time || ""}
+                              endTime={event.endTime}
+                              category={event.category || event.type || "event"}
+                              province={event.province}
+                              district={event.district}
+                              municipality={event.municipality}
+                              location={event.location}
+                              countType={event.countType}
+                              count={event.count}
+                              rawEvent={event.raw || event}
+                              getMenuByStatus={getMenuByStatus}
+                              categoryLabel={event.categoryLabel || eventLabelsMap[event.category as EventType] || eventLabelsMap[event.type as EventType] || "Event"}
+                              getProfileInitial={getProfileInitial}
+                              getProfileColor={getProfileColor}
+                              color={event.color}
+                            />
                           ))}
                         </div>
                       )}
@@ -2208,7 +1953,7 @@ export default function CalendarPage(props: any) {
                                 color: event.color,
                               }}
                               tabIndex={0}
-                              title={`${eventLabelsMap[event.type as EventType]} : ${event.startTime || ""}${event.endTime ? ` - ${event.endTime}` : ""}`}
+                              title={`${event.categoryLabel || eventLabelsMap[event.type as EventType] || "Event"}: ${event.title}`}
                               onClick={() => handleOpenViewEvent(event.raw)}
                               onKeyDown={(e) => {
                                 if (e.key === "Enter" || e.key === " ") {
@@ -2216,15 +1961,8 @@ export default function CalendarPage(props: any) {
                                 }
                               }}
                             >
-                              <div className="flex items-center gap-2">
-                                <span className="truncate block">
-                                  {event.title}
-                                </span>
-                                {event.startTime ? (
-                                  <span className="text-xs font-semibold ml-1">
-                                    {event.startTime}
-                                  </span>
-                                ) : null}
+                              <div className="break-words whitespace-normal leading-tight">
+                                {event.title}
                               </div>
                             </div>
                           ))}
