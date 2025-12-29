@@ -39,6 +39,8 @@ import { format, isToday, isYesterday } from "date-fns";
 
 import { getUserInfo } from "@/utils/getUserInfo";
 import { fetchJsonWithAuth } from "@/utils/fetchWithAuth";
+import { decodeJwt } from "@/utils/decodeJwt";
+import { useNotificationPreferences } from "@/hooks/useNotificationPreferences";
 import EventViewModal from "@/components/campaign/event-view-modal";
 import { createPortal } from "react-dom";
 
@@ -100,78 +102,64 @@ export default function NotificationModal({
     };
   }, [isOpen]);
 
-  // --- Helpers to resolve recipient ---
-  const getRecipientId = useCallback(() => {
-    const info = getUserInfo();
-    const parsed = info.raw || {};
+  // Notification preferences for filtering
+  const { preferences: notificationPreferences } = useNotificationPreferences(isOpen);
 
-    return (
-      parsed.Coordinator_ID ||
-      parsed.CoordinatorId ||
-      parsed.coordinator_id ||
-      parsed.coordinatorId ||
-      parsed.Stakeholder_ID ||
-      parsed.StakeholderId ||
-      parsed.stakeholder_id ||
-      parsed.stakeholderId ||
-      parsed.id ||
-      parsed.ID ||
-      parsed.user_id ||
-      parsed.user?.id ||
-      null
-    );
-  }, []);
+  // --- Helper to get current user's ObjectId ---
+  const getCurrentUserId = useCallback(() => {
+    try {
+      // Try to get from localStorage user data
+      const rawUser = localStorage.getItem("unite_user");
+      if (rawUser) {
+        const user = JSON.parse(rawUser);
+        const userId = user?._id || user?.id || user?.User_ID || user?.userId || user?.ID;
+        if (userId) {
+          return String(userId);
+        }
+      }
 
-  const getRecipientType = useCallback(() => {
-    const info = getUserInfo();
+      // Fallback: decode JWT token
+      const token = localStorage.getItem("unite_token") || sessionStorage.getItem("unite_token");
+      if (token) {
+        const decoded = decodeJwt(token);
+        const tokenUserId = decoded?.id || decoded?.userId || decoded?._id;
+        if (tokenUserId) {
+          return String(tokenUserId);
+        }
+      }
 
-    if (info.isAdmin) return "Admin";
-    const role = (info.role || "").toLowerCase();
-
-    const parsed = info.raw || {};
-    const hasStakeholderId = !!(
-      parsed.Stakeholder_ID ||
-      parsed.StakeholderId ||
-      parsed.stakeholder_id ||
-      parsed.stakeholderId
-    );
-    const hasCoordinatorId = !!(
-      parsed.Coordinator_ID ||
-      parsed.CoordinatorId ||
-      parsed.coordinator_id ||
-      parsed.coordinatorId
-    );
-
-    if (hasStakeholderId || role.includes("stakeholder")) return "Stakeholder";
-    if (hasCoordinatorId || role.includes("coordinator")) return "Coordinator";
-
-    return "Coordinator";
+      return null;
+    } catch (error) {
+      console.error("Error getting current user ID:", error);
+      return null;
+    }
   }, []);
 
   // --- Data Loading ---
   const loadNotifications = useCallback(async () => {
-    const recipientId = getRecipientId();
+    const userId = getCurrentUserId();
 
-    if (!recipientId) {
+    if (!userId) {
       setNotifications([]);
+      setError("User not authenticated");
       return;
     }
 
     setLoading(true);
+    setError(null);
     try {
-      const rType = getRecipientType();
       const params = new URLSearchParams();
 
-      params.append("recipientId", String(recipientId));
-      params.append("recipientType", rType);
+      // Use new format: recipientUserId (ObjectId)
+      params.append("recipientUserId", String(userId));
       params.append("page", "1");
       params.append("limit", "50");
 
-      const url = `${API_URL}/api/notifications?${params.toString()}`;
+      const url = `/api/notifications?${params.toString()}`;
       const response: any = await fetchJsonWithAuth(url);
 
       if (response.success && response.data) {
-        const items = response.data;
+        const items = Array.isArray(response.data) ? response.data : [];
 
         items.sort(
           (a: any, b: any) => {
@@ -185,14 +173,14 @@ export default function NotificationModal({
       } else {
         setNotifications([]);
       }
-    } catch (err) {
+    } catch (err: any) {
       console.error("Failed to load notifications", err);
-      setError("Failed to load notifications");
+      setError(err.message || "Failed to load notifications");
       setNotifications([]);
     } finally {
       setLoading(false);
     }
-  }, [getRecipientId, getRecipientType]);
+  }, [getCurrentUserId]);
 
   useEffect(() => {
     if (isOpen) {
@@ -202,92 +190,165 @@ export default function NotificationModal({
 
   // --- Actions ---
   const markAllRead = async () => {
-    const recipientId = getRecipientId();
+    const userId = getCurrentUserId();
 
-    if (!recipientId) return;
+    if (!userId) {
+      console.warn("Cannot mark all as read: user not authenticated");
+      return;
+    }
 
     try {
-      const rType = getRecipientType();
-
-      await fetchJsonWithAuth(`${API_URL}/api/notifications/mark-all-read`, {
+      await fetchJsonWithAuth(`/api/notifications/mark-all-read`, {
         method: "PUT",
-        body: JSON.stringify({ recipientId, recipientType: rType }),
+        body: JSON.stringify({ recipientUserId: userId }),
       });
 
-      setNotifications((prev) =>
-        prev.map((n) => ({ ...n, IsRead: true, is_read: true })),
-      );
-
-      window.dispatchEvent(
-        new CustomEvent("unite:notifications-read", { detail: { unread: 0 } }),
-      );
+      setNotifications((prev) => {
+        const updated = prev.map((n) => ({ ...n, IsRead: true, isRead: true, is_read: true }));
+        
+        // Dispatch unread count event (all marked as read = 0 unread)
+        window.dispatchEvent(
+          new CustomEvent("unite:notifications-read", { detail: { unread: 0 } }),
+        );
+        
+        return updated;
+      });
     } catch (e) {
-      console.error(e);
+      console.error("Failed to mark all as read:", e);
     }
   };
 
   const markAsRead = async (n: any) => {
-    if (n.IsRead || n.is_read) return;
+    // Check both IsRead and isRead for compatibility
+    if (n.IsRead || n.isRead || n.is_read) return;
+    
     const nid = n.Notification_ID || n._id;
-
     if (!nid) return;
 
-    const recipientId = getRecipientId();
+    const userId = getCurrentUserId();
+    if (!userId) {
+      console.warn("Cannot mark as read: user not authenticated");
+      return;
+    }
 
     try {
-      await fetchJsonWithAuth(`${API_URL}/api/notifications/${nid}/read`, {
+      await fetchJsonWithAuth(`/api/notifications/${encodeURIComponent(nid)}/read`, {
         method: "PUT",
-        body: JSON.stringify({ isRead: true, recipientId }),
+        body: JSON.stringify({ recipientId: userId }),
       });
 
-      setNotifications((prev) =>
-        prev.map((item) => {
+      // Update notifications state
+      setNotifications((prev) => {
+        const updated = prev.map((item) => {
           const itemId = item.Notification_ID || item._id;
 
           if (itemId === nid) {
-            return { ...item, IsRead: true, is_read: true };
+            return { ...item, IsRead: true, isRead: true, is_read: true };
           }
 
           return item;
-        }),
-      );
+        });
 
-      const unreadCount = notifications.filter(
-        (x) => (x.Notification_ID || x._id) !== nid && !(x.IsRead || x.is_read),
-      ).length;
+        // Recalculate unread count after update
+        const unreadCount = updated.filter(
+          (x) => !(x.IsRead || x.isRead || x.is_read),
+        ).length;
 
-      window.dispatchEvent(
-        new CustomEvent("unite:notifications-read", {
-          detail: { unread: unreadCount },
-        }),
-      );
+        // Dispatch unread count event
+        window.dispatchEvent(
+          new CustomEvent("unite:notifications-read", {
+            detail: { unread: unreadCount },
+          }),
+        );
+
+        return updated;
+      });
     } catch (e) {
-      console.error(e);
+      console.error("Failed to mark notification as read:", e);
     }
   };
 
   const handleNotificationClick = async (n: any) => {
     await markAsRead(n);
 
+    // Extract request ID from notification - check multiple possible fields
     const rid =
       n.Request_ID ||
       n.RelatedEntityID ||
       n.RelatedEntityId ||
       n.related_entity_id ||
-      n.relatedEntityId;
+      n.relatedEntityId ||
+      n.requestId ||
+      n.request_id;
 
-    if (rid && n.NotificationType !== "System") {
+    // Extract event ID if no request ID (for event-only notifications)
+    const eventId = n.Event_ID || n.eventId || n.event_id;
+
+    if ((rid || eventId) && n.NotificationType !== "System") {
       try {
-        const url = `${API_URL}/api/event-requests/${encodeURIComponent(rid)}`;
-        const response: any = await fetchJsonWithAuth(url);
-        const data = response?.data || response?.request || response;
+        let requestData = null;
 
-        if (data) {
-          setViewRequest(data);
-          setViewModalOpen(true);
+        // Try to fetch by request ID first (most common case)
+        if (rid) {
+          try {
+            const url = `/api/event-requests/${encodeURIComponent(rid)}`;
+            const response: any = await fetchJsonWithAuth(url);
+            
+            // API returns: { success: true, data: { request: {...}, staff: [...] } }
+            // Extract the request object from the nested structure
+            requestData = response?.data?.request || response?.data || response?.request || response;
+
+            if (requestData) {
+              console.log("Loaded request data:", { requestId: rid, hasEvent: !!requestData.event });
+            }
+          } catch (reqError: any) {
+            console.warn("Failed to load request, trying event ID:", reqError);
+            // If request fetch fails, try event ID as fallback
+            if (eventId) {
+              const eventUrl = `/api/events/${encodeURIComponent(eventId)}`;
+              const eventResponse: any = await fetchJsonWithAuth(eventUrl);
+              const eventData = eventResponse?.data || eventResponse;
+              
+              if (eventData) {
+                // Construct request-like structure for EventViewModal
+                requestData = { event: eventData };
+                console.log("Loaded event data as request:", { eventId });
+              }
+            }
+          }
+        } else if (eventId) {
+          // Only event ID available - fetch event and wrap in request structure
+          const eventUrl = `/api/events/${encodeURIComponent(eventId)}`;
+          const eventResponse: any = await fetchJsonWithAuth(eventUrl);
+          const eventData = eventResponse?.data || eventResponse;
+          
+          if (eventData) {
+            // Construct request-like structure for EventViewModal
+            requestData = { event: eventData };
+            console.log("Loaded event data:", { eventId });
+          }
         }
-      } catch (e) {
-        console.error("Failed to load request for notification", e);
+
+        if (requestData) {
+          // The EventViewModal expects: request.event or request itself
+          setViewRequest(requestData);
+          setViewModalOpen(true);
+        } else {
+          console.warn("No request/event data found in API response for notification:", {
+            notificationId: n.Notification_ID || n._id,
+            requestId: rid,
+            eventId: eventId,
+            notificationType: n.NotificationType
+          });
+        }
+      } catch (e: any) {
+        console.error("Failed to load request/event for notification:", {
+          error: e.message || e,
+          notificationId: n.Notification_ID || n._id,
+          requestId: rid,
+          eventId: eventId,
+          notificationType: n.NotificationType
+        });
       }
     }
   };
@@ -296,6 +357,28 @@ export default function NotificationModal({
   const filteredNotifications = useMemo(() => {
     let base = notifications;
 
+    // Filter based on user notification preferences
+    if (notificationPreferences) {
+      const enabledTypes = notificationPreferences.enabledNotificationTypes || [];
+      const criticalTypes = ['request.approved', 'request.rejected', 'request.rescheduled'];
+      
+      // If enabledNotificationTypes is not empty, filter by it
+      // (empty array means all types are enabled - default behavior)
+      if (enabledTypes.length > 0) {
+        base = base.filter((n) => {
+          const nType = n.NotificationType || '';
+          // Always include critical types
+          if (criticalTypes.includes(nType)) {
+            return true;
+          }
+          // Include if type is in enabled list
+          return enabledTypes.includes(nType);
+        });
+      }
+      // If enabledTypes is empty, show all notifications (default behavior)
+    }
+
+    // Text search filter
     if (query.trim()) {
       const q = query.toLowerCase();
 
@@ -304,8 +387,9 @@ export default function NotificationModal({
       );
     }
 
+    // Tab filters
     if (selectedTab === "unread") {
-      base = base.filter((n) => !(n.IsRead || n.is_read));
+      base = base.filter((n) => !(n.IsRead || n.isRead || n.is_read));
     } else if (selectedTab === "system") {
       base = base.filter((n) => {
         const nType = (n.NotificationType || "").toLowerCase();
@@ -320,19 +404,48 @@ export default function NotificationModal({
           const filterType = qEventType.toLowerCase();
           
           if (filterType === "request") {
-            return nType.includes("request") || nType.includes("newrequest") || nType.includes("newsignuprequest");
+            return (
+              nType === "request.pending-review" ||
+              nType.includes("request") ||
+              nType.includes("newrequest") ||
+              nType.includes("newsignuprequest")
+            );
           }
           if (filterType === "reschedule") {
-            return nType.includes("reschedule") || nType.includes("adminrescheduled");
+            return (
+              nType === "request.rescheduled" ||
+              nType.includes("reschedule") ||
+              nType.includes("adminrescheduled")
+            );
           }
           if (filterType === "approve") {
-            return nType.includes("approve") || nType.includes("accept") || nType.includes("adminaccepted") || nType.includes("coordinatorapproved") || nType.includes("requestcompleted") || nType.includes("signuprequestapproved");
+            return (
+              nType === "request.approved" ||
+              nType === "event.published" ||
+              nType.includes("approve") ||
+              nType.includes("accept") ||
+              nType.includes("adminaccepted") ||
+              nType.includes("coordinatorapproved") ||
+              nType.includes("requestcompleted") ||
+              nType.includes("signuprequestapproved")
+            );
           }
           if (filterType === "delete") {
-            return nType.includes("delete") || nType.includes("cancel") || nType.includes("requestdeleted") || nType.includes("requestcancelled");
+            return (
+              nType === "request.rejected" ||
+              nType === "event.cancelled" ||
+              nType === "event.deleted" ||
+              nType.includes("delete") ||
+              nType.includes("cancel") ||
+              nType.includes("requestdeleted") ||
+              nType.includes("requestcancelled")
+            );
           }
           if (filterType === "assign") {
-            return nType.includes("assign");
+            return (
+              nType === "event.staff-added" ||
+              nType.includes("assign")
+            );
           }
           
           return nType === filterType;
@@ -353,7 +466,7 @@ export default function NotificationModal({
     }
 
     return base;
-  }, [notifications, query, selectedTab, qEventType, qDateRange]);
+  }, [notifications, query, selectedTab, qEventType, qDateRange, notificationPreferences]);
 
   const groupedNotifications = useMemo(() => {
     const groups: { [key: string]: any[] } = {};
@@ -384,9 +497,10 @@ export default function NotificationModal({
   }, [filteredNotifications]);
 
   const counts = useMemo(() => {
-    const all = notifications.length;
-    const unread = notifications.filter((n) => !(n.IsRead || n.is_read)).length;
-    const system = notifications.filter(
+    // Use filteredNotifications for counts to reflect preferences
+    const all = filteredNotifications.length;
+    const unread = filteredNotifications.filter((n) => !(n.IsRead || n.isRead || n.is_read)).length;
+    const system = filteredNotifications.filter(
       (n) => {
         const nType = (n.NotificationType || "").toLowerCase();
         return nType.includes("signup") || nType.includes("cancel") || nType.includes("delete");
@@ -394,7 +508,7 @@ export default function NotificationModal({
     ).length;
 
     return { all, unread, system };
-  }, [notifications]);
+  }, [filteredNotifications]);
 
   // --- Presentation Helpers ---
   const formatTime = (dateStr: string | number) => {
@@ -408,14 +522,25 @@ export default function NotificationModal({
   const getIconAndStyle = (type: string) => {
     const t = (type || "").toLowerCase();
 
-    if (t.includes("reschedule") || t.includes("adminrescheduled")) {
+    // New notification types (dot notation)
+    if (t === "request.rescheduled" || t.includes("reschedule") || t.includes("adminrescheduled")) {
       return {
         icon: <Clock className="w-[18px] h-[18px]" />,
         bg: "bg-[#FFF8E1]",
         text: "text-[#F59E0B]",
       };
     }
-    if (t.includes("delete") || t.includes("cancel") || t.includes("reject") || t.includes("requestrejected") || t.includes("requestcancelled") || t.includes("requestdeleted")) {
+    if (
+      t === "request.rejected" ||
+      t === "event.cancelled" ||
+      t === "event.deleted" ||
+      t.includes("delete") ||
+      t.includes("cancel") ||
+      t.includes("reject") ||
+      t.includes("requestrejected") ||
+      t.includes("requestcancelled") ||
+      t.includes("requestdeleted")
+    ) {
       return {
         icon: <TrashBin className="w-[18px] h-[18px]" />,
         bg: "bg-[#FFEAEA]",
@@ -423,6 +548,8 @@ export default function NotificationModal({
       };
     }
     if (
+      t === "request.approved" ||
+      t === "event.published" ||
       t.includes("accept") ||
       t.includes("approve") ||
       t.includes("confirm") ||
@@ -437,14 +564,23 @@ export default function NotificationModal({
         text: "text-[#1E8E3E]",
       };
     }
-    if (t.includes("assign") || t.includes("coordinator")) {
+    if (
+      t === "event.staff-added" ||
+      t.includes("assign") ||
+      t.includes("coordinator")
+    ) {
       return {
         icon: <Persons className="w-[18px] h-[18px]" />,
         bg: "bg-[#F3F4F6]",
         text: "text-[#4B5563]",
       };
     }
-    if (t.includes("request") || t.includes("newrequest") || t.includes("newsignuprequest")) {
+    if (
+      t === "request.pending-review" ||
+      t.includes("request") ||
+      t.includes("newrequest") ||
+      t.includes("newsignuprequest")
+    ) {
       return {
         icon: (
           <div className="w-full h-full rounded-full bg-gradient-to-br from-[#FCD34D] to-[#F87171]" />
@@ -452,6 +588,20 @@ export default function NotificationModal({
         bg: "p-0 overflow-hidden",
         text: "",
         isGradient: true,
+      };
+    }
+    if (t === "event.edited") {
+      return {
+        icon: <Person className="w-[18px] h-[18px]" />,
+        bg: "bg-[#E0E7FF]",
+        text: "text-[#4F46E5]",
+      };
+    }
+    if (t === "newmessage" || t === "messageread") {
+      return {
+        icon: <Person className="w-[18px] h-[18px]" />,
+        bg: "bg-[#F0F9FF]",
+        text: "text-[#0284C7]",
       };
     }
 
@@ -649,6 +799,13 @@ export default function NotificationModal({
                 </div>
               </div>
 
+              {/* Error Display */}
+              {error && (
+                <div className="px-4 md:px-6 py-3 bg-red-50 border-b border-red-200">
+                  <p className="text-sm text-red-800">{error}</p>
+                </div>
+              )}
+
               {/* Scrollable List */}
               <ScrollShadow
                 className="flex-1 overflow-y-auto bg-white"
@@ -660,7 +817,9 @@ export default function NotificationModal({
                   </div>
                 ) : filteredNotifications.length === 0 ? (
                   <div className="flex flex-col items-center justify-center h-40 text-gray-400">
-                    <p className="text-xs">No notifications found</p>
+                    <p className="text-xs">
+                      {error ? "Failed to load notifications" : "No notifications found"}
+                    </p>
                   </div>
                 ) : (
                   <div className="pb-20 md:pb-6">
@@ -674,10 +833,15 @@ export default function NotificationModal({
 
                         <div className="space-y-1 px-3 md:px-4">
                           {group.items.map((n) => {
-                            const isRead = n.IsRead || n.is_read;
+                            // Check both IsRead and isRead for compatibility
+                            const isRead = n.IsRead || n.isRead || n.is_read;
                             const { icon, bg, text } = getIconAndStyle(
                               n.NotificationType,
                             );
+                            
+                            // Check if this is a critical notification
+                            const criticalTypes = ['request.approved', 'request.rejected', 'request.rescheduled'];
+                            const isCritical = criticalTypes.includes(n.NotificationType || '');
 
                             return (
                               <div
@@ -699,9 +863,16 @@ export default function NotificationModal({
                                 </div>
 
                                 <div className="flex-1 min-w-0 pt-0.5">
-                                  <p className={`text-sm md:text-xs leading-snug ${isRead ? 'text-gray-500' : 'text-gray-900'}`}>
-                                    {n.Message || n.message}
-                                  </p>
+                                  <div className="flex items-start gap-2">
+                                    <p className={`text-sm md:text-xs leading-snug flex-1 ${isRead ? 'text-gray-500' : 'text-gray-900'}`}>
+                                      {n.Message || n.message}
+                                    </p>
+                                    {isCritical && (
+                                      <span className="text-[10px] font-medium text-red-600 bg-red-50 px-1.5 py-0.5 rounded" title="Critical notification">
+                                        Required
+                                      </span>
+                                    )}
+                                  </div>
                                   <div className="mt-2 flex items-center">
                                     <div className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full border border-gray-200 bg-white">
                                       <Clock className="w-3 h-3 text-gray-400" />

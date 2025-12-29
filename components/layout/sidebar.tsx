@@ -15,6 +15,7 @@ import { usePathname, useRouter } from "next/navigation";
 
 import { getUserInfo } from "@/utils/getUserInfo";
 import { fetchJsonWithAuth } from "@/utils/fetchWithAuth";
+import { decodeJwt } from "@/utils/decodeJwt";
 import { useSidebarNavigation } from "@/hooks/useSidebarNavigation";
 
 import { debug } from "@/utils/devLogger";
@@ -142,74 +143,60 @@ export default function Sidebar({
   ];
   const [unreadCount, setUnreadCount] = useState<number | null>(null);
 
+  // Helper to get current user's ObjectId
+  const getCurrentUserId = useCallback(() => {
+    try {
+      // Try to get from localStorage user data
+      const rawUser = localStorage.getItem("unite_user");
+      if (rawUser) {
+        const user = JSON.parse(rawUser);
+        const userId = user?._id || user?.id || user?.User_ID || user?.userId || user?.ID;
+        if (userId) {
+          return String(userId);
+        }
+      }
+
+      // Fallback: decode JWT token
+      const token = localStorage.getItem("unite_token") || sessionStorage.getItem("unite_token");
+      if (token) {
+        const decoded = decodeJwt(token);
+        const tokenUserId = decoded?.id || decoded?.userId || decoded?._id;
+        if (tokenUserId) {
+          return String(tokenUserId);
+        }
+      }
+
+      return null;
+    } catch (error) {
+      console.error("Error getting current user ID:", error);
+      return null;
+    }
+  }, []);
+
   const loadUnreadCount = useCallback(async () => {
     try {
-      const stored = getUserInfo();
-      const parsed = stored.raw || null;
-      // Try many common shapes for recipient id (coordinator, stakeholder, generic id)
-      let recipientId: string | null = null;
+      const userId = getCurrentUserId();
 
-      if (parsed) {
-        recipientId =
-          parsed?.Coordinator_ID ||
-          parsed?.CoordinatorId ||
-          parsed?.coordinator_id ||
-          parsed?.coordinatorId ||
-          parsed?.Stakeholder_ID ||
-          parsed?.StakeholderId ||
-          parsed?.stakeholder_id ||
-          parsed?.stakeholderId ||
-          parsed?.id ||
-          parsed?.ID ||
-          parsed?.user_id ||
-          parsed?.user?.id ||
-          null;
+      if (!userId) {
+        setUnreadCount(0);
+        return;
       }
 
-      // Determine recipient type: Admin, Coordinator, or Stakeholder
-      let recipientType = "Coordinator";
-
-      if (stored.isAdmin) {
-        recipientType = "Admin";
-      } else if (parsed) {
-        const roleLower = (stored.role || "").toLowerCase();
-        const hasStakeholderId = !!(
-          parsed?.Stakeholder_ID ||
-          parsed?.StakeholderId ||
-          parsed?.stakeholder_id ||
-          parsed?.stakeholderId
-        );
-        const hasCoordinatorId = !!(
-          parsed?.Coordinator_ID ||
-          parsed?.CoordinatorId ||
-          parsed?.coordinator_id ||
-          parsed?.coordinatorId
-        );
-
-        if (hasStakeholderId || roleLower.includes("stakeholder"))
-          recipientType = "Stakeholder";
-        else if (hasCoordinatorId || roleLower.includes("coordinator"))
-          recipientType = "Coordinator";
-      }
-
-      if (!recipientId) return;
-      const base = (process.env.NEXT_PUBLIC_API_URL || "").replace(/\/$/, "");
+      // Use new format: recipientUserId (ObjectId)
       const params = new URLSearchParams({
-        recipientId: String(recipientId),
-        recipientType,
+        recipientUserId: String(userId),
       });
-      const url = base
-        ? `${base}/api/notifications/unread-count?${params.toString()}`
-        : `/api/notifications/unread-count?${params.toString()}`;
+      const url = `/api/notifications/unread-count?${params.toString()}`;
       const body: any = await fetchJsonWithAuth(url);
       const count =
         (body?.data && body.data.unread_count) || body?.unread_count || 0;
 
       setUnreadCount(Number(count));
     } catch (e) {
-      // ignore failures silently
+      // ignore failures silently, but set count to 0 on error
+      setUnreadCount(0);
     }
-  }, []);
+  }, [getCurrentUserId]);
 
   useEffect(() => {
     loadUnreadCount();
@@ -341,14 +328,9 @@ export default function Sidebar({
                   );
                 })()}
                 {(() => {
-                  // No badge when explicitly zero: show just a faint outline circle
+                  // No badge when count is 0 or null - completely hide it
                   if (!unreadCount || unreadCount === 0) {
-                    return (
-                      <span
-                        aria-hidden="true"
-                        className="absolute -top-1 -right-1 inline-block w-3 h-3 rounded-full border border-default-300 bg-transparent"
-                      />
-                    );
+                    return null;
                   }
 
                   // When active, invert colors: bell container becomes red (handled by link classes)
