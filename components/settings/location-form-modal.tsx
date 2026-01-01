@@ -299,7 +299,7 @@ export default function LocationFormModal({
                 errorMessage={errors.type}
               >
                 {LOCATION_TYPES.map((type) => (
-                  <SelectItem key={type.value} value={type.value}>
+                  <SelectItem key={type.value}>
                     {type.label}
                   </SelectItem>
                 ))}
@@ -320,7 +320,7 @@ export default function LocationFormModal({
                   description={`Must be of type: ${VALID_PARENT_TYPES[type].join(", ")}`}
                 >
                   {validParentOptions.map((loc) => (
-                    <SelectItem key={loc._id} value={loc._id}>
+                    <SelectItem key={loc._id}>
                       {getLocationPath(loc)}
                     </SelectItem>
                   ))}

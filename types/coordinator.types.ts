@@ -65,6 +65,7 @@ export interface Role {
   name: string;
   description?: string;
   isSystemRole: boolean;
+  authority?: number;
   permissions: Array<{
     resource: string;
     actions: string[];

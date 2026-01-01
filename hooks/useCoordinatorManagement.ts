@@ -232,7 +232,7 @@ export function useCoordinatorManagement(): UseCoordinatorManagementReturn {
         // No need to filter by capabilities here - backend already did that via listStaffByCapability()
         setStaff(filteredList);
       } else {
-        throw new Error(response.message || 'Failed to fetch staff');
+        throw new Error('Failed to fetch staff');
       }
     } catch (err: any) {
       console.error('Failed to fetch staff:', err);
@@ -268,8 +268,11 @@ export function useCoordinatorManagement(): UseCoordinatorManagementReturn {
         });
 
         // Add to list
-        setStaff(prev => [...prev, staffItem]);
+        if (!staffItem) {
+          throw new Error('Failed to transform created staff member');
+        }
         
+        setStaff(prev => [...prev, staffItem]);
         return staffItem;
       }
       throw new Error(response.message || 'Failed to create staff');

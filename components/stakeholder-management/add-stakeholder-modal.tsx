@@ -445,7 +445,7 @@ export default function AddStakeholderModal({
                   }}
                 >
                   {municipalityOptions.map((muni) => {
-                    const muniId = muni._id || muni.id
+                    const muniId = muni._id
                     const muniName = muni.name || String(muniId)
                     return (
                       <SelectItem key={String(muniId)} textValue={muniName}>
@@ -486,7 +486,7 @@ export default function AddStakeholderModal({
                     }}
                   >
                     {barangayOptions.map((barangay) => {
-                      const barangayId = barangay._id || barangay.id
+                      const barangayId = barangay._id
                       const barangayName = barangay.name || String(barangayId)
                       return (
                         <SelectItem key={String(barangayId)} textValue={barangayName}>

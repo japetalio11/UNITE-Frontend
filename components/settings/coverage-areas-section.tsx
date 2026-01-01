@@ -201,14 +201,16 @@ export default function CoverageAreasSection({ isOpen }: CoverageAreasSectionPro
           className="w-full sm:w-64"
           size="sm"
         >
-          <SelectItem key="all" value="">
+          <SelectItem key="all">
             All Organizations
           </SelectItem>
-          {organizations.map((org) => (
-            <SelectItem key={org._id} value={org._id}>
-              {org.name}
-            </SelectItem>
-          ))}
+          <>
+            {organizations.map((org) => (
+              <SelectItem key={org._id}>
+                {org.name}
+              </SelectItem>
+            ))}
+          </>
         </Select>
       </div>
 

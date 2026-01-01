@@ -84,7 +84,7 @@ export default function NotificationSettings({ isOpen }: NotificationSettingsPro
   const handleNotificationTypeChange = (selected: string[]) => {
     // Ensure critical types are always included
     const criticalValues = CRITICAL_TYPES.map((t) => t.value);
-    const allSelected = [...new Set([...criticalValues, ...selected])];
+    const allSelected = Array.from(new Set([...criticalValues, ...selected]));
     
     // If all optional types are selected, we can use empty array (means all enabled)
     // But we'll keep explicit list for clarity
@@ -278,13 +278,13 @@ export default function NotificationSettings({ isOpen }: NotificationSettingsPro
                   isDisabled={saving || !localPreferences.emailNotificationsEnabled}
                   aria-label="Digest frequency"
                 >
-                  <SelectItem key="hourly" value="hourly">
+                  <SelectItem key="hourly">
                     Hourly
                   </SelectItem>
-                  <SelectItem key="daily" value="daily">
+                  <SelectItem key="daily">
                     Daily
                   </SelectItem>
-                  <SelectItem key="never" value="never">
+                  <SelectItem key="never">
                     Never (queue only)
                   </SelectItem>
                 </Select>
@@ -312,7 +312,7 @@ export default function NotificationSettings({ isOpen }: NotificationSettingsPro
             </div>
             <div className="w-full md:w-auto">
               <Switch
-                isSelected={isMuted ?? false}
+                isSelected={!!isMuted}
                 onValueChange={handleMuteToggle}
                 aria-label="Mute notifications"
                 isDisabled={saving}

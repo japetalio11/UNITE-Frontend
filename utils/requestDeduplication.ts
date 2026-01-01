@@ -140,7 +140,7 @@ export function cancelMatchingRequests(pattern: string | RegExp): void {
     ? new RegExp(pattern.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
     : pattern;
   
-  for (const [key, request] of inFlightRequests.entries()) {
+  for (const [key, request] of Array.from(inFlightRequests.entries())) {
     if (regex.test(key)) {
       request.abortController.abort();
       inFlightRequests.delete(key);
@@ -152,7 +152,7 @@ export function cancelMatchingRequests(pattern: string | RegExp): void {
  * Clear all in-flight requests
  */
 export function clearAllInFlightRequests(): void {
-  for (const request of inFlightRequests.values()) {
+  for (const request of Array.from(inFlightRequests.values())) {
     request.abortController.abort();
   }
   inFlightRequests.clear();

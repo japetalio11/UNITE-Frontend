@@ -114,7 +114,8 @@ export default function EditStaffModal({
       setPhoneNumber(staff.phoneNumber || "");
       setNewPassword("");
       setValidationErrors([]);
-      setCurrentRoles(staff.roles || []);
+      // Don't set currentRoles from staff.roles - loadStaffDetails will load full Role objects
+      setCurrentRoles([]);
       setCurrentCoverageAreas(staff.coverageAreas || []);
 
       // Load coordinator's current organizations
@@ -135,7 +136,7 @@ export default function EditStaffModal({
     const rolesToUse = assignableRoles.length > 0 ? assignableRoles : allRoles;
     
     if (rolesToUse.length > 0 && currentRoles.length > 0) {
-      const assignedRoleIds = new Set(currentRoles.map((r) => r.id));
+      const assignedRoleIds = new Set(currentRoles.map((r) => r._id));
       setAvailableRoles(rolesToUse.filter((r) => !assignedRoleIds.has(r._id)));
     } else if (rolesToUse.length > 0) {
       setAvailableRoles(rolesToUse);
@@ -550,7 +551,7 @@ export default function EditStaffModal({
                     <div className="space-y-2">
                       {currentRoles.map((role) => (
                         <div
-                          key={role._id || role.id || `role-${role.code || role.name}`}
+                          key={role._id || `role-${role.code || role.name}`}
                           className="flex items-center justify-between p-2 bg-gray-50 rounded border border-gray-200"
                         >
                           <div>
@@ -565,7 +566,7 @@ export default function EditStaffModal({
                             variant="light"
                             color="danger"
                             isIconOnly
-                            onPress={() => handleRemoveRole(role.id)}
+                            onPress={() => handleRemoveRole(role._id)}
                             className="text-xs"
                           >
                             <Trash className="w-4 h-4" />

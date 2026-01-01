@@ -161,50 +161,15 @@ export const useAllowedActionSet = (payload: {
       }
     };
 
-    // Log what we're about to visit
-    console.log(`[EventCard Utils] 🔍 Starting extraction for request ${requestId}:`, {
-      requestId,
-      hasRequest: !!request,
-      hasFullRequest: !!fullRequest,
-      hasResolvedRequest: !!resolvedRequest,
-      requestAllowedActions: request?.allowedActions,
-      fullRequestAllowedActions: fullRequest?.allowedActions,
-      resolvedRequestAllowedActions: resolvedRequest?.allowedActions,
-      requestIdMatch: (request?.Request_ID || request?.RequestId || request?._id) === requestId,
-      fullRequestIdMatch: (fullRequest?.Request_ID || fullRequest?.RequestId || fullRequest?._id) === requestId,
-      resolvedRequestIdMatch: (resolvedRequest?.Request_ID || resolvedRequest?.RequestId || resolvedRequest?._id) === requestId,
-    });
-
     visit(request, 0, 4, 'request');
     visit(fullRequest, 0, 4, 'fullRequest');
     visit(resolvedRequest, 0, 4, 'resolvedRequest');
 
-    // Log extraction results with detailed debugging
     const extractedActions = Array.from(set);
     const hasReschedule = extractedActions.includes('reschedule') || extractedActions.includes('resched');
     
     if (foundPaths.length > 0) {
-      console.log(`[EventCard Utils] ✅ allowedActions extracted for request ${requestId}:`, {
-        requestId,
-        foundPaths,
-        extractedActions,
-        actionCount: extractedActions.length,
-        hasReschedule,
-        hasRequest: !!request,
-        hasFullRequest: !!fullRequest,
-        hasResolvedRequest: !!resolvedRequest,
-        requestAllowedActions: request?.allowedActions,
-        fullRequestAllowedActions: fullRequest?.allowedActions,
-        resolvedRequestAllowedActions: resolvedRequest?.allowedActions,
-        // Debug: show raw values before normalization
-        rawRequestActions: request?.allowedActions ? Array.from(request.allowedActions) : null,
-        rawFullRequestActions: fullRequest?.allowedActions ? Array.from(fullRequest.allowedActions) : null,
-        rawResolvedRequestActions: resolvedRequest?.allowedActions ? Array.from(resolvedRequest.allowedActions) : null,
-        // Check if reschedule was in any of the sources
-        requestHasReschedule: request?.allowedActions?.includes('reschedule') || request?.allowedActions?.includes('resched'),
-        fullRequestHasReschedule: fullRequest?.allowedActions?.includes('reschedule') || fullRequest?.allowedActions?.includes('resched'),
-        resolvedRequestHasReschedule: resolvedRequest?.allowedActions?.includes('reschedule') || resolvedRequest?.allowedActions?.includes('resched'),
-      });
+      // Debug logging removed
     } else {
       console.warn(`[EventCard Utils] ⚠️ No allowedActions found for request ${requestId}:`, {
         requestId,

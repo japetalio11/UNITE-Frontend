@@ -144,14 +144,16 @@ export default function AssignmentsSection({ isOpen }: AssignmentsSectionProps) 
           className="w-full sm:w-64"
           size="sm"
         >
-          <SelectItem key="all" value="">
+          <SelectItem key="all">
             All Coverage Areas
           </SelectItem>
-          {coverageAreas.map((ca) => (
-            <SelectItem key={ca._id} value={ca._id}>
-              {ca.name}
-            </SelectItem>
-          ))}
+          <>
+            {coverageAreas.map((ca) => (
+              <SelectItem key={ca._id}>
+                {ca.name}
+              </SelectItem>
+            ))}
+          </>
         </Select>
       </div>
 

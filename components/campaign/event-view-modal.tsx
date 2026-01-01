@@ -411,13 +411,13 @@ export const EventViewModal: React.FC<EventViewModalProps> = ({
           finalProvinceId = String(districtObj.province);
         }
         // If district is found in cache but no province, try to get from parent
-        if (!finalProvinceId && districtObj.parent) {
+        if (!finalProvinceId && (districtObj as any).parent) {
           const parentLocation = Object.values(locations.provinces).find(
-            (p: any) => String(p._id) === String(districtObj.parent)
+            (p: any) => String(p._id) === String((districtObj as any).parent)
           ) || Object.values(locations.districts).find(
-            (d: any) => String(d._id) === String(districtObj.parent)
+            (d: any) => String(d._id) === String((districtObj as any).parent)
           );
-          if (parentLocation && parentLocation.type === 'province') {
+          if (parentLocation && (parentLocation as any).type === 'province') {
             finalProvinceId = String(parentLocation._id);
           }
         }

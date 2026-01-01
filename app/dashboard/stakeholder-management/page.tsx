@@ -327,7 +327,7 @@ export default function StakeholderManagement() {
           // Try multiple paths to get userId - including JWT token fallback
           let userId = info?.raw?.id || 
                        info?.raw?._id || 
-                       info?.id || 
+                       (info as any)?.id || 
                        info?.raw?.User_ID || 
                        info?.raw?.userId ||
                        null;
@@ -364,13 +364,13 @@ export default function StakeholderManagement() {
               permissions = parsedUser?.permissions || 
                            parsedUser?.Permissions || 
                            parsedUser?.user?.permissions ||
-                           parsedUser?.data?.permissions ||
-                           info?.raw?.permissions || 
-                           info?.permissions || 
-                           [];
+                            parsedUser?.data?.permissions ||
+                            info?.raw?.permissions || 
+                            (info as any)?.permissions || 
+                            [];
             }
           } catch (e) {
-            permissions = info?.raw?.permissions || info?.permissions || [];
+            permissions = info?.raw?.permissions || (info as any)?.permissions || [];
           }
           
           const hasWildcardPermissions = Array.isArray(permissions) && 

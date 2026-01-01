@@ -612,7 +612,7 @@ export function useEventUserData(
 
     // Refresh functions
     refreshCoordinators: fetchCoordinators,
-    refreshStakeholders: () => coordinator && fetchStakeholders(coordinator),
+    refreshStakeholders: () => coordinator ? fetchStakeholders(coordinator) : Promise.resolve(),
   };
 }
 

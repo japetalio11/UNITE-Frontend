@@ -52,16 +52,6 @@ const GenericCreateEventModal: React.FC<GenericCreateEventModalProps> = ({
   const [location, setLocation] = useState("");
   const [email, setEmail] = useState("");
   const [contactNumber, setContactNumber] = useState("");
-  
-  // Auto-fill email and phone when user data is available
-  useEffect(() => {
-    if (isOpen && userEmail && !email) {
-      setEmail(userEmail);
-    }
-    if (isOpen && userPhone && !contactNumber) {
-      setContactNumber(userPhone);
-    }
-  }, [isOpen, userEmail, userPhone, email, contactNumber]);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
   const [localSubmitting, setLocalSubmitting] = useState(false);
@@ -85,6 +75,16 @@ const GenericCreateEventModal: React.FC<GenericCreateEventModalProps> = ({
     userPhone,
     isSysAdmin,
   } = useEventUserData(isOpen, API_URL);
+
+  // Auto-fill email and phone when user data is available
+  useEffect(() => {
+    if (isOpen && userEmail && !email) {
+      setEmail(userEmail);
+    }
+    if (isOpen && userPhone && !contactNumber) {
+      setContactNumber(userPhone);
+    }
+  }, [isOpen, userEmail, userPhone, email, contactNumber]);
 
   const handleCreate = async () => {
     if (date) {

@@ -51,12 +51,24 @@ export default function CoverageAssignmentModal({
       ? locations.filter(loc => loc.type !== 'barangay')
       : locations;
     
+    // Helper function to normalize Location from useLocations to Location from coordinator.types
+    const normalizeLocation = (loc: import("@/hooks/useLocations").Location): Location => {
+      return {
+        _id: loc._id,
+        name: loc.name,
+        type: loc.type,
+        code: loc.code,
+        parent: typeof loc.parent === 'string' ? loc.parent : (loc.parent as any)?._id || undefined,
+        isActive: loc.isActive,
+      };
+    };
+    
     // Create a map of all locations by ID
     const locationMap = new Map<string, Location & { children: Location[] }>();
     
     // First, create entries for all locations
     filteredLocations.forEach((loc) => {
-      locationMap.set(loc._id, { ...loc, children: [] });
+      locationMap.set(loc._id, { ...normalizeLocation(loc), children: [] });
     });
 
     // Build parent-child relationships
@@ -69,7 +81,7 @@ export default function CoverageAssignmentModal({
     filteredLocations.forEach((loc) => {
       if (loc.type === 'province') {
         // This is a province
-        const province = { ...loc, children: [] as Array<Location & { children: Location[] }> };
+        const province = { ...normalizeLocation(loc), children: [] as Array<Location & { children: Location[] }> };
         
         // Find districts that belong to this province
         filteredLocations.forEach((district) => {
@@ -89,7 +101,7 @@ export default function CoverageAssignmentModal({
                 : municipality.parent?._id;
               
               if (municipality.type === 'municipality' && munParentId === district._id) {
-                dist.children.push(municipality);
+                dist.children.push(normalizeLocation(municipality));
               }
             });
             
@@ -120,7 +132,7 @@ export default function CoverageAssignmentModal({
               : municipality.parent?._id;
             
             if (municipality.type === 'municipality' && munParentId === loc._id) {
-              district.children.push(municipality);
+              district.children.push(normalizeLocation(municipality));
             }
           });
           
@@ -130,11 +142,11 @@ export default function CoverageAssignmentModal({
       } else if (loc.type === 'municipality') {
         // Municipality without a district parent (standalone)
         if (!parentId || !locationMap.has(parentId)) {
-          standaloneLocations.push(loc);
+          standaloneLocations.push(normalizeLocation(loc));
         }
       } else if (loc.type !== 'province' && loc.type !== 'barangay') {
         // Other types (custom, etc.) - but not provinces (already handled) and not barangays (filtered if hideBarangays)
-        standaloneLocations.push(loc);
+        standaloneLocations.push(normalizeLocation(loc));
       }
     });
 

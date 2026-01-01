@@ -146,7 +146,7 @@ export function useStakeholderManagement(): UseStakeholderManagementReturn {
       return true; // System admin can choose any
     }
     return organizationOptions.some(org => {
-      const id = org._id || org.id;
+      const id = org._id;
       return String(id) === String(organizationId);
     });
   }, [canChooseOrganization, organizationOptions]);

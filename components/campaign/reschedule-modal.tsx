@@ -38,11 +38,9 @@ const RescheduleModal: React.FC<Props> = ({
   const [isSubmitting, setIsSubmitting] = React.useState(false);
 
   const handleConfirm = async () => {
-    console.log("[RescheduleModal] handleConfirm called");
     setValidationError(null);
     
     if (!rescheduledDate) {
-      console.log("[RescheduleModal] Validation failed: No date selected");
       setValidationError("Please choose a new date");
       return;
     }
@@ -53,7 +51,6 @@ const RescheduleModal: React.FC<Props> = ({
       const today = new Date();
       today.setHours(0, 0, 0, 0);
       if (rs.getTime() < today.getTime()) {
-        console.log("[RescheduleModal] Validation failed: Date is in the past");
         setValidationError("Rescheduled date cannot be before today");
         return;
       }
@@ -64,7 +61,6 @@ const RescheduleModal: React.FC<Props> = ({
     }
 
     if (!note || note.trim().length === 0) {
-      console.log("[RescheduleModal] Validation failed: No note provided");
       setValidationError("Please provide a reason for rescheduling");
       return;
     }
@@ -76,16 +72,9 @@ const RescheduleModal: React.FC<Props> = ({
           ? rescheduledDate.toISOString()
           : new Date(rescheduledDate).toISOString();
 
-    console.log("[RescheduleModal] Calling onConfirm with:", {
-      currentDate: currentDate || "",
-      newDateISO,
-      note: note.trim(),
-    });
-
     setIsSubmitting(true);
     try {
       await onConfirm(currentDate || "", newDateISO, note.trim());
-      console.log("[RescheduleModal] onConfirm completed successfully");
       
       setRescheduledDate(null);
       setNote("");

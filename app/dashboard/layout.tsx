@@ -62,8 +62,6 @@ export default function SysAdminDashboardLayout({ children }: DashboardLayoutPro
     <ProtectedRoute>
       <div className="h-screen flex">
         <Sidebar
-          initialShowCoordinator={initialShowCoordinator}
-          initialShowStakeholder={initialShowStakeholder}
           role={userInfoProp?.role}
           userInfo={userInfoProp}
         />

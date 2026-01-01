@@ -13,15 +13,17 @@ type Province = {
 type District = {
   _id: string;
   name: string;
-  province: string; // province _id
+  province?: string; // province _id
+  parent?: string; // parent _id (alternative to province)
   // other fields
 };
 
 type Municipality = {
   _id: string;
   name: string;
-  district: string; // district _id
-  province: string; // province _id
+  district?: string; // district _id
+  province?: string; // province _id
+  parent?: string; // parent _id (alternative to district)
   // other fields
 };
 

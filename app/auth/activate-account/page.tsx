@@ -1,12 +1,12 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, Suspense } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Button } from "@heroui/button";
 import { Link } from "@heroui/link";
 import { Eye, EyeSlash, Check } from "@gravity-ui/icons";
 
-export default function ActivateAccount() {
+function ActivateAccountContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const [token, setToken] = useState<string | null>(null);
@@ -277,6 +277,23 @@ export default function ActivateAccount() {
         </Link>
       </div>
     </div>
+  );
+}
+
+export default function ActivateAccount() {
+  return (
+    <Suspense fallback={
+      <div className="w-full max-w-[400px] mx-auto">
+        <div className="flex items-center justify-center min-h-[400px]">
+          <div className="text-center">
+            <div className="inline-block h-8 w-8 border-4 border-danger-600 border-t-transparent rounded-full animate-spin mb-4" />
+            <p className="text-sm text-gray-600">Loading...</p>
+          </div>
+        </div>
+      </div>
+    }>
+      <ActivateAccountContent />
+    </Suspense>
   );
 }
 

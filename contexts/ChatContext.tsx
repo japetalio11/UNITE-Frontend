@@ -12,6 +12,7 @@ import {
   type ChatConversation,
   type ChatRecipient
 } from '@/services/chatService';
+import { fetchWithAuth } from '@/utils/fetchWithAuth';
 
 // Use types from chatService
 type User = ChatUser;
@@ -226,7 +227,16 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
     setLoadingRecipients(true);
     try {
       const recipientsData = await fetchRecipients();
-      setRecipients(recipientsData);
+      // Convert ChatRecipient[] to ChatUser[]
+      const users: User[] = recipientsData.map((r) => ({
+        id: r.id,
+        name: r.name,
+        role: r.role,
+        email: r.email,
+        authority: r.authority,
+        type: (r.type === 'staff' || r.type === 'stakeholder') ? r.type : undefined,
+      }));
+      setRecipients(users);
     } catch (error) {
       // Silently fail recipient loading
     } finally {

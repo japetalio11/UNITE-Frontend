@@ -268,7 +268,7 @@ export default function CoverageAreaFormModal({
                     description="Optional: Link this coverage area to an organization"
                   >
                     {organizations.map((org) => (
-                      <SelectItem key={org._id} value={org._id}>
+                      <SelectItem key={org._id}>
                         {org.name} ({org.type})
                       </SelectItem>
                     ))}

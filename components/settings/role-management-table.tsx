@@ -184,7 +184,7 @@ export default function RoleManagementTable({
                     </DropdownTrigger>
                     <DropdownMenu aria-label="Role actions">
                       <DropdownSection>
-                        {onView && (
+                        {onView ? (
                           <DropdownItem
                             key="view"
                             startContent={<View className="h-4 w-4" />}
@@ -192,8 +192,8 @@ export default function RoleManagementTable({
                           >
                             View Details
                           </DropdownItem>
-                        )}
-                        {canUpdate && (
+                        ) : null}
+                        {canUpdate ? (
                           <DropdownItem
                             key="edit"
                             startContent={<Edit3 className="h-4 w-4" />}
@@ -202,8 +202,8 @@ export default function RoleManagementTable({
                           >
                             Edit
                           </DropdownItem>
-                        )}
-                        {canDelete && (
+                        ) : null}
+                        {canDelete ? (
                           <DropdownItem
                             key="delete"
                             className="text-danger"
@@ -214,7 +214,7 @@ export default function RoleManagementTable({
                           >
                             {deletingId === role._id ? "Deleting..." : "Delete"}
                           </DropdownItem>
-                        )}
+                        ) : null}
                       </DropdownSection>
                     </DropdownMenu>
                   </Dropdown>

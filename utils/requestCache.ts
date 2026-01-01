@@ -83,7 +83,7 @@ export function invalidateCache(pattern: string | RegExp): void {
     ? new RegExp(pattern.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
     : pattern;
   
-  for (const key of cacheStore.keys()) {
+  for (const key of Array.from(cacheStore.keys())) {
     if (regex.test(key)) {
       cacheStore.delete(key);
     }
@@ -102,7 +102,7 @@ export function clearCache(): void {
  */
 export function cleanupExpiredEntries(): void {
   const now = Date.now();
-  for (const [key, entry] of cacheStore.entries()) {
+  for (const [key, entry] of Array.from(cacheStore.entries())) {
     if (!isCacheValid(entry)) {
       cacheStore.delete(key);
     }

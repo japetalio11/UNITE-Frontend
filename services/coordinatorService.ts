@@ -652,10 +652,10 @@ export function transformUserToStaffListItem(
       type: (org.organizationType || org.type || 'Other') as 'LGU' | 'NGO' | 'Hospital' | 'BloodBank' | 'RedCross' | 'Non-LGU' | 'Other',
       isPrimary: org.isPrimary || false,
     };
-  }).filter(org => org.id && org.name); // Filter out invalid organizations
+  }).filter((org: any) => org.id && org.name); // Filter out invalid organizations
 
   // Get primary organization for backward compatibility
-  const primaryOrg = transformedOrganizations.find(org => org.isPrimary) || transformedOrganizations[0] || null;
+  const primaryOrg = transformedOrganizations.find((org: any) => org.isPrimary) || transformedOrganizations[0] || null;
 
   return {
     id: user._id,

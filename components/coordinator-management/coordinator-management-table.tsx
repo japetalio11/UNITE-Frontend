@@ -167,7 +167,7 @@ export default function CoordinatorTable({
               >
                 <td className="px-6 py-4 w-12">
                   <Checkbox
-                    aria-label={`Select ${coordinator.name}`}
+                    aria-label={`Select ${(coordinator as any).name || coordinator.id}`}
                     checked={selectedCoordinators.includes(coordinator.id)}
                     size="sm"
                     onValueChange={(checked) =>
@@ -285,7 +285,7 @@ export default function CoordinatorTable({
                       <DropdownTrigger>
                         <Button
                           isIconOnly
-                          aria-label={`Actions for ${coordinator.name}`}
+                          aria-label={`Actions for ${(coordinator as any).name || coordinator.id}`}
                           className="text-gray-400 hover:text-gray-600"
                           size="sm"
                           variant="light"

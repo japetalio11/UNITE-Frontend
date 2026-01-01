@@ -36,8 +36,8 @@ export function hasCapability(
 
   const [resource, action] = capability.split('.');
 
-  // Check if user has permissions array
-  if (user.permissions && Array.isArray(user.permissions)) {
+  // Check if user has permissions array (only UserWithPermissions has this)
+  if ('permissions' in user && user.permissions && Array.isArray(user.permissions)) {
     return user.permissions.some((perm) => {
       // Defensive: handle malformed permission objects
       if (!perm || !perm.resource || !Array.isArray(perm.actions)) {
@@ -59,7 +59,8 @@ export function hasCapability(
   if (user.roles && Array.isArray(user.roles)) {
     return user.roles.some((role) => {
       // Defensive: handle missing or malformed role
-      if (!role || !role.permissions || !Array.isArray(role.permissions)) {
+      // Check if role has permissions property (Role type has it, but simplified role objects might not)
+      if (!role || !('permissions' in role) || !role.permissions || !Array.isArray(role.permissions)) {
         return false;
       }
       return role.permissions.some((perm) => {
@@ -96,8 +97,8 @@ export function getUserCapabilities(
 
   const capabilities: string[] = [];
 
-  // Check permissions array first
-  if (user.permissions && Array.isArray(user.permissions)) {
+  // Check permissions array first (only UserWithPermissions has this)
+  if ('permissions' in user && user.permissions && Array.isArray(user.permissions)) {
     for (const perm of user.permissions) {
       // Defensive: handle malformed permission objects
       if (!perm || !perm.resource || !Array.isArray(perm.actions)) {
@@ -129,10 +130,11 @@ export function getUserCapabilities(
   }
 
   // Fallback: check roles if permissions not available
-  if ((!user.permissions || capabilities.length === 0) && user.roles && Array.isArray(user.roles)) {
+  if ((!('permissions' in user) || !user.permissions || capabilities.length === 0) && user.roles && Array.isArray(user.roles)) {
     for (const role of user.roles) {
       // Defensive: handle missing or malformed role
-      if (!role || !role.permissions || !Array.isArray(role.permissions)) {
+      // Check if role has permissions property (Role type has it, but simplified role objects might not)
+      if (!role || !('permissions' in role) || !role.permissions || !Array.isArray(role.permissions)) {
         continue;
       }
       for (const perm of role.permissions) {
@@ -163,7 +165,7 @@ export function getUserCapabilities(
     }
   }
 
-  return [...new Set(capabilities)]; // Remove duplicates
+  return Array.from(new Set(capabilities)); // Remove duplicates
 }
 
 /**

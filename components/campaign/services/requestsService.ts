@@ -41,13 +41,6 @@ export const performRequestAction = async (
     body.proposedDate = proposedDate;
   }
 
-  console.log(`[performRequestAction] Sending ${action} action:`, {
-    requestId,
-    action,
-    hasNote: !!note,
-    hasProposedDate: !!body.proposedDate,
-    proposedDate: body.proposedDate,
-  });
 
   const url = `${API_BASE}/api/event-requests/${encodeURIComponent(requestId)}/actions`;
   const maxRetries = 2;
@@ -58,7 +51,6 @@ export const performRequestAction = async (
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     try {
       if (attempt > 0) {
-        console.log(`[performRequestAction] Retry attempt ${attempt}/${maxRetries} for ${action} action`);
         await new Promise(resolve => setTimeout(resolve, retryDelay * attempt));
       }
 
@@ -115,21 +107,12 @@ export const performRequestAction = async (
       }
 
       const resp = await res.json();
-      console.log(`[performRequestAction] ${action} succeeded:`, resp);
 
       // Check backend response for UI refresh flags
       const uiFlags = resp?.data?.ui;
       const shouldRefresh = uiFlags?.shouldRefresh || res.headers.get('X-Should-Refresh') === 'true';
       const shouldCloseModal = uiFlags?.shouldCloseModal || res.headers.get('X-Should-Close-Modal') === 'true';
       const cacheKeysToInvalidate = uiFlags?.cacheKeysToInvalidate || [];
-
-      console.log(`[performRequestAction] Response UI flags:`, {
-        shouldRefresh,
-        shouldCloseModal,
-        cacheKeysToInvalidate,
-        newState: uiFlags?.newState,
-        actionResult: uiFlags?.actionResult
-      });
 
       // Immediately invalidate cache if backend says to refresh
       if (shouldRefresh && typeof window !== "undefined") {
@@ -143,12 +126,10 @@ export const performRequestAction = async (
               // Convert API path to cache key pattern
               const cachePattern = new RegExp(key.replace(/^\/api\//, '').replace(/\//g, '.*'));
               invalidateCache(cachePattern);
-              console.log(`[performRequestAction] Invalidated cache for: ${key}`);
             });
           } else {
             // Fallback: invalidate all event-requests cache
             invalidateCache(/event-requests/);
-            console.log(`[performRequestAction] Invalidated all event-requests cache (fallback)`);
           }
         } catch (cacheError) {
           console.error(`[performRequestAction] Error invalidating cache:`, cacheError);
@@ -173,8 +154,6 @@ export const performRequestAction = async (
             cancelable: true
           });
           const dispatched = window.dispatchEvent(event);
-          console.log(`[performRequestAction] Dispatched unite:requests-changed event for request ${requestId}, action: ${action}, dispatched: ${dispatched}, shouldRefresh: ${shouldRefresh}`);
-          
           // If backend says to refresh, also trigger immediate refresh via custom event
           if (shouldRefresh) {
             // Dispatch a force-refresh event that bypasses debounce
@@ -182,7 +161,6 @@ export const performRequestAction = async (
               detail: { requestId, reason: `${action}-action`, cacheKeysToInvalidate },
               bubbles: true
             }));
-            console.log(`[performRequestAction] Dispatched force-refresh event`);
           }
           
           // Verify event was actually dispatched by checking if listeners exist
@@ -205,7 +183,6 @@ export const performRequestAction = async (
                 detail: { requestId, reason: `${action}-action` }
               }));
             }
-            console.log(`[performRequestAction] Fallback event dispatch succeeded`);
           }
         } catch (e2) {
           console.error(`[performRequestAction] Fallback event dispatch also failed:`, e2);
@@ -266,7 +243,6 @@ export const performConfirmAction = async (requestId: string, note?: string) => 
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     try {
       if (attempt > 0) {
-        console.log(`[performConfirmAction] Retry attempt ${attempt}/${maxRetries}`);
         await new Promise(resolve => setTimeout(resolve, retryDelay * attempt));
       }
 
@@ -307,21 +283,12 @@ export const performConfirmAction = async (requestId: string, note?: string) => 
       }
 
       const resp = await res.json();
-      console.log(`[performConfirmAction] Succeeded:`, resp);
 
       // Check backend response for UI refresh flags
       const uiFlags = resp?.data?.ui;
       const shouldRefresh = uiFlags?.shouldRefresh || res.headers.get('X-Should-Refresh') === 'true';
       const shouldCloseModal = uiFlags?.shouldCloseModal || res.headers.get('X-Should-Close-Modal') === 'true';
       const cacheKeysToInvalidate = uiFlags?.cacheKeysToInvalidate || [];
-
-      console.log(`[performConfirmAction] Response UI flags:`, {
-        shouldRefresh,
-        shouldCloseModal,
-        cacheKeysToInvalidate,
-        newState: uiFlags?.newState,
-        actionResult: uiFlags?.actionResult
-      });
 
       // Immediately invalidate cache if backend says to refresh
       if (shouldRefresh && typeof window !== "undefined") {
@@ -335,12 +302,10 @@ export const performConfirmAction = async (requestId: string, note?: string) => 
               // Convert API path to cache key pattern
               const cachePattern = new RegExp(key.replace(/^\/api\//, '').replace(/\//g, '.*'));
               invalidateCache(cachePattern);
-              console.log(`[performConfirmAction] Invalidated cache for: ${key}`);
             });
           } else {
             // Fallback: invalidate all event-requests cache
             invalidateCache(/event-requests/);
-            console.log(`[performConfirmAction] Invalidated all event-requests cache (fallback)`);
           }
         } catch (cacheError) {
           console.error(`[performConfirmAction] Error invalidating cache:`, cacheError);
@@ -365,8 +330,6 @@ export const performConfirmAction = async (requestId: string, note?: string) => 
             cancelable: true
           });
           const dispatched = window.dispatchEvent(event);
-          console.log(`[performConfirmAction] Dispatched unite:requests-changed event for request ${requestId}, dispatched: ${dispatched}, shouldRefresh: ${shouldRefresh}`);
-          
           // If backend says to refresh, also trigger immediate refresh via custom event
           if (shouldRefresh) {
             // Dispatch a force-refresh event that bypasses debounce
@@ -374,7 +337,6 @@ export const performConfirmAction = async (requestId: string, note?: string) => 
               detail: { requestId, reason: "confirm-action", cacheKeysToInvalidate },
               bubbles: true
             }));
-            console.log(`[performConfirmAction] Dispatched force-refresh event`);
           }
           
           // Verify event was actually dispatched by checking if listeners exist
@@ -397,7 +359,6 @@ export const performConfirmAction = async (requestId: string, note?: string) => 
                 detail: { requestId, reason: "confirm-action" }
               }));
             }
-            console.log(`[performConfirmAction] Fallback event dispatch succeeded`);
           }
         } catch (e2) {
           console.error(`[performConfirmAction] Fallback event dispatch also failed:`, e2);

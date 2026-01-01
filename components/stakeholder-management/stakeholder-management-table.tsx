@@ -326,7 +326,7 @@ export default function StakeholderTable({
                       {isRequests || (coordinator as any)._isRequest ? (
                         canApproveReject && (onAcceptRequest || onRejectRequest) ? (
                           <DropdownSection title="Actions">
-                            {onAcceptRequest && (
+                            {onAcceptRequest ? (
                               <DropdownItem
                                 key="accept"
                                 description="Approve this signup request"
@@ -337,8 +337,8 @@ export default function StakeholderTable({
                               >
                                 Accept Request
                               </DropdownItem>
-                            )}
-                            {onRejectRequest && (
+                            ) : null}
+                            {onRejectRequest ? (
                               <DropdownItem
                                 key="reject"
                                 className="text-danger"
@@ -351,7 +351,7 @@ export default function StakeholderTable({
                               >
                                 Reject Request
                               </DropdownItem>
-                            )}
+                            ) : null}
                           </DropdownSection>
                         ) : (
                           <DropdownSection title="Actions">
