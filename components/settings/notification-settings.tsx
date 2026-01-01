@@ -201,14 +201,18 @@ export default function NotificationSettings({ isOpen }: NotificationSettingsPro
         <p className="text-sm text-gray-500 mb-4">
           These notifications are important and cannot be disabled. You will always receive emails for these events.
         </p>
-        <div className="space-y-2">
+        <div className="space-y-3">
           {CRITICAL_TYPES.map((type) => (
-            <div key={type.value} className="flex items-center gap-2">
+            <div key={type.value} className="flex items-center gap-3 py-1">
               <Checkbox
                 value={type.value}
                 isSelected={true}
                 isDisabled={true}
                 aria-label={type.label}
+                classNames={{
+                  base: "max-w-full",
+                  wrapper: "mr-2",
+                }}
               >
                 {type.label}
               </Checkbox>
@@ -228,14 +232,22 @@ export default function NotificationSettings({ isOpen }: NotificationSettingsPro
           value={selectedOptionalTypes}
           onValueChange={handleNotificationTypeChange}
           isDisabled={saving || !localPreferences.emailNotificationsEnabled}
+          classNames={{
+            wrapper: "grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6 gap-3",
+          }}
         >
-          <div className="space-y-2">
-            {OPTIONAL_TYPES.map((type) => (
-              <Checkbox key={type.value} value={type.value}>
-                {type.label}
-              </Checkbox>
-            ))}
-          </div>
+          {OPTIONAL_TYPES.map((type) => (
+            <Checkbox
+              key={type.value}
+              value={type.value}
+              classNames={{
+                base: "max-w-full",
+                wrapper: "mr-2",
+              }}
+            >
+              {type.label}
+            </Checkbox>
+          ))}
         </CheckboxGroup>
       </div>
 

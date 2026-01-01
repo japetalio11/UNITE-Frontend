@@ -166,23 +166,25 @@ export default function PermissionSelector({
   return (
     <div className="space-y-4">
       {/* Search */}
-      <Input
-        placeholder="Search permissions..."
-        value={searchQuery}
-        onChange={(e) => setSearchQuery(e.target.value)}
-        isDisabled={disabled}
-        size="sm"
-      />
+      <div className="pb-2">
+        <Input
+          placeholder="Search permissions..."
+          value={searchQuery}
+          onChange={(e) => setSearchQuery(e.target.value)}
+          isDisabled={disabled}
+          size="sm"
+        />
+      </div>
 
       {/* Expand/Collapse All */}
-      <div className="flex justify-between items-center">
-        <span className="text-sm text-gray-600">
+      <div className="flex justify-between items-center py-2">
+        <span className="text-sm text-gray-600 font-medium">
           {filteredResources.length} resource{filteredResources.length !== 1 ? 's' : ''}
         </span>
         <button
           type="button"
           onClick={toggleAllExpanded}
-          className="text-sm text-blue-600 hover:text-blue-800"
+          className="text-sm text-blue-600 hover:text-blue-800 font-medium transition-colors"
           disabled={disabled}
         >
           {expandedResources.size === filteredResources.length ? 'Collapse All' : 'Expand All'}
@@ -190,7 +192,7 @@ export default function PermissionSelector({
       </div>
 
       {/* Permissions by Resource */}
-      <div className="space-y-2">
+      <div className="space-y-3">
         {filteredResources.map(resource => {
           const perms = groupedPermissions[resource];
           const isExpanded = expandedResources.has(resource);
@@ -198,26 +200,30 @@ export default function PermissionSelector({
           const isPartiallySelected = isResourcePartiallySelected(resource);
 
           return (
-            <div key={resource} className="border border-gray-200 rounded-lg p-3">
+            <div key={resource} className="border border-gray-200 rounded-lg p-4">
               {/* Resource Header */}
-              <div className="flex items-center justify-between mb-2">
-                <div className="flex items-center gap-2">
+              <div className="flex items-center justify-between mb-3">
+                <div className="flex items-center gap-3">
                   <Checkbox
                     isSelected={isFullySelected}
                     isIndeterminate={isPartiallySelected && !isFullySelected}
                     onValueChange={() => toggleResource(resource)}
                     isDisabled={disabled}
+                    classNames={{
+                      base: "max-w-full",
+                      wrapper: "mr-2",
+                    }}
                   >
-                    <span className="font-medium text-sm">{resource}</span>
+                    <span className="font-medium text-sm text-gray-900">{resource}</span>
                   </Checkbox>
-                  <Chip size="sm" variant="flat" color="default">
+                  <Chip size="sm" variant="flat" color="default" className="ml-1">
                     {perms.length} permission{perms.length !== 1 ? 's' : ''}
                   </Chip>
                 </div>
                 <button
                   type="button"
                   onClick={() => toggleResourceExpansion(resource)}
-                  className="text-xs text-gray-500 hover:text-gray-700"
+                  className="text-sm text-gray-500 hover:text-gray-700 transition-colors p-1"
                   disabled={disabled}
                 >
                   {isExpanded ? '▼' : '▶'}
@@ -226,22 +232,29 @@ export default function PermissionSelector({
 
               {/* Permission Actions */}
               {isExpanded && (
-                <div className="ml-6 mt-2 space-y-2">
-                  {perms.map(perm => (
-                    <Checkbox
-                      key={perm._id}
-                      isSelected={selectedMap[resource]?.has(perm.action) || false}
-                      onValueChange={() => togglePermission(resource, perm.action)}
-                      isDisabled={disabled}
-                    >
-                      <div className="flex flex-col">
-                        <span className="text-sm">{perm.name}</span>
-                        {perm.description && (
-                          <span className="text-xs text-gray-500">{perm.description}</span>
-                        )}
+                <div className="ml-8 mt-3 pt-3 border-t border-gray-100">
+                  <div className="space-y-3">
+                    {perms.map(perm => (
+                      <div key={perm._id} className="py-1">
+                        <Checkbox
+                          isSelected={selectedMap[resource]?.has(perm.action) || false}
+                          onValueChange={() => togglePermission(resource, perm.action)}
+                          isDisabled={disabled}
+                          classNames={{
+                            base: "max-w-full",
+                            wrapper: "mr-2",
+                          }}
+                        >
+                          <div className="flex flex-col gap-0.5">
+                            <span className="text-sm text-gray-900 font-medium">{perm.name}</span>
+                            {perm.description && (
+                              <span className="text-xs text-gray-500 mt-0.5">{perm.description}</span>
+                            )}
+                          </div>
+                        </Checkbox>
                       </div>
-                    </Checkbox>
-                  ))}
+                    ))}
+                  </div>
                 </div>
               )}
             </div>

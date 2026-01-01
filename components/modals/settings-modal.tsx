@@ -19,6 +19,8 @@ import RoleManagementTable from "@/components/settings/role-management-table";
 import RoleFormModal from "@/components/settings/role-form-modal";
 import LocationManagement from "@/components/settings/location-management";
 import NotificationSettings from "@/components/settings/notification-settings";
+import { getUserAuthority } from "@/utils/getUserAuthority";
+import { decodeJwt } from "@/utils/decodeJwt";
 
 interface SettingsModalProps {
   isOpen: boolean;
@@ -64,21 +66,88 @@ export default function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
   const [canCreateRole, setCanCreateRole] = useState(false);
   const [canUpdateRole, setCanUpdateRole] = useState(false);
   const [canDeleteRole, setCanDeleteRole] = useState(false);
+  const [userAuthority, setUserAuthority] = useState<number | null>(null);
 
-  // Check role management permissions
+  // Get current user ID from token or localStorage
+  const getCurrentUserId = (): string | null => {
+    if (typeof window === 'undefined') return null;
+    
+    try {
+      const rawUser = localStorage.getItem('unite_user');
+      if (rawUser) {
+        const user = JSON.parse(rawUser);
+        const userId = user?._id || user?.id || user?.User_ID || user?.userId || user?.ID;
+        if (userId) return String(userId);
+      }
+      
+      // Fallback: get from JWT token
+      const token = localStorage.getItem('unite_token') || sessionStorage.getItem('unite_token');
+      if (token) {
+        const decoded = decodeJwt(token);
+        const tokenUserId = decoded?.id || decoded?.userId || decoded?._id;
+        if (tokenUserId) return String(tokenUserId);
+      }
+    } catch (error) {
+      console.error("Error getting current user ID:", error);
+    }
+    
+    return null;
+  };
+
+  // Load user authority
+  useEffect(() => {
+    if (isOpen) {
+      const userId = getCurrentUserId();
+      if (userId) {
+        getUserAuthority(userId)
+          .then((authority) => {
+            setUserAuthority(authority);
+          })
+          .catch((error) => {
+            console.error("Failed to get user authority:", error);
+            setUserAuthority(null);
+          });
+      }
+    }
+  }, [isOpen]);
+
+  // Check role management permissions with authority safeguard
   useEffect(() => {
     if (isOpen && permissions.canEditStaff) {
-      Promise.all([
-        checkPermission("role", "create"),
-        checkPermission("role", "update"),
-        checkPermission("role", "delete"),
-      ]).then(([create, update, del]) => {
-        setCanCreateRole(create);
-        setCanUpdateRole(update);
-        setCanDeleteRole(del);
-      });
+      // System admins (authority >= 80) get full access regardless of permission check
+      // This bypasses the permission API which may not properly handle wildcard permissions
+      const isSystemAdmin = userAuthority !== null && userAuthority >= 80;
+      
+      if (isSystemAdmin) {
+        // System admins bypass permission checks - they have full access
+        // This ensures system admins with wildcard permissions (*.*) can always edit/delete
+        setCanCreateRole(true);
+        setCanUpdateRole(true);
+        setCanDeleteRole(true);
+      } else if (userAuthority !== null) {
+        // Authority is loaded but user is not a system admin
+        // Check permissions normally, but still require authority >= 80 for edit/delete
+        Promise.all([
+          checkPermission("role", "create"),
+          checkPermission("role", "update"),
+          checkPermission("role", "delete"),
+        ]).then(([create, update, del]) => {
+          // Authority safeguard: only users with authority >= 80 can update or delete roles
+          const hasHighAuthority = userAuthority >= 80;
+          
+          setCanCreateRole(create);
+          setCanUpdateRole(update && hasHighAuthority);
+          setCanDeleteRole(del && hasHighAuthority);
+        });
+      }
+      // If userAuthority is null, wait for it to load before making decisions
+    } else {
+      // Reset permissions when modal closes or user doesn't have staff edit permission
+      setCanCreateRole(false);
+      setCanUpdateRole(false);
+      setCanDeleteRole(false);
     }
-  }, [isOpen, permissions.canEditStaff, checkPermission]);
+  }, [isOpen, permissions.canEditStaff, checkPermission, userAuthority]);
 
   // Prevent background scrolling when modal is open
   useEffect(() => {

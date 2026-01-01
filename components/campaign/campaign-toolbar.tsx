@@ -119,14 +119,14 @@ export default function CampaignToolbar({
           
           return permissions.some((perm: any) => {
             if (typeof perm === 'string') {
-              // Handle comma-separated string format: 'event.create,read,update'
+              // Handle comma-separated string format: 'event.initiate,read,update'
               if (perm.includes(',')) {
-                return checkPermissionString(perm, 'event.create') || 
-                       checkPermissionString(perm, 'request.create');
+                return checkPermissionString(perm, 'event.initiate') || 
+                       checkPermissionString(perm, 'request.initiate');
               }
-              // Handle single permission string
-              return perm === 'event.create' || 
-                     perm === 'request.create' ||
+              // Handle single permission string - ONLY check initiate (not create)
+              return perm === 'event.initiate' || 
+                     perm === 'request.initiate' ||
                      perm === '*.*' ||
                      perm === 'event.*' ||
                      perm === 'request.*';
@@ -135,8 +135,9 @@ export default function CampaignToolbar({
             if (perm && typeof perm === 'object') {
               const resource = perm.resource;
               const actions = Array.isArray(perm.actions) ? perm.actions : [];
-              if (resource === '*' && (actions.includes('*') || actions.includes('create'))) return true;
-              if ((resource === 'event' || resource === 'request') && actions.includes('create')) return true;
+              // Only check for initiate (not create) - create is for workflow operations only
+              if (resource === '*' && (actions.includes('*') || actions.includes('initiate'))) return true;
+              if ((resource === 'event' || resource === 'request') && actions.includes('initiate')) return true;
             }
             return false;
           });
@@ -229,8 +230,8 @@ export default function CampaignToolbar({
           
         // PRIORITY 3: Check roles for permissions
         if (user?.roles && Array.isArray(user.roles)) {
-            // Try hasCapability utility for structured roles
-            hasPermission = hasCapability(user, 'event.create') || hasCapability(user, 'request.create');
+            // Try hasCapability utility for structured roles - ONLY check initiate (not create)
+            hasPermission = hasCapability(user, 'event.initiate') || hasCapability(user, 'request.initiate');
             if (hasPermission) {
               setCanCreateEvent(true);
               return;

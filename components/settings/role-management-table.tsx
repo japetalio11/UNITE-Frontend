@@ -198,7 +198,8 @@ export default function RoleManagementTable({
                             key="edit"
                             startContent={<Edit3 className="h-4 w-4" />}
                             onPress={() => onEdit(role)}
-                            isDisabled={role.isSystemRole}
+                            isDisabled={(role.authority ?? 0) >= 80}
+                            description={(role.authority ?? 0) >= 80 ? 'Roles with authority 80+ are locked' : undefined}
                           >
                             Edit
                           </DropdownItem>
@@ -210,7 +211,8 @@ export default function RoleManagementTable({
                             color="danger"
                             startContent={<TrashBin className="h-4 w-4" />}
                             onPress={() => handleDelete(role)}
-                            isDisabled={role.isSystemRole || deletingId === role._id}
+                            isDisabled={['system-admin', 'coordinator', 'stakeholder'].includes(role.code) || deletingId === role._id}
+                            description={['system-admin', 'coordinator', 'stakeholder'].includes(role.code) ? 'Base system roles cannot be deleted' : undefined}
                           >
                             {deletingId === role._id ? "Deleting..." : "Delete"}
                           </DropdownItem>
