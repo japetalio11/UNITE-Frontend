@@ -12,6 +12,7 @@ import { Input } from "@heroui/input";
 import { Textarea } from "@heroui/input";
 import { Chip } from "@heroui/chip";
 import { Persons as Users, Droplet, Megaphone } from "@gravity-ui/icons";
+import { useCurrentUser } from "@/hooks/useCurrentUser";
 
 interface EventViewModalProps {
   isOpen: boolean;
@@ -26,6 +27,8 @@ export const EventViewModal: React.FC<EventViewModalProps> = ({
   onClose,
   request,
 }) => {
+  const { user } = useCurrentUser(false); // Don't auto-fetch on mount, just check if logged in
+  
   React.useEffect(() => {
     // logging removed
   }, [isOpen, request]);
@@ -240,18 +243,21 @@ export const EventViewModal: React.FC<EventViewModalProps> = ({
 
         <ModalBody className="py-4">
           <div className="grid grid-cols-2 gap-6">
-            <div>
-              <label className="text-xs text-default-700">Coordinator</label>
-              <Input
-                disabled
-                classNames={{
-                  inputWrapper: "h-10 bg-default-100",
-                  input: "text-sm",
-                }}
-                value={coordinatorLabel}
-                variant="bordered"
-              />
-            </div>
+            {/* Coordinator field - only show if user is authenticated */}
+            {user && (
+              <div>
+                <label className="text-xs text-default-700">Coordinator</label>
+                <Input
+                  disabled
+                  classNames={{
+                    inputWrapper: "h-10 bg-default-100",
+                    input: "text-sm",
+                  }}
+                  value={coordinatorLabel}
+                  variant="bordered"
+                />
+              </div>
+            )}
 
             <div>
               <label className="text-xs text-default-700">Location</label>

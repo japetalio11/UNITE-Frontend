@@ -47,6 +47,8 @@ import { fetchWithAuth } from "@/utils/fetchWithAuth";
 import { getUserInfo } from "@/utils/getUserInfo";
 import { useCurrentUser } from "@/hooks/useCurrentUser";
 import { getEventActionPermissions, isAdminByAuthority, clearPermissionCache } from "@/utils/eventActionPermissions";
+import { decodeJwt } from "@/utils/decodeJwt";
+import { hasCapability } from "@/utils/permissionUtils";
 import MobileNav from "@/components/tools/mobile-nav";
 import { useLocations } from "@/components/providers/locations-provider";
 import {
@@ -63,7 +65,15 @@ export default function CalendarPage(props: any) {
   const publicTitle: string | undefined = props?.publicTitle;
   const pathname = usePathname();
   // Allow create on dashboard calendar, but not on public calendar route
-  const allowCreate = pathname === "/calendar" ? false : true;
+  const allowCreateByPath = pathname === "/calendar" ? false : true;
+  // State for permission check (separate from path check)
+  // null = checking, true = allowed, false = denied
+  const [canCreateEvent, setCanCreateEvent] = useState<boolean | null>(null);
+  // Combine both checks - only allow if path permits AND user has permission
+  // Button is enabled if path permits AND permission check is true
+  // Button is disabled if path denies OR permission check is false/null
+  const allowCreate = allowCreateByPath && canCreateEvent === true;
+  
   // Default to month view on mobile, week view on desktop
   const [activeView, setActiveView] = useState("week");
   const today = new Date();
@@ -108,6 +118,194 @@ export default function CalendarPage(props: any) {
       }
     }
   }, [currentUser]);
+
+  // Check if user has permission to create events/requests - PERMISSION-BASED ONLY
+  useEffect(() => {
+    const checkCreatePermission = async () => {
+      try {
+        const rawUser = localStorage.getItem("unite_user");
+        const user = rawUser ? JSON.parse(rawUser) : null;
+        const token =
+          localStorage.getItem("unite_token") ||
+          sessionStorage.getItem("unite_token");
+        const API_URL = process.env.NEXT_PUBLIC_API_URL || "";
+        
+        // If no token, user is unauthenticated - cannot create
+        if (!token) {
+          setCanCreateEvent(false);
+          return;
+        }
+        
+        // Default to true for authenticated users (if we can't check, assume allowed)
+        let hasPermission = true;
+        
+        // Helper function to check if a permission string contains the capability
+        const checkPermissionString = (permString: string, capability: string): boolean => {
+          if (!permString || typeof permString !== 'string') return false;
+          // Handle comma-separated permissions like "event.create,read,update"
+          const perms = permString.split(',').map(p => p.trim());
+          // Check for exact match, wildcard all (*.*), or resource wildcard (event.*, request.*)
+          const hasExactMatch = perms.includes(capability);
+          const hasWildcard = perms.includes('*.*');
+          const [res, action] = capability.split('.');
+          const hasResourceWildcard = perms.some(p => {
+            // Check for resource.* (e.g., 'event.*', 'request.*')
+            return p === `${res}.*` || p === '*.*';
+          });
+          return hasExactMatch || hasWildcard || hasResourceWildcard;
+        };
+        
+        // Helper to check permissions array (handles both formats)
+        const checkPermissionsArray = (permissions: any[]): boolean => {
+          if (!Array.isArray(permissions) || permissions.length === 0) return false;
+          
+          return permissions.some((perm: any) => {
+            if (typeof perm === 'string') {
+              // Handle comma-separated string format: 'event.initiate,read,update'
+              if (perm.includes(',')) {
+                return checkPermissionString(perm, 'event.initiate') || 
+                       checkPermissionString(perm, 'request.initiate');
+              }
+              // Handle single permission string - ONLY check initiate (not create)
+              return perm === 'event.initiate' || 
+                     perm === 'request.initiate' ||
+                     perm === '*.*' ||
+                     perm === 'event.*' ||
+                     perm === 'request.*';
+            }
+            // Handle structured permission objects (if any)
+            if (perm && typeof perm === 'object') {
+              const resource = perm.resource;
+              const actions = Array.isArray(perm.actions) ? perm.actions : [];
+              // Only check for initiate (not create) - create is for workflow operations only
+              if (resource === '*' && (actions.includes('*') || actions.includes('initiate'))) return true;
+              if ((resource === 'event' || resource === 'request') && actions.includes('initiate')) return true;
+            }
+            return false;
+          });
+        };
+        
+        // Extract user ID from multiple sources
+        let userId = user?._id || user?.id || user?.ID || user?.userId || user?.user_id;
+        
+        // If user ID not found in user object, try to get it from JWT token
+        if (!userId && token) {
+          try {
+            const payload = decodeJwt(token);
+            userId = payload?.id || payload?.userId || payload?.user_id || payload?._id || payload?.sub;
+          } catch (e) {
+            // Failed to decode JWT - continue without userId
+          }
+        }
+        
+        // PRIORITY 1: Check localStorage permissions FIRST (faster, no API call needed)
+        if (user?.permissions && Array.isArray(user.permissions) && user.permissions.length > 0) {
+          const found = checkPermissionsArray(user.permissions);
+          // If we have permissions data, use it to determine access
+          setCanCreateEvent(found);
+          return;
+        }
+        
+        // PRIORITY 2: Try API for most accurate permission data
+        if (token && API_URL) {
+          try {
+            const headers: any = { "Content-Type": "application/json" };
+            headers["Authorization"] = `Bearer ${token}`;
+            
+            // Try /api/auth/me first (doesn't require user ID)
+            const meRes = await fetch(`${API_URL}/api/auth/me`, {
+              headers,
+              credentials: "include",
+            });
+            
+            if (meRes.ok) {
+              const meBody = await meRes.json();
+              const meUser = meBody.user || meBody.data || meBody;
+              const permissions = meUser?.permissions || [];
+              
+              if (Array.isArray(permissions) && permissions.length > 0) {
+                const found = checkPermissionsArray(permissions);
+                setCanCreateEvent(found);
+                return;
+              }
+            }
+          } catch (meErr) {
+            // Failed to fetch from /api/auth/me - continue to next check
+          }
+        }
+        
+        // Fallback: Try /api/users/:userId/capabilities if we have userId
+        if (userId && token && API_URL) {
+            try {
+              const headers: any = { "Content-Type": "application/json" };
+              headers["Authorization"] = `Bearer ${token}`;
+              
+              const res = await fetch(`${API_URL}/api/users/${userId}/capabilities`, {
+                headers,
+                credentials: "include",
+              });
+              
+              if (res.ok) {
+                const body = await res.json();
+                const capabilities = body.data?.capabilities || body.capabilities || body.data || [];
+                
+                if (Array.isArray(capabilities) && capabilities.length > 0) {
+                  const found = checkPermissionsArray(capabilities);
+                  setCanCreateEvent(found);
+                  return;
+                }
+              }
+            } catch (apiErr) {
+              // Failed to fetch capabilities - continue to check user object as fallback
+            }
+          }
+          
+        // PRIORITY 3: Check roles for permissions
+        if (user?.roles && Array.isArray(user.roles)) {
+            // Try hasCapability utility for structured roles - ONLY check initiate (not create)
+            const found = hasCapability(user, 'event.initiate') || hasCapability(user, 'request.initiate');
+            if (found) {
+              setCanCreateEvent(true);
+              return;
+            }
+            
+            // Also check if roles have permissions arrays
+            for (const role of user.roles) {
+              if (role && role.permissions && Array.isArray(role.permissions)) {
+                const found = checkPermissionsArray(role.permissions);
+                if (found) {
+                  setCanCreateEvent(true);
+                  return;
+                }
+              }
+            }
+        }
+        
+        // PRIORITY 4: Check nested data structures
+        if (user?.data && user.data.permissions) {
+          const found = checkPermissionsArray(user.data.permissions);
+          if (found) {
+            setCanCreateEvent(true);
+            return;
+          }
+        }
+        
+        // Default: If authenticated but no explicit permissions found, allow (true)
+        // This is safer for UX - they can try to create and get an API error if denied
+        setCanCreateEvent(true);
+      } catch (err) {
+        // On error, default to true for authenticated users (safer UX)
+        const token = localStorage.getItem("unite_token") || sessionStorage.getItem("unite_token");
+        setCanCreateEvent(!!token);
+      }
+    };
+    
+    checkCreatePermission().catch(() => {
+      // On unhandled error, check if user is authenticated
+      const token = localStorage.getItem("unite_token") || sessionStorage.getItem("unite_token");
+      setCanCreateEvent(!!token);
+    });
+  }, []);
   
   // Initialize locations provider for location resolution
   const { getProvinceName, getDistrictName, getMunicipalityName, locations } = useLocations();
@@ -1522,9 +1720,15 @@ export default function CalendarPage(props: any) {
       const headers: any = { "Content-Type": "application/json" };
 
       if (token) headers["Authorization"] = `Bearer ${token}`;
+      
+      // Use public endpoint if user is not authenticated
+      const endpoint = token 
+        ? `/api/events/${encodeURIComponent(eventId)}`
+        : `/api/public/events/${encodeURIComponent(eventId)}`;
+      
       // Always fetch the full event details from backend. Log the raw response to help debugging.
       const res = await fetch(
-        `${API_BASE}/api/events/${encodeURIComponent(eventId)}`,
+        `${API_BASE}${endpoint}`,
         { headers },
       );
       const body = await res.json();
