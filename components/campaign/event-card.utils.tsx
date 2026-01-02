@@ -1,9 +1,29 @@
+/**
+ * Event Card Utility Functions
+ * 
+ * PERMISSION-BASED ARCHITECTURE:
+ * These utilities help extract and check allowedActions from backend responses.
+ * Action visibility is determined by backend permission validation, not role names.
+ * 
+ * Backend validates:
+ * - User permissions (e.g., request.review, request.approve, event.publish)
+ * - Authority hierarchy (reviewer.authority >= requester.authority)
+ * - State transition validity
+ * 
+ * Frontend uses allowedActions array to show/hide UI elements.
+ * Backend always validates permissions independently - never trust frontend.
+ */
+
 import { useMemo } from "react";
 import { ACTION_SYNONYMS, BOOLEAN_FLAG_TO_ACTION } from "./event-card.constants";
 
 export const normalizeActionName = (name?: string | null) =>
   typeof name === "string" ? name.trim().toLowerCase() : "";
 
+/**
+ * Get current viewer info from localStorage/sessionStorage
+ * NOTE: Role is for routing/display only. Authorization is permission-based on backend.
+ */
 export const getViewer = () => {
   try {
     if (typeof window === "undefined")
@@ -58,6 +78,19 @@ export const formatDate = (dateStr: string | null | undefined): string => {
   }
 };
 
+/**
+ * Extract allowedActions from backend API response
+ * 
+ * Backend returns allowedActions array computed from:
+ * - User's permissions (request.review, request.approve, etc.)
+ * - Authority hierarchy validation
+ * - Current request state
+ * 
+ * This hook walks the request/event structure to find and normalize
+ * all allowedActions arrays and permission flags.
+ * 
+ * @returns Set of normalized action names that user is allowed to perform
+ */
 export const useAllowedActionSet = (payload: {
   request?: any;
   fullRequest?: any;
@@ -67,20 +100,25 @@ export const useAllowedActionSet = (payload: {
 
   return useMemo(() => {
     const set = new Set<string>();
+    const foundPaths: string[] = []; // Track where allowedActions were found
+    const requestId = request?.Request_ID || request?.RequestId || request?._id || request?.requestId || 'unknown';
 
     // Safe recursive walker to discover allowedActions and boolean flags
-    const visit = (node: any, depth = 0, maxDepth = 4) => {
+    const visit = (node: any, depth = 0, maxDepth = 4, path = 'root') => {
       if (!node || depth > maxDepth) return;
 
       // If this node directly carries allowed actions arrays, ingest them
       const candidates = [
-        node.allowedActions,
-        node.allowed_actions,
-        node.allowed_actions_list,
+        { value: node.allowedActions, path: `${path}.allowedActions` },
+        { value: node.allowed_actions, path: `${path}.allowed_actions` },
+        { value: node.allowed_actions_list, path: `${path}.allowed_actions_list` },
+        { value: node.data?.allowedActions, path: `${path}.data.allowedActions` },
+        { value: node.request?.allowedActions, path: `${path}.request.allowedActions` },
       ];
       candidates.forEach((candidate) => {
-        if (Array.isArray(candidate)) {
-          candidate.forEach((action) => {
+        if (Array.isArray(candidate.value)) {
+          foundPaths.push(candidate.path);
+          candidate.value.forEach((action) => {
             const normalized = normalizeActionName(action);
             if (normalized) set.add(normalized);
           });
@@ -98,16 +136,16 @@ export const useAllowedActionSet = (payload: {
 
       // If node is array, traverse elements
       if (Array.isArray(node)) {
-        node.forEach((el) => visit(el, depth + 1, maxDepth));
+        node.forEach((el, idx) => visit(el, depth + 1, maxDepth, `${path}[${idx}]`));
         return;
       }
 
       // Traverse common nested places quickly
       try {
-        if (node.event && node.event !== node) visit(node.event, depth + 1, maxDepth);
-        if (node.reviewer && node.reviewer !== node) visit(node.reviewer, depth + 1, maxDepth);
-        if (node.rescheduleProposal && node.rescheduleProposal.proposedBy) visit(node.rescheduleProposal.proposedBy, depth + 1, maxDepth);
-        if (Array.isArray(node.decisionHistory)) node.decisionHistory.forEach((dh: any) => visit(dh, depth + 1, maxDepth));
+        if (node.event && node.event !== node) visit(node.event, depth + 1, maxDepth, `${path}.event`);
+        if (node.reviewer && node.reviewer !== node) visit(node.reviewer, depth + 1, maxDepth, `${path}.reviewer`);
+        if (node.rescheduleProposal && node.rescheduleProposal.proposedBy) visit(node.rescheduleProposal.proposedBy, depth + 1, maxDepth, `${path}.rescheduleProposal.proposedBy`);
+        if (Array.isArray(node.decisionHistory)) node.decisionHistory.forEach((dh: any, idx: number) => visit(dh, depth + 1, maxDepth, `${path}.decisionHistory[${idx}]`));
       } catch (e) {}
 
       // Generic small-object traversal to catch unexpected placements (only shallow)
@@ -117,20 +155,57 @@ export const useAllowedActionSet = (payload: {
           if (!val) continue;
           // avoid traversing very large structures like full text fields
           if (typeof val === 'object') {
-            visit(val, depth + 1, maxDepth);
+            visit(val, depth + 1, maxDepth, `${path}.${key}`);
           }
         }
       }
     };
 
-    visit(request);
-    visit(fullRequest);
-    visit(resolvedRequest);
+    visit(request, 0, 4, 'request');
+    visit(fullRequest, 0, 4, 'fullRequest');
+    visit(resolvedRequest, 0, 4, 'resolvedRequest');
+
+    const extractedActions = Array.from(set);
+    const hasReschedule = extractedActions.includes('reschedule') || extractedActions.includes('resched');
+    
+    if (foundPaths.length > 0) {
+      // Debug logging removed
+    } else {
+      console.warn(`[EventCard Utils] ⚠️ No allowedActions found for request ${requestId}:`, {
+        requestId,
+        hasRequest: !!request,
+        hasFullRequest: !!fullRequest,
+        hasResolvedRequest: !!resolvedRequest,
+        requestKeys: request ? Object.keys(request) : [],
+        fullRequestKeys: fullRequest ? Object.keys(fullRequest) : [],
+        resolvedRequestKeys: resolvedRequest ? Object.keys(resolvedRequest) : [],
+        // Debug: show if allowedActions exists but wasn't found
+        requestHasAllowedActions: !!request?.allowedActions,
+        fullRequestHasAllowedActions: !!fullRequest?.allowedActions,
+        resolvedRequestHasAllowedActions: !!resolvedRequest?.allowedActions,
+        requestAllowedActionsValue: request?.allowedActions,
+        fullRequestAllowedActionsValue: fullRequest?.allowedActions,
+        resolvedRequestAllowedActionsValue: resolvedRequest?.allowedActions,
+      });
+    }
 
     return set;
   }, [request, fullRequest, resolvedRequest]);
 };
 
+/**
+ * Factory function to create permission checker
+ * 
+ * Returns a function that checks if an action (or its synonyms) exists in the
+ * allowedActions set from the backend.
+ * 
+ * Usage:
+ *   const hasAllowedAction = hasAllowedActionFactory(allowedActionSet);
+ *   if (hasAllowedAction('accept')) { ... }
+ * 
+ * @param allowedActionSet - Set of permitted action names from backend
+ * @returns Function to check if action is allowed
+ */
 export const hasAllowedActionFactory = (allowedActionSet: Set<string>) => (
   actionName?: string | string[] | null,
 ) => {
@@ -140,11 +215,31 @@ export const hasAllowedActionFactory = (allowedActionSet: Set<string>) => (
   return names.some((name) => {
     const normalized = normalizeActionName(name);
     if (!normalized) return false;
+    
+    // Direct match first (most common case)
     if (allowedActionSet.has(normalized)) return true;
+    
+    // Forward synonym lookup: if normalized action has synonyms defined, check if any synonym is in allowedActionSet
+    // Example: checking "resched" -> finds synonyms ["resched", "reschedule"] -> checks if "reschedule" is in set
     const synonyms = ACTION_SYNONYMS[normalized];
-    return synonyms
-      ? synonyms.some((alias) => allowedActionSet.has(alias))
-      : false;
+    if (synonyms && synonyms.some((alias) => allowedActionSet.has(alias))) {
+      return true;
+    }
+    
+    // Reverse synonym lookup: check if normalized action is a synonym of any key in ACTION_SYNONYMS
+    // Example: checking "reschedule" -> finds it's a synonym of "resched" -> checks if "reschedule" is in set
+    // This handles cases where backend returns "reschedule" but we check for "resched"
+    for (const [key, synonymList] of Object.entries(ACTION_SYNONYMS)) {
+      if (synonymList.includes(normalized) && allowedActionSet.has(normalized)) {
+        return true;
+      }
+      // Also check if the key itself is in the set (e.g., "resched" is in set, we're checking "reschedule")
+      if (synonymList.includes(normalized) && allowedActionSet.has(key)) {
+        return true;
+      }
+    }
+    
+    return false;
   });
 };
 

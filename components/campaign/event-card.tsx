@@ -1,5 +1,5 @@
 "use client";
-import React, { useCallback, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { DatePicker } from "@heroui/date-picker";
 import { Card, CardHeader, CardBody, CardFooter } from "@heroui/card";
 import { Chip } from "@heroui/chip";
@@ -19,6 +19,7 @@ import {
   ModalFooter,
 } from "@heroui/modal";
 import { Avatar } from "@heroui/avatar";
+import { Spinner } from "@heroui/spinner";
 import {
   EllipsisVertical,
   Eye,
@@ -37,6 +38,7 @@ import RescheduleModal from "./reschedule-modal";
 import ConfirmModal from "./confirm-modal";
 import {
   performRequestAction as svcPerformRequestAction,
+  performConfirmAction as svcPerformConfirmAction,
   performStakeholderConfirm as svcPerformStakeholderConfirm,
   performCoordinatorConfirm,
   fetchRequestDetails as svcFetchRequestDetails,
@@ -85,7 +87,8 @@ interface EventCardProps {
   request?: any;
   onCancelEvent?: () => void;
   onAcceptEvent?: (note?: string) => void;
-  onRejectEvent?: (note?: string) => void;
+  onRejectEvent?: (reqObj: any, note?: string) => void;
+  onConfirmEvent?: () => void;
 }
 
 /**
@@ -109,6 +112,7 @@ const EventCard: React.FC<EventCardProps> = ({
   onCancelEvent,
   onAcceptEvent,
   onRejectEvent,
+  onConfirmEvent,
 }) => {
   // Dialog state management
   const [rescheduleOpen, setRescheduleOpen] = useState(false);
@@ -120,17 +124,227 @@ const EventCard: React.FC<EventCardProps> = ({
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [successModal, setSuccessModal] = useState(false);
   const [fullRequest, setFullRequest] = useState<any>(null);
+  const [isConfirming, setIsConfirming] = useState(false);
+  const [isAccepting, setIsAccepting] = useState(false);
+  const [isRejecting, setIsRejecting] = useState(false);
+  const [isRescheduling, setIsRescheduling] = useState(false);
+  const [isEditing, setIsEditing] = useState(false);
+  
+  // Ref-based locks to prevent race conditions (set synchronously before state updates)
+  const isAcceptingRef = React.useRef(false);
+  const isConfirmingRef = React.useRef(false);
+  const isRejectingRef = React.useRef(false);
+  const isReschedulingRef = React.useRef(false);
 
   const { getDistrictName, getProvinceName, locations } = useLocations();
 
   // Resolve district and province names using the centralized provider
+  // Enhanced to handle ObjectId references and nested location structures
   const resolvedGeo = useMemo(() => {
-    const pickId =
-      (request && (request as any).district) || district || null;
+    // Helper to extract ObjectId from various formats
+    const extractId = (val: any): string | null => {
+      if (!val && val !== 0) return null;
+      
+      // Handle Mongo Extended JSON format: { "$oid": "..." }
+      if (typeof val === "object" && val !== null) {
+        if (val.$oid) {
+          return String(val.$oid);
+        }
+        // Populated object with _id
+        if (val._id) {
+          // Handle nested _id that might also be in Mongo Extended JSON format
+          if (typeof val._id === "object" && val._id.$oid) {
+            return String(val._id.$oid);
+          }
+          return String(val._id);
+        }
+        // Direct ObjectId reference (try toString)
+        if (val.toString && typeof val.toString === "function") {
+          const str = val.toString();
+          if (/^[a-f0-9]{24}$/i.test(str)) {
+            return str;
+          }
+        }
+      }
+      
+      // Handle string ObjectId
+      if (typeof val === "string") {
+        if (/^[a-f0-9]{24}$/i.test(val)) return val;
+      }
+      
+      return null;
+    };
 
+    // Check multiple paths for district and province
+    let districtId = 
+      extractId(request?.district) ||
+      extractId(request?.location?.district) ||
+      extractId(request?.event?.district) ||
+      extractId((request as any)?.district) ||
+      null;
+
+    let provinceId = 
+      extractId(request?.province) ||
+      extractId(request?.location?.province) ||
+      extractId(request?.event?.province) ||
+      extractId((request as any)?.province) ||
+      null;
+
+    // Fallback: If location is missing, try to derive from coordinator's coverage area
+    // This works if backend enriches the request with coordinator location data
+    if (!districtId || !provinceId) {
+      // Check reviewer's location (if enriched by backend)
+      const reviewer = request?.reviewer;
+      if (reviewer) {
+        // Check if reviewer has location data in coverageAreas (if backend enriches)
+        const reviewerDistrictId = extractId(reviewer.district) || 
+                                   extractId(reviewer.coverageArea?.districtIds?.[0]) ||
+                                   extractId((reviewer as any)?.location?.district);
+        const reviewerProvinceId = extractId(reviewer.province) ||
+                                   extractId(reviewer.coverageArea?.province) ||
+                                   extractId((reviewer as any)?.location?.province);
+
+        if (!districtId && reviewerDistrictId) {
+          districtId = reviewerDistrictId;
+        }
+        if (!provinceId && reviewerProvinceId) {
+          provinceId = reviewerProvinceId;
+        }
+
+        // If we have reviewer userId, check if it's populated with location data
+        if (reviewer.userId && typeof reviewer.userId === "object") {
+          const coordUser = reviewer.userId as any;
+          const coordDistrictId = extractId(coordUser.coverageAreas?.[0]?.districtIds?.[0]) ||
+                                 extractId(coordUser.locations?.district);
+          const coordProvinceId = extractId(coordUser.coverageAreas?.[0]?.province) ||
+                                 extractId(coordUser.locations?.province);
+
+          if (!districtId && coordDistrictId) {
+            districtId = coordDistrictId;
+          }
+          if (!provinceId && coordProvinceId) {
+            provinceId = coordProvinceId;
+          }
+        }
+      }
+
+      // Check assignedCoordinator (alternative field)
+      const assignedCoord = request?.assignedCoordinator;
+      if (assignedCoord) {
+        const coordDistrictId = extractId(assignedCoord.district) ||
+                               extractId(assignedCoord.coverageArea?.districtIds?.[0]);
+        const coordProvinceId = extractId(assignedCoord.province) ||
+                               extractId(assignedCoord.coverageArea?.province);
+
+        if (!districtId && coordDistrictId) {
+          districtId = coordDistrictId;
+        }
+        if (!provinceId && coordProvinceId) {
+          provinceId = coordProvinceId;
+        }
+
+        // Check if userId is populated
+        if (assignedCoord.userId && typeof assignedCoord.userId === "object") {
+          const coordUser = assignedCoord.userId as any;
+          const coordDistrictId = extractId(coordUser.coverageAreas?.[0]?.districtIds?.[0]) ||
+                                 extractId(coordUser.locations?.district);
+          const coordProvinceId = extractId(coordUser.coverageAreas?.[0]?.province) ||
+                                 extractId(coordUser.locations?.province);
+
+          if (!districtId && coordDistrictId) {
+            districtId = coordDistrictId;
+          }
+          if (!provinceId && coordProvinceId) {
+            provinceId = coordProvinceId;
+          }
+        }
+      }
+
+      // Last fallback: Check requester's location
+      if (!districtId || !provinceId) {
+        const requester = request?.requester;
+        if (requester?.userId && typeof requester.userId === "object") {
+          const reqUser = requester.userId as any;
+          const reqDistrictId = extractId(reqUser.locations?.municipalityId) ||
+                               extractId(reqUser.coverageAreas?.[0]?.districtIds?.[0]);
+          const reqProvinceId = extractId(reqUser.locations?.province) ||
+                               extractId(reqUser.coverageAreas?.[0]?.province);
+
+          if (!districtId && reqDistrictId) {
+            districtId = reqDistrictId;
+          }
+          if (!provinceId && reqProvinceId) {
+            provinceId = reqProvinceId;
+          }
+        }
+      }
+    }
+
+    // If district is available but province is not, try to get province from district
+    let finalProvinceId = provinceId;
+    if (districtId && !finalProvinceId) {
+      // First try to find district in the locations cache
+      const districtObj = Object.values(locations.districts).find(
+        (d: any) => String(d._id) === String(districtId)
+      );
+      if (districtObj) {
+        if (districtObj.province) {
+          finalProvinceId = String(districtObj.province);
+        }
+        // If district is found in cache but no province, try to get from parent
+        if (!finalProvinceId && (districtObj as any).parent) {
+          const parentLocation = Object.values(locations.provinces).find(
+            (p: any) => String(p._id) === String((districtObj as any).parent)
+          ) || Object.values(locations.districts).find(
+            (d: any) => String(d._id) === String((districtObj as any).parent)
+          );
+          if (parentLocation && (parentLocation as any).type === 'province') {
+            finalProvinceId = String(parentLocation._id);
+          }
+        }
+      }
+    }
+
+    // If we have ObjectIds, resolve them - prefer backend-provided names, fallback to provider
+    if (districtId || finalProvinceId) {
+      // First try backend-provided names (from populated location objects)
+      let districtName = request?.districtName || 
+        (request?.district?.name) || 
+        (districtId ? getDistrictName(String(districtId)) : null);
+      let provinceName = request?.provinceName || 
+        (request?.province?.name) || 
+        (finalProvinceId ? getProvinceName(String(finalProvinceId)) : null);
+
+      // If district name resolution failed, try to find it directly in the cache
+      if (districtId && (!districtName || districtName === "Unknown District")) {
+        const districtObj = Object.values(locations.districts).find(
+          (d: any) => String(d._id) === String(districtId)
+        );
+        if (districtObj && districtObj.name) {
+          districtName = districtObj.name;
+        }
+      }
+
+      // If province name resolution failed but we have finalProvinceId, try cache
+      if (finalProvinceId && (!provinceName || provinceName === "Unknown Province")) {
+        const provinceObj = Object.values(locations.provinces).find(
+          (p: any) => String(p._id) === String(finalProvinceId)
+        );
+        if (provinceObj && provinceObj.name) {
+          provinceName = provinceObj.name;
+        }
+      }
+
+      return {
+        district: districtName && districtName !== "Unknown District" ? districtName : null,
+        province: provinceName && provinceName !== "Unknown Province" ? provinceName : null,
+      };
+    }
+
+    // Fallback: check if district prop is a friendly name (not ObjectId)
+    const pickId = (request && (request as any).district) || district || null;
     if (!pickId) return { district: null, province: null };
 
-    // If it's already a friendly name (not an ObjectId), use it
     const isObjectId = (s: any) =>
       typeof s === "string" && /^[a-f0-9]{24}$/i.test(s);
 
@@ -178,17 +392,246 @@ const EventCard: React.FC<EventCardProps> = ({
       return { district: pickId, province: null };
     }
 
-    // Use provider lookups
-    const districtName = getDistrictName(pickId);
-    // For province, we need to find the district's province
-    const districtObj = Object.values(locations.districts).find(d => d._id === pickId);
-    const provinceName = districtObj ? getProvinceName(districtObj.province) : null;
+    // Last resort: try to resolve as ObjectId
+    const districtName = getDistrictName(String(pickId));
+    const districtObj = Object.values(locations.districts).find(
+      (d: any) => String(d._id) === String(pickId)
+    );
+    const provinceName = districtObj && districtObj.province 
+      ? getProvinceName(String(districtObj.province)) 
+      : null;
 
     return {
       district: districtName !== "Unknown District" ? districtName : null,
       province: provinceName !== "Unknown Province" ? provinceName : null,
     };
-  }, [request, district, getDistrictName, getProvinceName, locations.districts]);
+  }, [request, district, getDistrictName, getProvinceName, locations.districts, locations.provinces]);
+
+  // Sync fullRequest with request prop when it changes (e.g., after refresh)
+  // This ensures the card shows the updated status after actions complete
+  useEffect(() => {
+    if (request && !viewOpen) {
+      // Only update if view modal is closed (to avoid overwriting modal data)
+      // Check if request has been updated (status changed)
+      const currentStatus = fullRequest?.status || fullRequest?.Status;
+      const newStatus = request?.status || request?.Status;
+      const requestId = request?.Request_ID || request?.RequestId || request?._id;
+      const fullRequestId = fullRequest?.Request_ID || fullRequest?.RequestId || fullRequest?._id;
+      
+      // Normalize statuses for comparison (handle case variations)
+      const normalizeStatusForCompare = (s: string | undefined | null) => {
+        if (!s) return '';
+        return String(s).toLowerCase().trim();
+      };
+      
+      const normalizedCurrent = normalizeStatusForCompare(currentStatus);
+      const normalizedNew = normalizeStatusForCompare(newStatus);
+      
+      // Define status hierarchy to prevent downgrading (e.g., approved -> review-rescheduled)
+      const getStatusPriority = (status: string) => {
+        if (!status) return 0;
+        const s = status.toLowerCase();
+        if (s.includes('approved') || s === 'approved') return 5;
+        if (s.includes('rejected') || s === 'rejected') return 4;
+        if (s.includes('review-rescheduled') || s.includes('rescheduled')) return 3;
+        if (s.includes('pending') || s.includes('review')) return 2;
+        if (s.includes('cancelled') || s === 'cancelled') return 1;
+        return 0;
+      };
+      
+      const currentPriority = getStatusPriority(normalizedCurrent);
+      const newPriority = getStatusPriority(normalizedNew);
+      
+      // Check for status transitions that indicate success (e.g., review-rescheduled -> approved)
+      const wasPending = normalizedCurrent.includes('pending') || normalizedCurrent.includes('review');
+      const wasReviewRescheduled = normalizedCurrent.includes('rescheduled') && normalizedCurrent.includes('review');
+      const isNowApproved = normalizedNew === 'approved' || normalizedNew.includes('approv');
+      const statusTransitioned = (wasPending || wasReviewRescheduled) && isNowApproved;
+      
+      // Prevent downgrading status (e.g., approved -> review-rescheduled)
+      // BUT: Allow 'rejected' and 'review-rescheduled' to override any status if it comes from the request prop (source of truth)
+      // This handles cases where an event handler incorrectly set the status and we need to correct it
+      // Also allows valid workflow transitions like approved -> review-rescheduled (after reschedule)
+      const isRejectedStatus = normalizedNew === 'rejected' || normalizedNew.includes('reject');
+      const isReviewRescheduledStatus = normalizedNew.includes('review-rescheduled') || 
+                                       (normalizedNew.includes('rescheduled') && normalizedNew.includes('review'));
+      // Allow rejected and review-rescheduled to override (they are valid state transitions from approved)
+      const wouldDowngrade = currentPriority > newPriority && !isRejectedStatus && !isReviewRescheduledStatus;
+      
+      // Check for field changes (title, location, etc.) - important for edit operations
+      const currentTitle = fullRequest?.Event_Title || fullRequest?.event?.Event_Title;
+      const newTitle = request?.Event_Title || request?.event?.Event_Title;
+      const currentLocation = fullRequest?.Location || fullRequest?.location;
+      const newLocation = request?.Location || request?.location;
+      const titleChanged = newTitle && newTitle !== currentTitle;
+      const locationChanged = newLocation && newLocation !== currentLocation;
+      
+      // Also check if fullRequest has old status but request prop might have new status
+      // This handles cases where the request prop updates but fullRequest hasn't
+      // For edit operations, we want to be more aggressive - update if ANY field changed
+      const anyFieldChanged = titleChanged || locationChanged || 
+                             (fullRequest?.Email !== request?.Email) ||
+                             (fullRequest?.Phone_Number !== request?.Phone_Number) ||
+                             (fullRequest?.Event_Description !== request?.Event_Description);
+      
+      const shouldUpdate = (normalizedCurrent !== normalizedNew || 
+                          !fullRequest || 
+                          requestId !== fullRequestId || 
+                          statusTransitioned ||
+                          anyFieldChanged ||
+                          // Force update if fullRequest exists but request prop is different object
+                          (fullRequest && request && JSON.stringify(fullRequest) !== JSON.stringify(request)))
+                          && !wouldDowngrade; // Don't update if it would downgrade status (unless it's rejected)
+      
+      if (shouldUpdate) {
+        // Request has been updated, sync fullRequest
+        setFullRequest(request);
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [request, viewOpen]);
+
+  // Listen for staff update events
+  useEffect(() => {
+    const handleStaffUpdated = async (event: CustomEvent) => {
+      const { requestId: eventRequestId, eventId: eventEventId } = event.detail || {};
+      
+      // Get current request ID
+      const currentRequestId = request?.Request_ID || request?.RequestId || request?._id || request?.requestId || null;
+      
+      // Check if this event is for this card's request
+      if (eventRequestId && currentRequestId && eventRequestId === currentRequestId) {
+        
+        // Invalidate cache for this request
+        try {
+          const { invalidateCache } = await import("@/utils/requestCache");
+          invalidateCache(new RegExp(`event-requests/${encodeURIComponent(currentRequestId)}`));
+          invalidateCache(/event-requests\?/);
+        } catch (e) {
+          console.error("[EventCard] Error invalidating cache:", e);
+        }
+        
+        // Dispatch refresh event to trigger parent refresh
+        if (typeof window !== "undefined") {
+          window.dispatchEvent(
+            new CustomEvent("unite:requests-changed", {
+              detail: {
+                requestId: currentRequestId,
+                action: "staff-updated",
+                forceRefresh: true,
+                cacheKeysToInvalidate: [`/api/event-requests/${currentRequestId}`],
+              },
+            })
+          );
+        }
+      }
+    };
+
+    if (typeof window !== "undefined") {
+      window.addEventListener("unite:staff-updated", handleStaffUpdated as unknown as EventListener);
+      return () => {
+        window.removeEventListener("unite:staff-updated", handleStaffUpdated as unknown as EventListener);
+      };
+    }
+  }, [request]);
+
+  // Listen for force refresh events (when we know a status change occurred)
+  useEffect(() => {
+    const handleForceRefresh = (event: CustomEvent) => {
+      const { requestId: eventRequestId, expectedStatus, originalStatus } = event.detail || {};
+      
+      // Compute request ID using the same logic as resolvedRequestId, but inside the handler
+      // This ensures we get the ID even if the component structure varies
+      const currentResolvedRequest = fullRequest || request || (request && (request as any).event) || null;
+      const currentRequestId = currentResolvedRequest?.Request_ID ||
+                               currentResolvedRequest?.RequestId ||
+                               currentResolvedRequest?._id ||
+                               currentResolvedRequest?.requestId ||
+                               request?.Request_ID || request?.RequestId || request?._id || request?.requestId ||
+                               fullRequest?.Request_ID || fullRequest?.RequestId || fullRequest?._id ||
+                               null;
+      
+      const currentStatus = fullRequest?.status || fullRequest?.Status || request?.status || request?.Status;
+      const normalizedCurrentStatus = currentStatus ? String(currentStatus).toLowerCase().trim() : '';
+      const normalizedOriginalStatus = originalStatus ? String(originalStatus).toLowerCase().trim() : '';
+      const normalizedExpectedStatus = expectedStatus ? String(expectedStatus).toLowerCase().trim() : '';
+      
+      // CRITICAL FIX: Only match by ID, NOT by status
+      // Matching by status causes ALL requests with the same status to be updated,
+      // which is why accepting one rescheduled request made all rescheduled requests appear as approved
+      const idMatches = eventRequestId && currentRequestId && String(eventRequestId) === String(currentRequestId);
+      
+      // Only update if this event is specifically for THIS card's request ID
+      // Do NOT match by status - that causes the visual bug where all requests with the same status get updated
+      if (idMatches) {
+        
+        // SIMPLE APPROACH: Just fetch the updated request directly from the API
+        // Wait a moment for backend to process, then fetch and update
+        const fetchUpdatedRequest = async () => {
+          try {
+            // Wait 500ms for backend to process the PUT request
+            await new Promise(resolve => setTimeout(resolve, 500));
+            
+            const updatedRequest = await svcFetchRequestDetails(currentRequestId, true);
+            
+            if (updatedRequest) {
+              setFullRequest(updatedRequest);
+              
+              // Clear loading state now that we've updated the card
+              if (typeof window !== "undefined") {
+                window.dispatchEvent(
+                  new CustomEvent("unite:request-editing", {
+                    detail: {
+                      requestId: currentRequestId,
+                      isEditing: false,
+                    },
+                  })
+                );
+              }
+            } else {
+              console.warn("[EventCard] ⚠️ Fetched request but got no data");
+              // Clear loading state anyway
+              if (typeof window !== "undefined") {
+                window.dispatchEvent(
+                  new CustomEvent("unite:request-editing", {
+                    detail: {
+                      requestId: currentRequestId,
+                      isEditing: false,
+                    },
+                  })
+                );
+              }
+            }
+          } catch (error: any) {
+            console.error("[EventCard] ❌ Error fetching updated request:", error);
+            // Clear loading state on error
+            if (typeof window !== "undefined") {
+              window.dispatchEvent(
+                new CustomEvent("unite:request-editing", {
+                  detail: {
+                    requestId: currentRequestId,
+                    isEditing: false,
+                  },
+                })
+              );
+            }
+          }
+        };
+        
+        // Start fetching
+        fetchUpdatedRequest();
+      } else {
+      }
+    };
+    
+    window.addEventListener("unite:force-refresh-requests", handleForceRefresh as unknown as EventListener);
+    return () => {
+      window.removeEventListener("unite:force-refresh-requests", handleForceRefresh as unknown as EventListener);
+    };
+    // Include request and fullRequest so handler has latest values
+    // Note: resolvedRequestId is computed inside the handler, so we don't need it in deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [request, fullRequest]);
 
   const resolvedRequest =
     fullRequest || request || (request && (request as any).event) || null;
@@ -200,54 +643,48 @@ const EventCard: React.FC<EventCardProps> = ({
     resolvedRequest?.requestId ||
     null;
 
-  const resolveActorEndpoint = () => {
-    const viewer = getViewer();
-    const roleString = String(viewer.role || "").toLowerCase();
+  // Listen for edit events to show loading animation
+  React.useEffect(() => {
+    if (!resolvedRequestId) return;
+    
+    const handleEditEvent = (evt: any) => {
+      const eventRequestId = evt?.detail?.requestId;
+      const currentRequestId = resolvedRequestId;
+      
+      if (eventRequestId && currentRequestId && String(eventRequestId) === String(currentRequestId)) {
+        const isEditing = evt?.detail?.isEditing === true;
+        const error = evt?.detail?.error;
+        
+        setIsEditing(isEditing);
+        
+        if (error) {
+          console.error("[EventCard] Edit error:", error);
+          // Error is already shown by the edit modal
+        }
+      }
+    };
+    
+    window.addEventListener("unite:request-editing", handleEditEvent as unknown as EventListener);
+    return () => {
+      window.removeEventListener("unite:request-editing", handleEditEvent as unknown as EventListener);
+    };
+  }, [resolvedRequestId]);
 
-    if (viewer.isAdmin) return "admin-action";
-    if (roleString.includes("coordinator")) return "coordinator-action";
-    if (roleString.includes("stakeholder")) return "stakeholder-action";
-
-    return "admin-action";
-  };
+  // Note: resolveActorEndpoint removed - we now use unified /api/event-requests/:id/actions endpoint
+  // Backend validates permissions automatically based on user's token
 
   const viewer = getViewer();
   const viewerId = getViewerId();
   const viewerRoleString = String(viewer.role || "").toLowerCase();
 
+  // Permission-based action computation
+  // Backend returns allowedActions based on user's permissions + authority hierarchy
   const allowedActionSet = useAllowedActionSet({
     request,
     fullRequest,
     resolvedRequest,
   });
-  // Debug: log allowed actions for the current viewer
-  try {
-    // Log more detailed payload for troubleshooting coordinator vs admin flows
-    const dbg = {
-      requestId: resolvedRequestId,
-      viewerId,
-      viewerRoleString,
-      actions: Array.from(allowedActionSet || []),
-      status: resolvedRequest?.Status || resolvedRequest?.status,
-      reviewer: resolvedRequest?.reviewer,
-      coordinator_id: resolvedRequest?.coordinator_id,
-      resolvedAllowedActions: resolvedRequest?.allowedActions ?? resolvedRequest?.allowed_actions ?? null,
-      rootAllowedActions: request?.allowedActions ?? request?.allowed_actions ?? null,
-    };
-    console.debug("[EventCard] allowedActionSet", dbg);
-    // For coordinator/admin sessions, also print the whole request snapshot (trimmed)
-    if (viewerRoleString.includes("coordinator") || viewerRoleString.includes("admin")) {
-      try {
-        console.debug("[EventCard] resolvedRequest (trimmed)", {
-          Request_ID: resolvedRequest?.Request_ID || resolvedRequest?._id,
-          Status: resolvedRequest?.Status || resolvedRequest?.status,
-          reviewer: resolvedRequest?.reviewer,
-          allowedActions: resolvedRequest?.allowedActions || resolvedRequest?.allowed_actions || null,
-          event: resolvedRequest?.event ? { Event_ID: resolvedRequest.event.Event_ID || resolvedRequest.event._id, Status: resolvedRequest.event.Status || resolvedRequest.event.status } : null,
-        });
-      } catch (e) {}
-    }
-  } catch (e) {}
+  
   const hasAllowedAction = React.useCallback(
     hasAllowedActionFactory(allowedActionSet),
     [allowedActionSet],
@@ -263,6 +700,8 @@ const EventCard: React.FC<EventCardProps> = ({
     }
   })();
 
+  // Helper: Check if viewer is assigned coordinator (for UI hints only)
+  // NOTE: This is NOT used for authorization - backend validates permissions
   const viewerIsAssignedCoordinator = (() => {
     try {
       if (!viewerId) return false;
@@ -293,28 +732,165 @@ const EventCard: React.FC<EventCardProps> = ({
     rescheduledISO: string,
     noteText: string,
   ) => {
-    try {
-      if (onRescheduleEvent) {
-        onRescheduleEvent(currentDateStr, rescheduledISO, noteText);
-      } else {
-        if (resolvedRequestId) {
-          await performRequestAction(
-            resolvedRequestId,
-            resolveActorEndpoint(),
-            "Rescheduled",
-            noteText,
-            rescheduledISO,
-          );
-        }
-      }
-    } catch (e) {
-      console.error("Reschedule error:", e);
-    } finally {
-      setRescheduleOpen(false);
+    const startTime = Date.now();
+    // Prevent duplicate actions
+    if (isRescheduling) {
+      return;
     }
 
-    if (viewOpen) {
-      await openViewRequest();
+    try {
+      // Close modal first so user can see the loading animation
+      setRescheduleOpen(false);
+      setIsRescheduling(true);
+
+      if (onRescheduleEvent) {
+        await onRescheduleEvent(currentDateStr, rescheduledISO, noteText);
+      } else {
+        if (!resolvedRequestId) {
+          console.error("[EventCard] Request ID not found");
+          alert("Request ID not found. Cannot reschedule.");
+          throw new Error("Request ID not found");
+        }
+        
+        if (!rescheduledISO) {
+          console.error("[EventCard] Rescheduled date is missing");
+          alert("Rescheduled date is required.");
+          throw new Error("Rescheduled date is required");
+        }
+
+        await svcPerformRequestAction(
+          resolvedRequestId,
+          "reschedule",
+          noteText,
+          rescheduledISO,
+        );
+      }
+      
+      if (viewOpen) {
+        await openViewRequest();
+      }
+    } catch (e: any) {
+      console.error("[EventCard] handleRescheduleConfirm error:", e);
+      const errorMessage = (e as Error).message || "Failed to reschedule request";
+      alert(`Failed to reschedule: ${errorMessage}`);
+      throw e; // Re-throw so modal can handle it
+    } finally {
+      setIsRescheduling(false);
+    }
+  };
+
+  // Unified action handler with refresh - used by ACCEPT, CONFIRM, and similar actions
+  // Ensures consistent UI refresh behavior across all actions
+  const handleActionWithRefresh = async (
+    actionFn: () => Promise<any>,
+    actionName: string
+  ) => {
+    if (!resolvedRequestId) {
+      alert("Request ID not found");
+      return;
+    }
+
+    const loadingSetter = actionName === 'accept' ? setIsAccepting : setIsConfirming;
+    
+    // Prevent duplicate actions
+    if (actionName === 'accept' && isAccepting) {
+      console.warn("[EventCard] Accept already in progress, ignoring duplicate call");
+      return;
+    }
+    if (actionName === 'confirm' && isConfirming) {
+      console.warn("[EventCard] Confirm already in progress, ignoring duplicate call");
+      return;
+    }
+    
+    try {
+      loadingSetter(true);
+      
+      // Execute action
+      const response = await actionFn();
+      
+      // Extract response data - handle both response structures
+      // performConfirmAction returns: { success, data: { request, ui: {...} } }
+      // performRequestAction returns: { success, data: { request, ui: {...} } }
+      // Both services should return the same structure, but handle edge cases
+      const responseRequest = response?.data?.request || response?.data || response?.request || response;
+      const uiFlags = response?.data?.ui || response?.ui || {};
+      const shouldRefresh = uiFlags?.shouldRefresh !== undefined 
+        ? uiFlags.shouldRefresh 
+        : true; // Default to true for state changes
+      const shouldCloseModal = uiFlags?.shouldCloseModal !== undefined 
+        ? uiFlags.shouldCloseModal 
+        : true;
+      const cacheKeysToInvalidate = uiFlags?.cacheKeysToInvalidate || [];
+      
+      // Clear permission cache and invalidate request cache IMMEDIATELY (synchronous, before state update)
+      try {
+        const { clearPermissionCache } = await import("@/utils/eventActionPermissions");
+        const { invalidateCache } = await import("@/utils/requestCache");
+        
+        // Extract event ID from response or request for targeted cache clearing
+        const eventId = responseRequest?.Event_ID || 
+                       responseRequest?.eventId || 
+                       responseRequest?.event?.Event_ID || 
+                       responseRequest?.event?.EventId ||
+                       resolvedRequest?.Event_ID ||
+                       resolvedRequest?.eventId ||
+                       resolvedRequest?.event?.Event_ID ||
+                       resolvedRequest?.event?.EventId ||
+                       null;
+        
+        // Clear permission cache for specific event (immediate, synchronous)
+        if (eventId) {
+          clearPermissionCache(String(eventId));
+        } else {
+          // Fallback: clear all permission cache if eventId not available
+          clearPermissionCache();
+        }
+        
+        // Invalidate request cache (immediate, synchronous)
+        if (cacheKeysToInvalidate && cacheKeysToInvalidate.length > 0) {
+          cacheKeysToInvalidate.forEach((key: string) => {
+            const cachePattern = new RegExp(key.replace(/^\/api\//, '').replace(/\//g, '.*'));
+            invalidateCache(cachePattern);
+          });
+        } else {
+          invalidateCache(/event-requests/);
+        }
+      } catch (cacheError) {
+        console.error(`[EventCard] Error clearing caches:`, cacheError);
+      }
+      
+      // Update UI immediately with response data (after cache clearing)
+      if (responseRequest) {
+        setFullRequest(responseRequest);
+      }
+      
+      // Dispatch single refresh event AFTER state update
+      if (typeof window !== "undefined") {
+        try {
+          window.dispatchEvent(new CustomEvent("unite:requests-changed", {
+            detail: { 
+              requestId: resolvedRequestId, 
+              action: actionName, 
+              forceRefresh: shouldRefresh,
+              shouldRefresh,
+              shouldCloseModal,
+              cacheKeysToInvalidate
+            }
+          }));
+        } catch (e) {
+          console.error(`[EventCard] Failed to dispatch event:`, e);
+        }
+      }
+      
+      // Close modal after state update and event dispatch
+      setViewOpen(false);
+    } catch (error: any) {
+      console.error(`[EventCard] ${actionName} action error:`, error);
+      
+      // Show error message to user
+      alert(`Failed to ${actionName} request: ${error?.message || "Unknown error"}`);
+    } finally {
+      loadingSetter(false);
     }
   };
 
@@ -327,17 +903,15 @@ const EventCard: React.FC<EventCardProps> = ({
 
   const handleCancelWithNote = async (note?: string) => {
     try {
-      const n = note ? note.trim() : "";
-      if (!n) {
-        throw new Error("Please provide a reason for cancelling this event");
-      }
-
+      // Note: Cancel actions don't include notes in the request body
+      // The note is for UI/display purposes only, not sent to backend
+      // Backend validator doesn't allow note for cancel actions
+      
       if (resolvedRequestId) {
-        await performRequestAction(
+        await svcPerformRequestAction(
           resolvedRequestId,
-          resolveActorEndpoint(),
-          "Cancelled",
-          n,
+          "cancel",
+          undefined, // Don't pass note for cancel actions
         );
       } else if (onCancelEvent) {
         onCancelEvent();
@@ -429,7 +1003,7 @@ const EventCard: React.FC<EventCardProps> = ({
         const stakeholderId =
           r?.stakeholder_id ||
           r?.Stakeholder_ID ||
-          (r?.made_by_role === "Stakeholder" ? r?.made_by_id : null) ||
+          (r?.requester?.userId || r?.requester?.id || null) ||
           null;
         const eventId = r?.Event_ID || r?.EventId || null;
 
@@ -481,63 +1055,125 @@ const EventCard: React.FC<EventCardProps> = ({
 
   const handleReject = () => {
     // legacy: call without note
-    if (onRejectEvent) {
+    if (onRejectEvent && request) {
       try {
-        onRejectEvent();
+        onRejectEvent(request);
       } catch (e) {}
     }
     setRejectOpen(false);
   };
 
-  const handleAccept = (note?: string) => {
-    (async () => {
-      try {
-        if (resolvedRequestId) {
-          await performRequestAction(
-            resolvedRequestId,
-            resolveActorEndpoint(),
-            "Accepted",
-            note || "",
-          );
-        } else if (onAcceptEvent) {
-          try {
-            onAcceptEvent(note);
-          } catch (e) {}
+  const handleAccept = async (note?: string) => {
+    // Prevent duplicate actions - check ref first (synchronous, prevents race conditions)
+    if (isAcceptingRef.current) {
+      console.warn("[EventCard] ❌ BLOCKED: Accept already in progress (ref check), ignoring duplicate call");
+      return;
+    }
+    
+    // Also check state (redundant but safe)
+    if (isAccepting) {
+      return;
+    }
+
+    // Check if request is already approved
+    const currentStatus = fullRequest?.status || fullRequest?.Status || request?.status || request?.Status;
+    const normalizedStatus = currentStatus ? String(currentStatus).toLowerCase().trim() : '';
+    const isAlreadyApproved = normalizedStatus === 'approved' || normalizedStatus.includes('approv');
+    
+    if (isAlreadyApproved) {
+      // Close modal if open
+      setAcceptOpen(false);
+      return;
+    }
+
+    try {
+      // Set ref immediately (synchronous) to prevent race conditions
+      isAcceptingRef.current = true;
+      
+      // Set loading state FIRST to prevent duplicate calls
+      setIsAccepting(true);
+      
+      // Close modal after setting loading state
+      setAcceptOpen(false);
+      
+      // Check if callback is provided (preferred path - direct refresh from page)
+      if (onAcceptEvent) {
+        try {
+          await onAcceptEvent(note);
+          return;
+        } catch (callbackError: any) {
+          console.error("[EventCard] onAcceptEvent callback failed:", callbackError);
+          throw callbackError;
         }
-      } catch (e) {
-        console.error("Accept error:", e);
-        alert(
-          "Failed to accept request: " +
-            ((e as Error).message || "Unknown error"),
-        );
-      } finally {
-        setAcceptOpen(false);
       }
-    })();
+
+      // Fallback to direct API call if no callback
+      if (!resolvedRequestId) {
+        console.error("[EventCard] Request ID not found");
+        alert("Request ID not found. Cannot accept.");
+        throw new Error("Request ID not found");
+      }
+
+      // Use unified action handler with refresh
+      await handleActionWithRefresh(
+        () => svcPerformRequestAction(resolvedRequestId, "accept", undefined),
+        'accept'
+      );
+    } catch (e: any) {
+      console.error("[EventCard] handleAccept error:", e);
+      const errorMessage = e?.message || "Failed to accept request";
+      alert(`Failed to accept: ${errorMessage}`);
+      throw e; // Re-throw so modal can handle it
+    } finally {
+      setIsAccepting(false);
+      // Reset ref in finally to ensure it's always cleared
+      isAcceptingRef.current = false;
+    }
   };
 
   // New: handle reject with admin note
-  const handleRejectWithNote = (note?: string) => {
-    (async () => {
-      try {
-        if (resolvedRequestId) {
-          await performRequestAction(
-            resolvedRequestId,
-            resolveActorEndpoint(),
-            "Rejected",
-            note || "",
-          );
-        } else if (onRejectEvent) {
-          try {
-            onRejectEvent(note);
-          } catch (e) {}
+  const handleRejectWithNote = async (note?: string) => {
+    // Prevent duplicate actions
+    if (isRejecting) {
+      return;
+    }
+
+    try {
+      // Close modal first so user can see the loading animation
+      setRejectOpen(false);
+      setIsRejecting(true);
+      
+      // Check if callback is provided (preferred path - direct refresh from page)
+      if (onRejectEvent && request) {
+        try {
+          await onRejectEvent(request, note);
+          return;
+        } catch (callbackError: any) {
+          console.error("[EventCard] onRejectEvent callback failed:", callbackError);
+          throw callbackError;
         }
-      } catch (e) {
-        // ignore
-      } finally {
-        setRejectOpen(false);
       }
-    })();
+
+      // Fallback to direct API call if no callback
+      if (!resolvedRequestId) {
+        console.error("[EventCard] Request ID not found");
+        alert("Request ID not found. Cannot reject.");
+        throw new Error("Request ID not found");
+      }
+
+      await svcPerformRequestAction(
+        resolvedRequestId,
+        "reject",
+        note || "",
+      );
+    } catch (e: any) {
+      console.error("[EventCard] handleRejectWithNote error:", e);
+      const errorMessage = e?.message || "Failed to reject request";
+      alert(`Failed to reject: ${errorMessage}`);
+      throw e; // Re-throw so modal can handle it
+    } finally {
+      setIsRejecting(false);
+    }
   };
 
   // Menu for Approved status
@@ -569,6 +1205,43 @@ const EventCard: React.FC<EventCardProps> = ({
     }
   };
 
+  // Debug: log permission-based allowed actions with detailed reschedule check (after flagFor is defined)
+  React.useEffect(() => {
+    try {
+      const extractedActions = Array.from(allowedActionSet || []);
+      const hasRescheduleDirect = extractedActions.includes('reschedule');
+      const hasReschedDirect = extractedActions.includes('resched');
+      const canRescheduleCheck = flagFor("canReschedule", ["resched", "reschedule"]);
+      const hasRescheduleViaHasAllowed = hasAllowedAction(["resched", "reschedule"]);
+      
+      const dbg = {
+        requestId: resolvedRequestId,
+        viewerId,
+        // Role string for context only - action visibility is permission-driven
+        viewerRole: viewerRoleString,
+        // Permission-based allowed actions from backend
+        allowedActions: extractedActions,
+        actionCount: extractedActions.length,
+        status: resolvedRequest?.Status || resolvedRequest?.status,
+        // Backend-computed permissions (from API response)
+        backendAllowedActions: resolvedRequest?.allowedActions ?? resolvedRequest?.allowed_actions ?? null,
+        rootAllowedActions: request?.allowedActions ?? request?.allowed_actions ?? null,
+        // Reschedule-specific debugging
+        hasRescheduleDirect,
+        hasReschedDirect,
+        canRescheduleCheck,
+        hasRescheduleViaHasAllowed,
+        // Check what flagFor sees
+        canRescheduleFlag: (resolvedRequest || request || {})?.canReschedule,
+      };
+      
+      // Detailed request snapshot for debugging permission issues (especially for coordinators)
+      // (Debug logging removed)
+    } catch (e) {
+      console.error("[EventCard] Error in permission debugging:", e);
+    }
+  }, [allowedActionSet, resolvedRequest, request, resolvedRequestId, viewerId, viewerRoleString, flagFor, hasAllowedAction]);
+
   // Menus are now rendered by EventActionMenu which uses the same flags and setters
 
   // Menu for Pending status
@@ -580,7 +1253,7 @@ const EventCard: React.FC<EventCardProps> = ({
   // API_BASE imported from event-card.constants
 
   // Network operations moved to services/requestsService
-  const performRequestAction = svcPerformRequestAction;
+  // Using service methods directly - no need for local wrapper
 
   // Open local view modal, fetching full request details when necessary
   const openViewRequest = async () => {
@@ -631,7 +1304,7 @@ const EventCard: React.FC<EventCardProps> = ({
       const headers: any = { "Content-Type": "application/json" };
 
       if (token) headers["Authorization"] = `Bearer ${token}`;
-      const url = `${API_BASE}/api/requests/${encodeURIComponent(requestId)}`;
+      const url = `${API_BASE}/api/event-requests/${encodeURIComponent(requestId)}`;
       let res;
 
       if (token) {
@@ -768,31 +1441,79 @@ const EventCard: React.FC<EventCardProps> = ({
     }
   };
 
-  // Stakeholder confirm action moved to services
-  const performStakeholderConfirm = svcPerformStakeholderConfirm;
+  // Unified confirm action handler - uses same pattern as ACCEPT
+  // Uses callback from page for direct refresh (like RESCHEDULE)
+  const handleConfirmAction = async () => {
+    // Prevent duplicate actions
+    if (isConfirming) {
+      return;
+    }
+    
+    // Check if already approved to prevent duplicate confirm
+    const currentStatus = resolvedRequest?.status || resolvedRequest?.Status;
+    if (currentStatus === 'approved' || currentStatus === 'Approved') {
+      alert("This request has already been approved and cannot be confirmed again.");
+      return;
+    }
 
-  const runStakeholderDecision = async (decision: "Accepted" | "Rejected") => {
     try {
+      setIsConfirming(true);
+      
+      // Check if callback is provided (preferred path - direct refresh from page)
+      if (onConfirmEvent) {
+        try {
+          await onConfirmEvent();
+          return;
+        } catch (callbackError: any) {
+          console.error("[EventCard] onConfirmEvent callback failed:", callbackError);
+          throw callbackError;
+        }
+      }
+
+      // Fallback to direct API call if no callback
       if (!resolvedRequestId) {
-        throw new Error("Unable to determine request id");
+        console.error("[EventCard] Request ID not found");
+        alert("Request ID not found");
+        return;
       }
-      // If current viewer is a coordinator confirming an admin decision, use the coordinator-confirm endpoint
-      if (
-        viewerRoleString.includes("coordinator") &&
-        viewerIsAssignedCoordinator
-      ) {
-        await performCoordinatorConfirm(resolvedRequestId, decision);
-      } else {
-        await performStakeholderConfirm(resolvedRequestId, decision);
-      }
-      setViewOpen(false);
-    } catch (err: any) {
-      console.error("Stakeholder decision error:", err);
-      alert(
-        `Failed to ${
-          decision === "Accepted" ? "confirm" : "decline"
-        } request: ${err?.message || "Unknown error"}`,
+      
+      // Use unified action handler with refresh
+      await handleActionWithRefresh(
+        () => svcPerformConfirmAction(resolvedRequestId),
+        'confirm'
       );
+    } catch (e: any) {
+      console.error("[EventCard] handleConfirmAction error:", e);
+      const errorMessage = e?.message || "Failed to confirm request";
+      alert(`Failed to confirm: ${errorMessage}`);
+      throw e; // Re-throw so caller can handle it
+    } finally {
+      setIsConfirming(false);
+    }
+  };
+
+  // Stakeholder confirm action moved to services
+  // Unified confirm action - no need for role-specific functions
+  // Note: This function is kept for backward compatibility but now uses handleConfirmAction
+  const runStakeholderDecision = async (decision: "Accepted" | "Rejected") => {
+    if (decision === "Accepted") {
+      // Use unified handleConfirmAction for consistency
+      await handleConfirmAction();
+    } else {
+      // For rejected/declined, use the existing logic
+      try {
+        if (!resolvedRequestId) {
+          throw new Error("Unable to determine request id");
+        }
+        // Decline action would use performRequestAction with "decline"
+        // For now, just show error as this path shouldn't be used
+        throw new Error("Decline action should use performRequestAction");
+      } catch (err: any) {
+        console.error("Decline decision error:", err);
+        alert(
+          `Failed to decline request: ${err?.message || "Unknown error"}`,
+        );
+      }
     }
   };
 
@@ -866,45 +1587,31 @@ const EventCard: React.FC<EventCardProps> = ({
           key="reschedule"
           description="Propose a new schedule"
           startContent={<Clock />}
-          onPress={() => setRescheduleOpen(true)}
+          onPress={() => {
+            setRescheduleOpen(true);
+          }}
         >
           Reschedule
         </DropdownItem>,
       );
     }
 
-    // Show Confirm action when allowed, or as a fallback when request is review-accepted
-    // and the current viewer is the assigned coordinator (ensures quick-action availability).
-    if (
-      flagFor("canConfirm", "confirm") ||
-      (isReviewAccepted && viewerIsAssignedCoordinator)
-    ) {
+    // Show Confirm action when permission-based check allows it
+    // Backend validates permissions when action is performed
+    // Disable if already confirming/accepting or request is already approved
+    if (flagFor("canConfirm", "confirm")) {
+      const isAlreadyApproved = resolvedRequest?.status === 'approved' || 
+                                 resolvedRequest?.Status === 'Approved' ||
+                                 resolvedRequest?.status === 'APPROVED';
       actions.push(
         <DropdownItem
           key="confirm"
           description="Confirm the reviewer decision"
           startContent={<Check />}
-          onPress={async () => {
-            try {
-              if (
-                viewerRoleString.includes("coordinator") &&
-                viewerIsAssignedCoordinator
-              ) {
-                await performCoordinatorConfirm(resolvedRequestId, "Accepted");
-                setViewOpen(false);
-              } else {
-                await runStakeholderDecision("Accepted");
-              }
-            } catch (e) {
-              console.error("Confirm error:", e);
-              alert(
-                "Failed to confirm request: " + (e as any)?.message ||
-                  "Unknown error",
-              );
-            }
-          }}
+          onPress={handleConfirmAction}
+          isDisabled={isConfirming || isAccepting || isAlreadyApproved}
         >
-          Confirm
+          {isConfirming ? "Confirming..." : "Confirm"}
         </DropdownItem>,
       );
     }
@@ -980,32 +1687,15 @@ const EventCard: React.FC<EventCardProps> = ({
     const buttons: JSX.Element[] = [];
     // Only show the core action set: Accept, Reschedule, Reject
     // Reject is styled as a danger action to make it visually distinct.
-    if (isReviewAccepted && viewerIsAssignedCoordinator) {
+    // Use permission-based check for confirm action instead of role-based check
+    if (hasAllowedAction("confirm") || flagFor("canConfirm", "confirm")) {
       buttons.push(
         <Button
           key="footer-confirm"
           className="bg-black text-white"
           color="default"
-          onPress={async () => {
-            setViewOpen(false);
-            try {
-              if (!resolvedRequestId) return alert("Request id not found");
-              await performCoordinatorConfirm(resolvedRequestId, "Accepted");
-              try {
-                window.dispatchEvent(
-                  new CustomEvent("unite:requests-changed", {
-                    detail: { requestId: resolvedRequestId },
-                  }),
-                );
-              } catch (e) {}
-            } catch (e) {
-              console.error("Footer confirm error:", e);
-              alert(
-                "Failed to confirm request: " +
-                  ((e as any)?.message || "Unknown error"),
-              );
-            }
-          }}
+          onPress={handleConfirmAction}
+          isDisabled={isConfirming || isAccepting}
         >
           Confirm
         </Button>,
@@ -1020,8 +1710,9 @@ const EventCard: React.FC<EventCardProps> = ({
             setViewOpen(false);
             setAcceptOpen(true);
           }}
+          isDisabled={isAccepting || isConfirming}
         >
-          Accept
+          {isAccepting ? "Accepting..." : "Accept"}
         </Button>,
       );
     }
@@ -1079,8 +1770,9 @@ const EventCard: React.FC<EventCardProps> = ({
 
   // Determine a human-friendly pending-stage label for Pending requests
   const getPendingStageLabel = (): string | null => {
+    // Always prefer fullRequest first (it has the most up-to-date status)
     const r =
-      resolvedRequest || request || (request && (request as any).event) || {};
+      fullRequest || resolvedRequest || request || (request && (request as any).event) || {};
 
     // Prefer a human-friendly label returned by the backend when present
     const backendLabel =
@@ -1090,148 +1782,64 @@ const EventCard: React.FC<EventCardProps> = ({
     // First check the request Status field for new workflow statuses
     const requestStatus = String(r?.Status || r?.status || "").toLowerCase();
 
-    // Unified workflow statuses (case-insensitive)
+    // Generic, scalable status labels - never depend on role names
+    // Use backend's getHumanStatusLabel function logic for consistency
+    
+    // Pending states
     if (
       requestStatus.includes("pending") ||
-      requestStatus.includes("pending_review") ||
       requestStatus.includes("pending_review")
     ) {
-      // Check for Coordinator-Stakeholder case: if creator is Coordinator and stakeholder_id exists, Stakeholder is reviewer
-      const creatorRole = r?.made_by_role || r?.creator?.role;
-      const isCoordinatorRequest = creatorRole && String(creatorRole).toLowerCase().includes("coordinator");
-      const hasStakeholder = !!(r?.stakeholder_id || r?.Stakeholder_ID || r?.stakeholderId);
-      const isCoordinatorStakeholderCase = isCoordinatorRequest && hasStakeholder;
-      
-      // Check reviewer role
-      const reviewerRole = r?.reviewer?.role ? String(r.reviewer.role).toLowerCase() : null;
-      
-      // For Coordinator-Stakeholder cases, prioritize Stakeholder reviewer
-      if (isCoordinatorStakeholderCase && (reviewerRole?.includes("stakeholder") || !reviewerRole)) {
-        return "Waiting for Stakeholder review";
-      }
-      
-      if (reviewerRole?.includes("stakeholder")) {
-        return "Waiting for Stakeholder review";
-      }
-      if (reviewerRole?.includes("coordinator")) {
-        return "Waiting for Coordinator review";
-      }
-      if (
-        reviewerRole?.includes("admin") ||
-        reviewerRole?.includes("systemadmin")
-      ) {
-        return "Waiting for Admin review";
-      }
-      return "Waiting for Admin or Coordinator review";
+      return "Waiting for Review";
     }
 
+    // Review states
     if (requestStatus.includes("review")) {
-      if (requestStatus.includes("accepted"))
-        return "Waiting for Coordinator confirmation";
+      if (requestStatus.includes("accepted")) {
+        return "Accepted / Confirmed";
+      }
+      
       if (
         requestStatus.includes("resched") ||
         requestStatus.includes("reschedule") ||
         requestStatus.includes("rescheduled")
       ) {
-        const reviewerRole = r?.reviewer?.role ? String(r.reviewer.role).toLowerCase() : null;
-        // Check for Coordinator-Stakeholder case
-        const creatorRole = r?.made_by_role || r?.creator?.role;
-        const isCoordinatorRequest = creatorRole && String(creatorRole).toLowerCase().includes("coordinator");
-        const hasStakeholder = !!(r?.stakeholder_id || r?.Stakeholder_ID || r?.stakeholderId);
-        const isCoordinatorStakeholderCase = isCoordinatorRequest && hasStakeholder;
-        
-        if (isCoordinatorStakeholderCase && (reviewerRole?.includes("stakeholder") || !reviewerRole)) {
-          return "Waiting for Stakeholder review (reschedule)";
-        }
-        if (reviewerRole?.includes("stakeholder")) {
-          return "Waiting for Stakeholder review (reschedule)";
-        }
-        if (reviewerRole?.includes("coordinator")) {
-          return "Waiting for Coordinator review (reschedule)";
-        }
-        return "Waiting for Admin review (reschedule)";
+        return "Reschedule Requested";
       }
       
-      // Check for Coordinator-Stakeholder case for general review status
-      const creatorRole = r?.made_by_role || r?.creator?.role;
-      const isCoordinatorRequest = creatorRole && String(creatorRole).toLowerCase().includes("coordinator");
-      const hasStakeholder = !!(r?.stakeholder_id || r?.Stakeholder_ID || r?.stakeholderId);
-      const isCoordinatorStakeholderCase = isCoordinatorRequest && hasStakeholder;
-      const reviewerRole = r?.reviewer?.role ? String(r.reviewer.role).toLowerCase() : null;
-      
-      if (isCoordinatorStakeholderCase && (reviewerRole?.includes("stakeholder") || !reviewerRole)) {
-        return "Waiting for Stakeholder review";
-      }
-      if (reviewerRole?.includes("stakeholder")) {
-        return "Waiting for Stakeholder review";
-      }
-      if (reviewerRole?.includes("coordinator")) {
-        return "Waiting for Coordinator review";
-      }
-      if (reviewerRole?.includes("admin") || reviewerRole?.includes("systemadmin")) {
-        return "Waiting for Admin review";
-      }
-      return "Waiting for Admin or Coordinator review";
+      // Other review states
+      return "Under Review";
     }
 
+    // Rescheduled states (legacy)
     if (
       requestStatus.includes("rescheduled_by_admin") ||
-      requestStatus.includes("rescheduled_by_admin") ||
-      requestStatus.includes("rescheduled_by_admin")
+      requestStatus.includes("rescheduled_by_coordinator") ||
+      requestStatus.includes("rescheduled_by_stakeholder")
     ) {
-      const reviewerRole = r?.reviewer?.role ? String(r.reviewer.role).toLowerCase() : null;
-      // Check for Coordinator-Stakeholder case
-      const creatorRole = r?.made_by_role || r?.creator?.role;
-      const isCoordinatorRequest = creatorRole && String(creatorRole).toLowerCase().includes("coordinator");
-      const hasStakeholder = !!(r?.stakeholder_id || r?.Stakeholder_ID || r?.stakeholderId);
-      const isCoordinatorStakeholderCase = isCoordinatorRequest && hasStakeholder;
-      
-      if (isCoordinatorStakeholderCase && (reviewerRole?.includes("stakeholder") || !reviewerRole)) {
-        return "Waiting for Stakeholder review (reschedule)";
-      }
-      if (reviewerRole?.includes("stakeholder")) {
-        return "Waiting for Stakeholder review (reschedule)";
-      }
-      if (reviewerRole?.includes("coordinator")) {
-        return "Waiting for Coordinator review (reschedule)";
-      }
-      return "Waiting for Admin review (reschedule)";
-    }
-    if (requestStatus.includes("rescheduled_by_coordinator")) {
-      return "Rescheduled by coordinator";
-    }
-    if (requestStatus.includes("rescheduled_by_stakeholder")) {
-      return "Rescheduled by stakeholder";
+      return "Reschedule Requested";
     }
 
-    // Fallback to old logic for backward compatibility
-    if (status !== "Pending") return null;
-    const adminAction =
-      (r as any).AdminAction ?? (r as any).adminAction ?? null;
-    const stakeholderAction =
-      (r as any).StakeholderFinalAction ??
-      (r as any).stakeholderFinalAction ??
-      null;
-    const coordinatorAction =
-      (r as any).CoordinatorFinalAction ??
-      (r as any).coordinatorFinalAction ??
-      null;
+    // Final states
+    if (requestStatus.includes("approved") || requestStatus.includes("completed")) {
+      return "Completed / Published";
+    }
+    
+    if (requestStatus.includes("rejected") || requestStatus.includes("reject")) {
+      return "Rejected";
+    }
+    
+    if (requestStatus.includes("cancelled") || requestStatus.includes("cancel")) {
+      return "Cancelled";
+    }
 
-    // Check if there's a stakeholder involved in this request
-    const hasStakeholder =
-      r?.stakeholder_id ||
-      r?.Stakeholder_ID ||
-      r?.StakeholderId ||
-      r?.MadeByStakeholderID ||
-      r?.stakeholder?.Stakeholder_ID ||
-      null;
+    // Awaiting confirmation
+    if (requestStatus.includes("awaiting_confirmation")) {
+      return "Waiting for Confirmation";
+    }
 
-    if (!adminAction) return "Waiting for admin review";
-    if (hasStakeholder && !stakeholderAction)
-      return "Waiting for stakeholder confirmation";
-    if (!coordinatorAction) return "Waiting for coordinator confirmation";
-
-    return null;
+    // Fallback: return generic label or status as-is
+    return status || "Unknown";
   };
 
   // Try to derive the current viewer id from legacy storage
@@ -1264,8 +1872,15 @@ const EventCard: React.FC<EventCardProps> = ({
   const headerStatusLabel = (() => {
     try {
       const pendingLabel = getPendingStageLabel();
-      const r = resolvedRequest || request || {};
-      const rawStatus = String(r?.Status || r?.status || status || "").toLowerCase();
+      // Always prefer fullRequest first (it has the most up-to-date status)
+      const r = fullRequest || resolvedRequest || request || {};
+      // Use fullRequest status first, then fallback to status prop only if fullRequest doesn't have status
+      const rawStatus = String(
+        (fullRequest?.Status || fullRequest?.status) || 
+        (r?.Status || r?.status) || 
+        status || 
+        ""
+      ).toLowerCase();
 
       // If pending subtype indicates 'completed', don't show it
       if (rawStatus.includes("pending") && pendingLabel) {
@@ -1278,7 +1893,14 @@ const EventCard: React.FC<EventCardProps> = ({
       if (rawStatus.includes("reject") || rawStatus.includes("rejected")) return "Rejected";
       if (rawStatus.includes("cancel")) return "Cancelled";
 
-      return (r?.statusLabel || r?.StatusLabel || r?.status || r?.Status || status) || null;
+      // Prefer fullRequest status over status prop
+      return (
+        (fullRequest?.statusLabel || fullRequest?.StatusLabel) ||
+        (r?.statusLabel || r?.StatusLabel) ||
+        (fullRequest?.status || fullRequest?.Status) ||
+        (r?.status || r?.Status) ||
+        status
+      ) || null;
     } catch (e) {
       return null;
     }
@@ -1460,12 +2082,47 @@ const EventCard: React.FC<EventCardProps> = ({
       return null;
     };
 
+    // Helper to parse date from various formats including Mongo Extended JSON
+    const parseDate = (v: any): Date | null => {
+      if (!v && v !== 0) return null;
+      try {
+        if (typeof v === "string" || typeof v === "number") {
+          const d = new Date(v);
+          if (!isNaN(d.getTime())) return d;
+        }
+        if (typeof v === "object" && v !== null) {
+          // Handle Mongo Extended JSON format: { $date: "..." } or { $date: { $numberLong: "..." } }
+          if (v.$date) {
+            const inner = v.$date.$numberLong || v.$date;
+            const n = typeof inner === "string" ? Number(inner) : inner;
+            const d = new Date(Number(n));
+            if (!isNaN(d.getTime())) return d;
+          }
+          if (v.$numberLong) {
+            const d = new Date(Number(v.$numberLong));
+            if (!isNaN(d.getTime())) return d;
+          }
+          // Try direct Date conversion
+          const maybeNum = Number(v);
+          if (!isNaN(maybeNum)) {
+            const d = new Date(maybeNum);
+            if (!isNaN(d.getTime())) return d;
+          }
+        }
+      } catch (e) {
+        // fall through
+      }
+      return null;
+    };
+
     const startVal = pick(
       r?.Start_Date,
+      r?.Date, // Add Date field support
       r?.Start,
       r?.start,
       r?.StartTime,
       r?.event?.Start_Date,
+      r?.event?.Date,
       r?.event?.Start,
       r?.event?.StartTime,
     );
@@ -1483,9 +2140,15 @@ const EventCard: React.FC<EventCardProps> = ({
     const formatDateShort = (d?: any) => {
       if (!d) return null;
       try {
+        // Use parseDate helper to handle Mongo Extended JSON
+        const parsed = parseDate(d);
+        if (parsed) {
+          return parsed.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+        }
+        // Fallback to direct Date conversion
         const dt = new Date(d);
         if (isNaN(dt.getTime())) return String(d);
-        return dt.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+        return dt.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
       } catch (e) {
         return String(d);
       }
@@ -1494,6 +2157,12 @@ const EventCard: React.FC<EventCardProps> = ({
     const formatTimeShort = (t?: any) => {
       if (!t) return null;
       try {
+        // Use parseDate helper to handle Mongo Extended JSON
+        const parsed = parseDate(t);
+        if (parsed) {
+          return parsed.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
+        }
+        // Fallback to direct Date conversion
         const dt = new Date(t);
         if (isNaN(dt.getTime())) return String(t);
         return dt.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
@@ -1520,9 +2189,39 @@ const EventCard: React.FC<EventCardProps> = ({
     return null;
   }, [resolvedRequest, request, fullRequest]);
 
+  // Compute display status from fullRequest first, then fallback to status prop
+  // This ensures the status Chip updates when fullRequest changes (e.g., after accept action)
+  const displayStatus = (() => {
+    try {
+      // Always prefer fullRequest first (it has the most up-to-date status)
+      const r = fullRequest || resolvedRequest || request || {};
+      const statusRaw = String(r?.status || r?.Status || status || "pending-review").toLowerCase();
+      
+      if (statusRaw.includes("reject") || statusRaw.includes("rejected")) return "Rejected";
+      if (statusRaw.includes("approv") || statusRaw.includes("approved") || 
+          statusRaw.includes("complete") || statusRaw.includes("completed")) return "Approved";
+      if (statusRaw.includes("cancel") || statusRaw.includes("cancelled")) return "Cancelled";
+      return "Pending";
+    } catch (e) {
+      return status || "Pending";
+    }
+  })();
+
   return (
     <>
-      <Card className="w-full rounded-xl border border-gray-200 shadow-none bg-white">
+      <Card className="w-full rounded-xl border border-gray-200 shadow-none bg-white relative">
+        {/* Loading overlay to prevent interaction during confirm, accept, reject, reschedule, or edit */}
+        {(isConfirming || isAccepting || isRejecting || isRescheduling || isEditing) && (
+          <div className="absolute inset-0 bg-white/80 backdrop-blur-sm z-50 flex items-center justify-center rounded-xl">
+            <div className="flex flex-col items-center gap-3">
+              <Spinner size="lg" color="primary" />
+              <p className="text-sm font-medium text-gray-700">
+                {isEditing ? "Editing event..." : isAccepting ? "Accepting request..." : isRejecting ? "Rejecting request..." : isRescheduling ? "Rescheduling request..." : "Confirming request..."}
+              </p>
+              <p className="text-xs text-gray-500">Please wait while we update the request</p>
+            </div>
+          </div>
+        )}
         <CardHeader className="flex justify-between items-start">
           {/* Title and Organization */}
           <div>
@@ -1559,7 +2258,7 @@ const EventCard: React.FC<EventCardProps> = ({
               hasAllowedAction={hasAllowedAction}
               flagFor={flagFor}
               status={status}
-              request={request}
+              request={resolvedRequest || fullRequest || request}
               onViewEvent={onViewEvent}
               onEditEvent={onEditEvent}
               openViewRequest={openViewRequest}
@@ -1575,24 +2274,8 @@ const EventCard: React.FC<EventCardProps> = ({
                 try {
                   if (!resolvedRequestId)
                     throw new Error("Request id not found");
-                  if (
-                    viewerRoleString.includes("coordinator") &&
-                    viewerIsAssignedCoordinator
-                  ) {
-                    await performCoordinatorConfirm(
-                      resolvedRequestId,
-                      "Accepted",
-                    );
-                  } else {
-                    await runStakeholderDecision("Accepted");
-                  }
-                  try {
-                    window.dispatchEvent(
-                      new CustomEvent("unite:requests-changed", {
-                        detail: { requestId: resolvedRequestId },
-                      }),
-                    );
-                  } catch (e) {}
+                  // Use unified handleConfirmAction for all confirm actions
+                  await handleConfirmAction();
                 } catch (e) {
                   console.error("Dropdown confirm error:", e);
                   try {
@@ -1604,6 +2287,7 @@ const EventCard: React.FC<EventCardProps> = ({
                 }
               }}
             />
+            {/* Debug logging removed */}
           </Dropdown>
         </CardHeader>
         <CardBody className="py-4">
@@ -1629,9 +2313,9 @@ const EventCard: React.FC<EventCardProps> = ({
             </Chip>
             <Chip
               color={
-                status === "Approved"
+                displayStatus === "Approved"
                   ? "success"
-                  : status === "Pending"
+                  : displayStatus === "Pending"
                     ? "warning"
                     : "danger"
               }
@@ -1639,7 +2323,7 @@ const EventCard: React.FC<EventCardProps> = ({
               size="sm"
               variant="flat"
             >
-              {status}
+              {displayStatus}
             </Chip>
           </div>
           <div className="space-y-2">
@@ -1652,7 +2336,7 @@ const EventCard: React.FC<EventCardProps> = ({
             <div className="flex justify-between items-center">
               <p className="text-xs">District</p>
               <p className="text-xs text-default-800 font-medium">
-                {resolvedGeo?.district || district}
+                {resolvedGeo?.district || (district && !/^[a-f0-9]{24}$/i.test(String(district)) ? district : "N/A")}
               </p>
             </div>
             <div className="flex justify-between items-start">
@@ -2077,7 +2761,21 @@ const EventCard: React.FC<EventCardProps> = ({
         requestId={request?.Request_ID}
         onClose={() => setManageStaffOpen(false)}
         onSaved={async () => {
-          // onSaved hook: you can refresh data here if needed
+          // onSaved hook: refresh request data and dispatch event
+          const requestId = request?.Request_ID || request?.RequestId || request?._id || null;
+          if (requestId && typeof window !== "undefined") {
+            // Dispatch refresh event to trigger parent refresh
+            window.dispatchEvent(
+              new CustomEvent("unite:requests-changed", {
+                detail: {
+                  requestId,
+                  action: "staff-updated",
+                  forceRefresh: true,
+                  cacheKeysToInvalidate: [`/api/event-requests/${requestId}`],
+                },
+              })
+            );
+          }
         }}
       />
 

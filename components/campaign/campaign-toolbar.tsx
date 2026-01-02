@@ -14,7 +14,9 @@ import {
 import { Popover, PopoverTrigger, PopoverContent } from "@heroui/popover";
 import { Select, SelectItem } from "@heroui/select";
 import { Avatar } from "@heroui/avatar";
-import { ArrowDownToSquare, Funnel, Ticket, ChevronDown, Wrench } from "@gravity-ui/icons";
+import { Tooltip } from "@heroui/tooltip";
+import { Spinner } from "@heroui/spinner";
+import { ArrowDownToSquare, Funnel, Ticket, ChevronDown, Wrench, ArrowRotateRight } from "@gravity-ui/icons";
 import {
   Modal,
   ModalContent,
@@ -27,6 +29,7 @@ import { DateValue } from "@internationalized/date";
 import { useLocations } from "../providers/locations-provider";
 import { getUserInfo } from "../../utils/getUserInfo";
 import { decodeJwt } from "../../utils/decodeJwt";
+import { hasCapability } from "../../utils/permissionUtils";
 
 import {
   CreateTrainingEventModal,
@@ -40,6 +43,8 @@ interface CampaignToolbarProps {
   onAdvancedFilter?: (filter: any) => void;
   onCreateEvent?: (eventType: string, eventData: any) => void;
   onTabChange?: (tab: string) => void;
+  onRefresh?: () => void;
+  isRefreshing?: boolean;
   defaultTab?: string;
   currentPage: number;
   totalPages: number;
@@ -59,6 +64,8 @@ export default function CampaignToolbar({
   onAdvancedFilter,
   onCreateEvent,
   onTabChange,
+  onRefresh,
+  isRefreshing = false,
   defaultTab = "all",
   currentPage,
   totalPages,
@@ -74,8 +81,194 @@ export default function CampaignToolbar({
   const [selectedEventType, setSelectedEventType] = useState(
     new Set(["blood-drive"]),
   );
+  const [canCreateEvent, setCanCreateEvent] = useState(false);
 
   const API_URL = process.env.NEXT_PUBLIC_API_URL || "";
+
+  // Check if user has permission to create events/requests - PERMISSION-BASED ONLY
+  useEffect(() => {
+    const checkCreatePermission = async () => {
+      try {
+        const rawUser = localStorage.getItem("unite_user");
+        const user = rawUser ? JSON.parse(rawUser) : null;
+        const token =
+          localStorage.getItem("unite_token") ||
+          sessionStorage.getItem("unite_token");
+        
+        let hasPermission = false;
+        
+        // Helper function to check if a permission string contains the capability
+        const checkPermissionString = (permString: string, capability: string): boolean => {
+          if (!permString || typeof permString !== 'string') return false;
+          // Handle comma-separated permissions like "event.create,read,update"
+          const perms = permString.split(',').map(p => p.trim());
+          // Check for exact match, wildcard all (*.*), or resource wildcard (event.*, request.*)
+          const hasExactMatch = perms.includes(capability);
+          const hasWildcard = perms.includes('*.*');
+          const [res, action] = capability.split('.');
+          const hasResourceWildcard = perms.some(p => {
+            // Check for resource.* (e.g., 'event.*', 'request.*')
+            return p === `${res}.*` || p === '*.*';
+          });
+          return hasExactMatch || hasWildcard || hasResourceWildcard;
+        };
+        
+        // Helper to check permissions array (handles both formats)
+        const checkPermissionsArray = (permissions: any[]): boolean => {
+          if (!Array.isArray(permissions) || permissions.length === 0) return false;
+          
+          return permissions.some((perm: any) => {
+            if (typeof perm === 'string') {
+              // Handle comma-separated string format: 'event.initiate,read,update'
+              if (perm.includes(',')) {
+                return checkPermissionString(perm, 'event.initiate') || 
+                       checkPermissionString(perm, 'request.initiate');
+              }
+              // Handle single permission string - ONLY check initiate (not create)
+              return perm === 'event.initiate' || 
+                     perm === 'request.initiate' ||
+                     perm === '*.*' ||
+                     perm === 'event.*' ||
+                     perm === 'request.*';
+            }
+            // Handle structured permission objects (if any)
+            if (perm && typeof perm === 'object') {
+              const resource = perm.resource;
+              const actions = Array.isArray(perm.actions) ? perm.actions : [];
+              // Only check for initiate (not create) - create is for workflow operations only
+              if (resource === '*' && (actions.includes('*') || actions.includes('initiate'))) return true;
+              if ((resource === 'event' || resource === 'request') && actions.includes('initiate')) return true;
+            }
+            return false;
+          });
+        };
+        
+        if (!token || !API_URL) {
+          setCanCreateEvent(false);
+          return;
+        }
+        
+        // Extract user ID from multiple sources
+        let userId = user?._id || user?.id || user?.ID || user?.userId || user?.user_id;
+        
+        // If user ID not found in user object, try to get it from JWT token
+        if (!userId && token) {
+          try {
+            const payload = decodeJwt(token);
+            userId = payload?.id || payload?.userId || payload?.user_id || payload?._id || payload?.sub;
+          } catch (e) {
+            // Failed to decode JWT - continue without userId
+          }
+        }
+        
+        // PRIORITY 1: Check localStorage permissions FIRST (faster, no API call needed)
+        if (user?.permissions && Array.isArray(user.permissions) && user.permissions.length > 0) {
+          hasPermission = checkPermissionsArray(user.permissions);
+          if (hasPermission) {
+            setCanCreateEvent(true);
+            return;
+          }
+        }
+        
+        // PRIORITY 2: ALWAYS try API for most accurate permission data (since localStorage often doesn't have permissions)
+        // First try /api/auth/me (doesn't require user ID, returns current user with permissions)
+        if (token && API_URL) {
+          try {
+            const headers: any = { "Content-Type": "application/json" };
+            headers["Authorization"] = `Bearer ${token}`;
+            
+            // Try /api/auth/me first (doesn't require user ID)
+            const meRes = await fetch(`${API_URL}/api/auth/me`, {
+              headers,
+              credentials: "include",
+            });
+            
+            if (meRes.ok) {
+              const meBody = await meRes.json();
+              const meUser = meBody.user || meBody.data || meBody;
+              const permissions = meUser?.permissions || [];
+              
+              hasPermission = checkPermissionsArray(permissions);
+              
+              if (hasPermission) {
+                setCanCreateEvent(true);
+                return; // Early return if permission found via /api/auth/me
+              }
+            }
+          } catch (meErr) {
+            // Failed to fetch from /api/auth/me - continue to next check
+          }
+        }
+        
+        // Fallback: Try /api/users/:userId/capabilities if we have userId
+        if (userId && token && API_URL) {
+            try {
+              const headers: any = { "Content-Type": "application/json" };
+              headers["Authorization"] = `Bearer ${token}`;
+              
+              const res = await fetch(`${API_URL}/api/users/${userId}/capabilities`, {
+                headers,
+                credentials: "include",
+              });
+              
+              if (res.ok) {
+                const body = await res.json();
+                const capabilities = body.data?.capabilities || body.capabilities || body.data || [];
+                
+                // Check capabilities array
+                hasPermission = checkPermissionsArray(capabilities);
+                
+                if (hasPermission) {
+                  setCanCreateEvent(true);
+                  return; // Early return if permission found via API
+                }
+              }
+            } catch (apiErr) {
+              // Failed to fetch capabilities - continue to check user object as fallback
+            }
+          }
+          
+        // PRIORITY 3: Check roles for permissions
+        if (user?.roles && Array.isArray(user.roles)) {
+            // Try hasCapability utility for structured roles - ONLY check initiate (not create)
+            hasPermission = hasCapability(user, 'event.initiate') || hasCapability(user, 'request.initiate');
+            if (hasPermission) {
+              setCanCreateEvent(true);
+              return;
+            }
+            
+            // Also check if roles have permissions arrays
+            for (const role of user.roles) {
+              if (role && role.permissions && Array.isArray(role.permissions)) {
+                hasPermission = checkPermissionsArray(role.permissions);
+                if (hasPermission) {
+                  setCanCreateEvent(true);
+                  return;
+                }
+              }
+            }
+          }
+          
+        // PRIORITY 4: Check nested data structures
+        if (user?.data && user.data.permissions) {
+          hasPermission = checkPermissionsArray(user.data.permissions);
+          if (hasPermission) {
+            setCanCreateEvent(true);
+            return;
+          }
+        }
+        
+        // If we get here, no permission was found - set to false
+        setCanCreateEvent(false);
+      } catch (err) {
+        setCanCreateEvent(false);
+      }
+    };
+    
+    checkCreatePermission().catch(() => {
+      setCanCreateEvent(false);
+    });
+  }, [API_URL]);
 
   // Quick Filter States
   const [qEventType, setQEventType] = useState<string>("");
@@ -85,6 +278,7 @@ export default function CampaignToolbar({
   const [qProvince, setQProvince] = useState<string>("");
   const [qDistrict, setQDistrict] = useState<string>("");
   const [qMunicipality, setQMunicipality] = useState<string>("");
+  const [qMunicipalitiesList, setQMunicipalitiesList] = useState<any[]>([]);
 
   // Modal states
   const [isTrainingModalOpen, setIsTrainingModalOpen] = useState(false);
@@ -262,68 +456,80 @@ export default function CampaignToolbar({
         const user = rawUser ? JSON.parse(rawUser) : null;
         const info = getUserInfo();
 
-        const isAdmin = !!(
-          (info && info.isAdmin) ||
-          (user &&
-            ((user.staff_type &&
-              String(user.staff_type).toLowerCase().includes("admin")) ||
-              (user.role && String(user.role).toLowerCase().includes("admin"))))
-        );
-
-        if (user && isAdmin) {
-          const res = await fetch(`${API_URL}/api/coordinators`, {
-            headers,
-            credentials: "include",
-          });
-          const body = await res.json();
-
-          if (res.ok) {
-            const list = body.data || body.coordinators || body;
-            const opts = (Array.isArray(list) ? list : []).map((c: any) => {
-              const staff = c.Staff || c.staff || null;
-              const district = c.District || c.district || null;
-              const fullName = staff
-                ? [staff.First_Name, staff.Middle_Name, staff.Last_Name]
-                    .filter(Boolean)
-                    .join(" ")
-                    .trim()
-                : c.StaffName || c.label || "";
-              const districtLabel = district?.District_Number
-                ? `District ${district.District_Number}`
-                : district?.District_Name || "";
+        // Check if user has permission to view coordinators (typically admins or users with request.review permission)
+        // Use permission-based check instead of hardcoded role checks
+        const hasReviewPermission = user && (hasCapability(user, 'request.review') || hasCapability(user, 'request.*') || hasCapability(user, '*'));
+        const isAdmin = !!(info && info.isAdmin) || (user && (user.authority >= 80 || user.isSystemAdmin));
+        
+        if (user && (isAdmin || hasReviewPermission)) {
+          // Use new API endpoint for coordinators
+          // Coordinators should have request.create capability AND authority >= 60 and < 80
+          try {
+            const res = await fetch(`${API_URL}/api/users/by-capability?capability=request.create`, {
+              headers,
+              credentials: "include",
+            });
+            
+            if (!res.ok) {
+              setAdvCoordinatorOptions([]);
+              return;
+            }
+            
+            const body = await res.json();
+            // API returns { success: true, data: [array of users] }
+            const list = Array.isArray(body.data) ? body.data : (body.data?.users || body.users || []);
+            
+            // Additional client-side filtering to ensure only coordinators (authority >= 60 and < 80)
+            // This is a safety measure in case backend filtering isn't perfect
+            const coordinatorList = list.filter((c: any) => {
+              const authority = c.authority || 20;
+              return authority >= 60 && authority < 80;
+            });
+            
+            
+            const opts = (Array.isArray(coordinatorList) ? coordinatorList : []).map((c: any) => {
+              // Get human-readable name from various possible fields
+              const firstName = c.firstName || c.First_Name || c.first_name || "";
+              const lastName = c.lastName || c.Last_Name || c.last_name || "";
+              const fullName = `${firstName} ${lastName}`.trim() || c.name || c.Name || "Unknown Coordinator";
+              const userId = String(c._id || c.id || "");
+              
+              // Get district info from coverage areas if available
+              let districtLabel = "";
+              if (c.coverageAreas && c.coverageAreas.length > 0) {
+                const firstCoverage = c.coverageAreas[0];
+                if (firstCoverage.districtIds && firstCoverage.districtIds.length > 0) {
+                  districtLabel = ` - District ${firstCoverage.districtIds[0]}`;
+                } else if (firstCoverage.districtName) {
+                  districtLabel = ` - ${firstCoverage.districtName}`;
+                }
+              }
 
               return {
-                key: c.Coordinator_ID || (staff && staff.ID) || c.id,
-                label: `${fullName}${districtLabel ? " - " + districtLabel : ""}`,
+                key: userId,
+                label: `${fullName}${districtLabel}`,
               };
             });
 
             setAdvCoordinatorOptions(opts);
+          } catch (err) {
+            setAdvCoordinatorOptions([]);
           }
         }
 
-        // Non-admin flows
-        if (user) {
-          const candidateIds: Array<string | number | undefined> = [];
-
-          if (
-            (user.staff_type &&
-              String(user.staff_type).toLowerCase().includes("coordinator")) ||
-            (info &&
-              String(info.role || "")
-                .toLowerCase()
-                .includes("coordinator"))
-          )
-            candidateIds.push(user.id || info?.raw?.id);
-          candidateIds.push(
+        // For non-admin users, try to get their coordinator ID from user object
+        // This is for users who are coordinators themselves or have coordinator assignments
+        if (user && !isAdmin && !hasReviewPermission) {
+          // Try to get coordinator ID from various possible fields
+          const candidateIds: Array<string | number | undefined> = [
+            user.id || user._id,
             user.Coordinator_ID,
             user.CoordinatorId,
             user.CoordinatorID,
             user.role_data?.coordinator_id,
-            user.MadeByCoordinatorID,
             info?.raw?.Coordinator_ID,
             info?.raw?.CoordinatorId,
-          );
+          ];
 
           let coordId = candidateIds.find(Boolean) as string | undefined;
 
@@ -376,23 +582,24 @@ export default function CampaignToolbar({
                       .filter(Boolean)
                       .join(" ")
                       .trim()
-                  : c.StaffName || c.label || "";
+                  : c.StaffName || c.label || c.firstName || c.First_Name || c.name || c.Name || "Unknown Coordinator";
                 const districtLabel = district?.District_Number
                   ? `District ${district.District_Number}`
                   : district?.District_Name || "";
 
+                const coordinatorId = String(c.Coordinator_ID || (staff && staff.ID) || c.id || c._id || "");
                 setAdvCoordinatorOptions([{
-                  key: c.Coordinator_ID || (staff && staff.ID) || c.id,
+                  key: coordinatorId,
                   label: `${fullName}${districtLabel ? " - " + districtLabel : ""}`,
                 }]);
               }
             } catch (e) {
-              console.error("Failed to fetch coordinator by id", coordId, e);
+              // Failed to fetch coordinator by id
             }
           }
         }
       } catch (err) {
-        console.error("Failed to fetch coordinators", err);
+        // Failed to fetch coordinators
       }
     };
 
@@ -401,7 +608,7 @@ export default function CampaignToolbar({
     }
   }, [isAdvancedModalOpen]);
 
-  // Load stakeholders for selected coordinator's district when coordinator changes
+  // Load stakeholders for selected coordinator when coordinator changes
   useEffect(() => {
     const fetchStakeholdersForCoordinator = async () => {
       try {
@@ -417,46 +624,39 @@ export default function CampaignToolbar({
 
         if (token) headers["Authorization"] = `Bearer ${token}`;
 
-        // Fetch coordinator details to get district id
-        let districtId: any = null;
-
-        try {
-          const coordRes = await fetch(
-            `${API_URL}/api/coordinators/${encodeURIComponent(advCoordinator)}`,
-            { headers, credentials: "include" },
-          );
-          const coordBody = await coordRes.json();
-
-          const coordData = coordBody?.data || coordBody;
-
-          districtId =
-            coordData?.District_ID ||
-            coordData?.District?.District_ID ||
-            coordData?.District_Id ||
-            coordData?.district_id ||
-            coordData?.district ||
-            null;
-        } catch (e) {
-          // ignore
-        }
-
-        if (!districtId) {
-          setAdvStakeholderOptions([]);
-          return;
-        }
-
+        // Fetch stakeholders using new API
+        // Pass coordinatorId to use coordinator's full jurisdiction (all municipalities from all coverage areas)
+        // Backend will use jurisdiction service to filter stakeholders properly
         const stRes = await fetch(
-          `${API_URL}/api/stakeholders?district_id=${encodeURIComponent(String(districtId))}`,
+          `${API_URL}/api/users/by-capability?capability=request.review&coordinatorId=${encodeURIComponent(String(advCoordinator))}`,
           { headers, credentials: "include" },
         );
+        
         const stBody = await stRes.json();
 
-        if (stRes.ok && Array.isArray(stBody.data)) {
-          const opts = (stBody.data || []).map((s: any) => ({
-            key: s.Stakeholder_ID || s.StakeholderId || s.id,
-            label:
-              `${s.firstName || s.First_Name || ""} ${s.lastName || s.Last_Name || ""}`.trim(),
-          }));
+        if (stRes.ok) {
+          // API returns { success: true, data: [array of users] }
+          const list = Array.isArray(stBody.data) ? stBody.data : (stBody.data?.users || stBody.users || []);
+          
+          // Filter to only stakeholders: authority < 60
+          // This ensures we only show stakeholders, not coordinators or admins
+          const stakeholderList = (Array.isArray(list) ? list : []).filter((s: any) => {
+            const authority = s.authority || 20;
+            return authority < 60;
+          });
+          
+          const opts = stakeholderList.map((s: any) => {
+            // Get human-readable name from various possible fields
+            const firstName = s.firstName || s.First_Name || s.first_name || "";
+            const lastName = s.lastName || s.Last_Name || s.last_name || "";
+            const fullName = `${firstName} ${lastName}`.trim() || s.name || s.Name || "Unknown Stakeholder";
+            const userId = String(s._id || s.id || "");
+            
+            return {
+              key: userId,
+              label: fullName,
+            };
+          });
 
           setAdvStakeholderOptions(opts);
           if (advStakeholder && !opts.find((o: any) => o.key === advStakeholder)) {
@@ -466,7 +666,6 @@ export default function CampaignToolbar({
           setAdvStakeholderOptions([]);
         }
       } catch (err) {
-        console.warn("Failed to load stakeholders", err);
         setAdvStakeholderOptions([]);
       }
     };
@@ -644,6 +843,24 @@ export default function CampaignToolbar({
               </Button>
             </Button>*/}
 
+            {/* Refresh Button */}
+            {onRefresh && (
+              <Tooltip content="Refresh requests list">
+                <Button
+                  className="border-default-200 bg-white font-medium text-xs"
+                  radius="md"
+                  size="sm"
+                  variant="bordered"
+                  startContent={!isRefreshing ? <ArrowRotateRight className="w-4 h-4" /> : undefined}
+                  onPress={onRefresh}
+                  isDisabled={isRefreshing}
+                  isLoading={isRefreshing}
+                >
+                  {isRefreshing ? "Refreshing..." : "Refresh"}
+                </Button>
+              </Tooltip>
+            )}
+
             {/* Quick Filter Popover (mimicking a custom dropdown) */}
             <Popover offset={10} placement="bottom" showArrow>
               <PopoverTrigger>
@@ -727,19 +944,28 @@ export default function CampaignToolbar({
                         setQProvince(val);
                         // Fetch districts
                         onDistrictFetch?.(val);
-                        // Clear district
+                        // Clear district and municipality
                         setQDistrict("");
                         setQMunicipality("");
+                        setQMunicipalitiesList([]);
                         applyQuickFilter(qEventType, qDateRange, val, "", "");
                       }}
                     >
-                      {provinces.map((p) => (
-                        <SelectItem
-                          key={p._id}
-                        >
-                          {p.name}
+                      {provinces && provinces.length > 0 ? (
+                        provinces.map((p) => {
+                          const provinceId = String(p._id || p.id || '');
+                          const provinceName = String(p.name || p.Name || 'Unknown Province');
+                          return (
+                            <SelectItem key={provinceId}>
+                              {provinceName}
+                            </SelectItem>
+                          );
+                        })
+                      ) : (
+                        <SelectItem key="no-provinces" isDisabled>
+                          No provinces available
                         </SelectItem>
-                      ))}
+                      )}
                     </Select>
                   </div>
 
@@ -748,16 +974,49 @@ export default function CampaignToolbar({
                     <Select
                       className="h-9"
                       isDisabled={!qProvince}
-                      placeholder="Pick a district"
+                      placeholder={qProvince ? "Pick a district" : "Select a province first"}
                       selectedKeys={qDistrict ? [qDistrict] : []}
                       size="sm"
                       variant="bordered"
                       radius="md"
-                      onChange={(e) => {
+                      onChange={async (e) => {
                         const val = e.target.value;
 
                         setQDistrict(val);
                         setQMunicipality("");
+                        
+                        // Fetch municipalities for selected district
+                        if (val) {
+                          try {
+                            const token =
+                              localStorage.getItem("unite_token") ||
+                              sessionStorage.getItem("unite_token");
+                            const headers: any = { "Content-Type": "application/json" };
+                            if (token) headers["Authorization"] = `Bearer ${token}`;
+
+                            const res = await fetch(`${API_URL}/api/locations/districts/${val}/municipalities`, {
+                              headers,
+                              credentials: "include",
+                            });
+                            const body = await res.json();
+
+                            if (res.ok && body.data) {
+                              const municipalitiesList = Array.isArray(body.data) ? body.data : [];
+                              setQMunicipalitiesList(municipalitiesList);
+                            } else {
+                              // Fallback: use provider's cached municipalities
+                              const municipalitiesFromProvider = getMunicipalitiesForDistrict(val);
+                              setQMunicipalitiesList(municipalitiesFromProvider);
+                            }
+                          } catch (err) {
+                            // Fallback: use provider's cached municipalities
+                            const municipalitiesFromProvider = getMunicipalitiesForDistrict(val);
+                            setQMunicipalitiesList(municipalitiesFromProvider);
+                          }
+                        } else {
+                          setQMunicipalitiesList([]);
+                        }
+                        
                         applyQuickFilter(
                           qEventType,
                           qDateRange,
@@ -767,13 +1026,21 @@ export default function CampaignToolbar({
                         );
                       }}
                     >
-                      {districts.map((d) => (
-                        <SelectItem
-                          key={d._id}
-                        >
-                          {d.name}
+                      {districts && districts.length > 0 ? (
+                        districts.map((d) => {
+                          const districtId = String(d._id || d.id || '');
+                          const districtName = String(d.name || d.Name || 'Unknown District');
+                          return (
+                            <SelectItem key={districtId}>
+                              {districtName}
+                            </SelectItem>
+                          );
+                        })
+                      ) : (
+                        <SelectItem key="no-districts" isDisabled>
+                          {qProvince ? "No districts available" : "Select a province first"}
                         </SelectItem>
-                      ))}
+                      )}
                     </Select>
                   </div>
 
@@ -782,7 +1049,7 @@ export default function CampaignToolbar({
                     <Select
                       className="h-9"
                       isDisabled={!qDistrict}
-                      placeholder="Pick a municipality"
+                      placeholder={qDistrict ? "Pick a municipality" : "Select a district first"}
                       selectedKeys={qMunicipality ? [qMunicipality] : []}
                       size="sm"
                       variant="bordered"
@@ -794,13 +1061,21 @@ export default function CampaignToolbar({
                         applyQuickFilter(qEventType, qDateRange, qProvince, qDistrict, val);
                       }}
                     >
-                      {getMunicipalitiesForDistrict(qDistrict).map((m) => (
-                        <SelectItem
-                          key={m._id}
-                        >
-                          {m.name}
+                      {qMunicipalitiesList && qMunicipalitiesList.length > 0 ? (
+                        qMunicipalitiesList.map((m) => {
+                          const municipalityId = String(m._id || m.id || '');
+                          const municipalityName = String(m.name || m.Name || 'Unknown Municipality');
+                          return (
+                            <SelectItem key={municipalityId}>
+                              {municipalityName}
+                            </SelectItem>
+                          );
+                        })
+                      ) : (
+                        <SelectItem key="no-municipalities" isDisabled>
+                          {qDistrict ? "No municipalities available" : "Select a district first"}
                         </SelectItem>
-                      ))}
+                      )}
                     </Select>
                   </div>
 
@@ -833,51 +1108,64 @@ export default function CampaignToolbar({
             {/* Removed separate mobile funnel icon to free space on small screens */}
 
             {/* Create Event Button Group with Dropdown Menu*/}
-            <ButtonGroup radius="md" size="sm" variant="solid" className="flex-shrink-0 overflow-visible mr-3 relative z-50">
-              {/* Full button for desktop/tablet */}
-              <Button
-                color="primary"
-                className="hidden sm:inline-flex items-center gap-2 rounded-l-md"
-                radius="md"
-                size="sm"
-                startContent={<Ticket className="w-4 h-4" />}
-                onPress={handleCreateEventClick}
-                style={{ borderTopLeftRadius: "0.75rem", borderBottomLeftRadius: "0.75rem", borderTopRightRadius: 0, borderBottomRightRadius: 0 }}
-              >
-                {currentEventLabel}
-              </Button>
-
-              {/* Compact icon-only button for small screens */}
-              <Button
-                color="primary"
-                isIconOnly
-                radius="md"
-                size="sm"
-                className="inline-flex sm:hidden h-8 w-8 items-center justify-center rounded-l-md"
-                onPress={handleCreateEventClick}
-                aria-label={`Create ${currentEventLabel}`}
-                style={{ borderTopLeftRadius: "0.75rem", borderBottomLeftRadius: "0.75rem", borderTopRightRadius: 0, borderBottomRightRadius: 0 }}
-              >
-                <svg
-                  className="w-4 h-4"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth={2}
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  aria-hidden="true"
+            <Tooltip
+              content={canCreateEvent ? undefined : "You don't have permission to create events or requests"}
+              isDisabled={canCreateEvent}
+            >
+              <ButtonGroup radius="md" size="sm" variant="solid" className="flex-shrink-0 overflow-visible mr-3 relative z-50">
+                {/* Full button for desktop/tablet */}
+                <Button
+                  color="primary"
+                  className="hidden sm:inline-flex items-center gap-2 rounded-l-md"
+                  radius="md"
+                  size="sm"
+                  startContent={<Ticket className="w-4 h-4" />}
+                  onPress={handleCreateEventClick}
+                  isDisabled={!canCreateEvent}
+                  style={{ borderTopLeftRadius: "0.75rem", borderBottomLeftRadius: "0.75rem", borderTopRightRadius: 0, borderBottomRightRadius: 0 }}
                 >
-                  <line x1="12" y1="5" x2="12" y2="19" />
-                  <line x1="5" y1="12" x2="19" y2="12" />
-                </svg>
-              </Button>
-              <Dropdown placement="bottom-end">
-                <DropdownTrigger>
-                  <Button isIconOnly color="primary" className="h-8 w-8 rounded-r-md" size="sm" style={{ borderTopRightRadius: "0.75rem", borderBottomRightRadius: "0.75rem", borderTopLeftRadius: 0, borderBottomLeftRadius: 0 }}>
-                    <ChevronDown className="w-4 h-4" />
-                  </Button>
-                </DropdownTrigger>
+                  {currentEventLabel}
+                </Button>
+
+                {/* Compact icon-only button for small screens */}
+                <Button
+                  color="primary"
+                  isIconOnly
+                  radius="md"
+                  size="sm"
+                  className="inline-flex sm:hidden h-8 w-8 items-center justify-center rounded-l-md"
+                  onPress={handleCreateEventClick}
+                  isDisabled={!canCreateEvent}
+                  aria-label={`Create ${currentEventLabel}`}
+                  style={{ borderTopLeftRadius: "0.75rem", borderBottomLeftRadius: "0.75rem", borderTopRightRadius: 0, borderBottomRightRadius: 0 }}
+                >
+                  <svg
+                    className="w-4 h-4"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth={2}
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    aria-hidden="true"
+                  >
+                    <line x1="12" y1="5" x2="12" y2="19" />
+                    <line x1="5" y1="12" x2="19" y2="12" />
+                  </svg>
+                </Button>
+                <Dropdown placement="bottom-end" isDisabled={!canCreateEvent}>
+                  <DropdownTrigger>
+                    <Button 
+                      isIconOnly 
+                      color="primary" 
+                      className="h-8 w-8 rounded-r-md" 
+                      size="sm" 
+                      isDisabled={!canCreateEvent}
+                      style={{ borderTopRightRadius: "0.75rem", borderBottomRightRadius: "0.75rem", borderTopLeftRadius: 0, borderBottomLeftRadius: 0 }}
+                    >
+                      <ChevronDown className="w-4 h-4" />
+                    </Button>
+                  </DropdownTrigger>
                 <DropdownMenu
                   disallowEmptySelection
                   aria-label="Event type options"
@@ -917,6 +1205,7 @@ export default function CampaignToolbar({
             </DropdownMenu>
           </Dropdown>
         </ButtonGroup>
+            </Tooltip>
           </div>
         </div>
 
@@ -1134,11 +1423,12 @@ export default function CampaignToolbar({
                   <Select
                     className="h-9"
                     classNames={{ trigger: "h-9 border-default-200" }}
-                    placeholder="Pick a stakeholder"
+                    placeholder={advCoordinator ? "Pick a stakeholder" : "Select a coordinator first"}
                     radius="md"
                     selectedKeys={advStakeholder ? [advStakeholder] : []}
                     size="sm"
                     variant="bordered"
+                    isDisabled={!advCoordinator}
                     onChange={(e) => setAdvStakeholder(e.target.value)}
                   >
                     {advStakeholderOptions.map((s) => (
@@ -1193,8 +1483,8 @@ export default function CampaignToolbar({
                   title: advTitle || undefined,
                   coordinator: advCoordinator || undefined,
                   stakeholder: advStakeholder || undefined,
-                  startDate: advDateRange?.start?.toString(),
-                  endDate: advDateRange?.end?.toString(),
+                  start: advDateRange?.start?.toString(),
+                  end: advDateRange?.end?.toString(),
                 });
                 setIsAdvancedModalOpen(false);
               }}

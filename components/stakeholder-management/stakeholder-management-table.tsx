@@ -19,6 +19,7 @@ import { useState } from "react";
 
 interface Stakeholder {
   id: string;
+  _id?: string;
   name: string;
   email: string;
   phone: string;
@@ -27,6 +28,18 @@ interface Stakeholder {
   province?: string;
   district?: string;
   municipality?: string;
+  coverageArea?: string; // Formatted: "Municipality → Barangay" or just "Municipality"
+  locations?: {
+    municipalityId?: string;
+    municipalityName?: string;
+    barangayId?: string;
+    barangayName?: string;
+  };
+  organizations?: Array<{
+    organizationId?: string;
+    organizationName?: string;
+    organizationType?: string;
+  }>;
 }
 
 interface StakeholderTableProps {
@@ -44,6 +57,7 @@ interface StakeholderTableProps {
   onAcceptRequest?: (id: string) => void;
   onRejectRequest?: (id: string) => void;
   loading?: boolean;
+  canApproveReject?: boolean;
   // Optional current user context to enable role-aware filtering
   currentUser?: {
     role?: string;
@@ -67,9 +81,11 @@ export default function StakeholderTable({
   onAcceptRequest,
   onRejectRequest,
   loading = false,
+  canApproveReject = false,
   currentUser,
 }: StakeholderTableProps) {
   const [, /*unused*/ setUnused] = useState(false);
+  
 
   const displayValue = (v: any, fallback = "—") => {
     if (v === null || v === undefined) return fallback;
@@ -97,30 +113,9 @@ export default function StakeholderTable({
     return fallback;
   };
 
-  // Apply role-aware visible set first: sysadmin sees all, coordinator sees only matching district+accountType
-  const userRole = (currentUser?.role || "").toString().toLowerCase();
-  const userDistrict = (currentUser?.district || "").toString().toLowerCase();
-  const userAccountType = (currentUser?.accountType || "").toString().toLowerCase();
-
-  const visibleCoordinators =
-    userRole === "sysadmin" || userRole === "systemadmin" || !userRole
-      ? coordinators
-      : coordinators.filter((coordinator) => {
-          const coordDistrict = (displayValue(coordinator.district, "")).toLowerCase();
-          const coordAccountType = (
-            (coordinator as any).accountType || (coordinator as any).Account_Type || ""
-          )
-            .toString()
-            .toLowerCase();
-
-          // If user provided both, require both to match. Otherwise match available criterion.
-          if (userDistrict && userAccountType) {
-            return coordDistrict === userDistrict && coordAccountType === userAccountType;
-          }
-          if (userDistrict) return coordDistrict === userDistrict;
-          if (userAccountType) return coordAccountType === userAccountType;
-          return true;
-        });
+  // Backend handles all filtering (authority and jurisdiction)
+  // Frontend just displays what backend returns
+  const visibleCoordinators = coordinators;
 
   const filteredCoordinators = visibleCoordinators.filter((coordinator) => {
     const q = searchQuery.toLowerCase();
@@ -133,6 +128,9 @@ export default function StakeholderTable({
         .includes(q) ||
       (coordinator.province || "").toLowerCase().includes(q) ||
       (coordinator.district || "").toLowerCase().includes(q) ||
+      (coordinator.coverageArea || coordinator.municipality || "")
+        .toLowerCase()
+        .includes(q) ||
       (
         (municipalityCache &&
           municipalityCache[String(coordinator.municipality)]) ||
@@ -168,7 +166,7 @@ export default function StakeholderTable({
                   Phone Number
                 </th>
                 <th className="px-6 py-3.5 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                  Entity
+                  Organization
                 </th>
                 <th className="px-6 py-3.5 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                   Province
@@ -249,7 +247,7 @@ export default function StakeholderTable({
               Phone Number
               </th>
               <th className="px-6 py-3.5 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-              Entity
+              Organization
               </th>
               <th className="px-6 py-3.5 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
               Province
@@ -268,9 +266,9 @@ export default function StakeholderTable({
 
           {/* Table Body */}
           <tbody className="bg-white divide-y divide-gray-100">
-            {filteredCoordinators.map((coordinator) => (
+            {filteredCoordinators.map((coordinator, index) => (
               <tr
-                key={coordinator.id}
+                key={coordinator.id || coordinator._id || `coordinator-${index}`}
                 className="hover:bg-gray-50/50 transition-colors"
               >
                 <td className="px-6 py-4 w-12">
@@ -326,32 +324,42 @@ export default function StakeholderTable({
                       variant="faded"
                     >
                       {isRequests || (coordinator as any)._isRequest ? (
-                        <DropdownSection title="Actions">
-                          <DropdownItem
-                            key="accept"
-                            description="Approve this signup request"
-                            startContent={<Check className="text-green-600" />}
-                            onPress={() => {
-                              if (onAcceptRequest)
-                                onAcceptRequest(coordinator.id);
-                            }}
-                          >
-                            Accept Request
-                          </DropdownItem>
-                          <DropdownItem
-                            key="reject"
-                            className="text-danger"
-                            color="danger"
-                            description="Reject this signup request"
-                            startContent={<X className="text-red-600" />}
-                            onPress={() => {
-                              if (onRejectRequest)
-                                onRejectRequest(coordinator.id);
-                            }}
-                          >
-                            Reject Request
-                          </DropdownItem>
-                        </DropdownSection>
+                        canApproveReject && (onAcceptRequest || onRejectRequest) ? (
+                          <DropdownSection title="Actions">
+                            {onAcceptRequest ? (
+                              <DropdownItem
+                                key="accept"
+                                description="Approve this signup request"
+                                startContent={<Check className="text-green-600" />}
+                                onPress={() => {
+                                  onAcceptRequest(coordinator.id);
+                                }}
+                              >
+                                Accept Request
+                              </DropdownItem>
+                            ) : null}
+                            {onRejectRequest ? (
+                              <DropdownItem
+                                key="reject"
+                                className="text-danger"
+                                color="danger"
+                                description="Reject this signup request"
+                                startContent={<X className="text-red-600" />}
+                                onPress={() => {
+                                  onRejectRequest(coordinator.id);
+                                }}
+                              >
+                                Reject Request
+                              </DropdownItem>
+                            ) : null}
+                          </DropdownSection>
+                        ) : (
+                          <DropdownSection title="Actions">
+                            <DropdownItem key="no-permission" isDisabled>
+                              No permission to approve/reject
+                            </DropdownItem>
+                          </DropdownSection>
+                        )
                       ) : (
                         <>
                           <DropdownSection title="Actions">

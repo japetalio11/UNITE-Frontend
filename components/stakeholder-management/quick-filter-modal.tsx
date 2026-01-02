@@ -73,7 +73,6 @@ export default function QuickFilterModal({
 
         setProvinces(normalized.filter(Boolean));
       } catch (err: any) {
-        console.error("Failed to load provinces:", err);
         setProvinces([]);
       } finally {
         setProvincesLoading(false);
@@ -108,7 +107,6 @@ export default function QuickFilterModal({
 
         setDistricts(normalized.filter(Boolean));
       } catch (err: any) {
-        console.error("Failed to load districts:", err);
         setDistricts([]);
       } finally {
         setDistrictsLoading(false);
@@ -141,7 +139,6 @@ export default function QuickFilterModal({
 
         setMunicipalities(normalized.filter(Boolean));
       } catch (err: any) {
-        console.error("Failed to load municipalities:", err);
         setMunicipalities([]);
       } finally {
         setMunicipalitiesLoading(false);

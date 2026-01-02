@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useRef, useEffect } from "react";
+import React, { useState, useRef, useEffect, useMemo } from "react";
 import { useRouter } from "next/navigation";
 import {
   ChevronDown,
@@ -40,10 +40,18 @@ import EditEventModal from "@/components/calendar/event-edit-modal";
 import EventManageStaffModal from "@/components/calendar/event-manage-staff-modal";
 import EventRescheduleModal from "@/components/calendar/event-reschedule-modal";
 import CalendarToolbar from "@/components/calendar/calendar-toolbar";
+import CalendarEventCard from "@/components/calendar/calendar-event-card";
+import { transformEventData } from "@/components/calendar/calendar-event-utils";
 import Topbar from "@/components/layout/topbar";
 import { fetchWithAuth } from "@/utils/fetchWithAuth";
 import { getUserInfo } from "@/utils/getUserInfo";
+import { useCurrentUser } from "@/hooks/useCurrentUser";
+import { useCalendarExport } from "@/hooks/useCalendarExport";
+import { getEventActionPermissions, isAdminByAuthority, clearPermissionCache } from "@/utils/eventActionPermissions";
+import { decodeJwt } from "@/utils/decodeJwt";
+import { hasCapability } from "@/utils/permissionUtils";
 import MobileNav from "@/components/tools/mobile-nav";
+import { useLocations } from "@/components/providers/locations-provider";
 import {
   Ticket,
   Calendar as CalIcon,
@@ -58,7 +66,15 @@ export default function CalendarPage(props: any) {
   const publicTitle: string | undefined = props?.publicTitle;
   const pathname = usePathname();
   // Allow create on dashboard calendar, but not on public calendar route
-  const allowCreate = pathname === "/calendar" ? false : true;
+  const allowCreateByPath = pathname === "/calendar" ? false : true;
+  // State for permission check (separate from path check)
+  // null = checking, true = allowed, false = denied
+  const [canCreateEvent, setCanCreateEvent] = useState<boolean | null>(null);
+  // Combine both checks - only allow if path permits AND user has permission
+  // Button is enabled if path permits AND permission check is true
+  // Button is disabled if path denies OR permission check is false/null
+  const allowCreate = allowCreateByPath && canCreateEvent === true;
+  
   // Default to month view on mobile, week view on desktop
   const [activeView, setActiveView] = useState("week");
   const today = new Date();
@@ -72,55 +88,233 @@ export default function CalendarPage(props: any) {
   >({});
   const [detailedEvents, setDetailedEvents] = useState<Record<string, any>>({});
   const [eventsLoading, setEventsLoading] = useState(false);
+  const [isExportLoading, setIsExportLoading] = useState(false);
+  // Cache for event action permissions (keyed by eventId)
+  const [eventPermissionsCache, setEventPermissionsCache] = useState<
+    Record<string, Awaited<ReturnType<typeof getEventActionPermissions>>>
+  >({});
+  // Track loading state for each event's permissions
+  const [eventPermissionsLoading, setEventPermissionsLoading] = useState<
+    Record<string, boolean>
+  >({});
+  // Fetch current user from API
+  const { user: currentUser } = useCurrentUser();
+  
   const [currentUserName, setCurrentUserName] = useState<string>(
-    "Bicol Medical Center",
+    "unite user",
   );
   const [currentUserEmail, setCurrentUserEmail] =
-    useState<string>("bmc@gmail.com");
+    useState<string>("unite@health.tech");
 
-  // Initialize displayed user name/email from localStorage (match campaign page logic)
+  // Update display name and email from API user data
   useEffect(() => {
-    try {
-      const raw = localStorage.getItem("unite_user");
-
-      if (raw) {
-        const u = JSON.parse(raw);
-        const first =
-          u.First_Name ||
-          u.FirstName ||
-          u.first_name ||
-          u.firstName ||
-          u.First ||
-          "";
-        const middle =
-          u.Middle_Name ||
-          u.MiddleName ||
-          u.middle_name ||
-          u.middleName ||
-          u.Middle ||
-          "";
-        const last =
-          u.Last_Name ||
-          u.LastName ||
-          u.last_name ||
-          u.lastName ||
-          u.Last ||
-          "";
-        const parts = [first, middle, last]
-          .map((p: any) => (p || "").toString().trim())
-          .filter(Boolean);
-        const full = parts.join(" ");
-        const email =
-          u.Email || u.email || u.Email_Address || u.emailAddress || "";
-
-        if (full) setCurrentUserName(full);
-        else if (u.name) setCurrentUserName(u.name);
-        if (email) setCurrentUserEmail(email);
+    if (currentUser) {
+      if (currentUser.fullName) {
+        setCurrentUserName(currentUser.fullName);
+      } else if (currentUser.firstName || currentUser.lastName) {
+        const nameParts = [currentUser.firstName, currentUser.middleName, currentUser.lastName].filter(Boolean);
+        setCurrentUserName(nameParts.join(" ") || "unite user");
       }
-    } catch (err) {
-      // ignore malformed localStorage entry
+      if (currentUser.email) {
+        setCurrentUserEmail(currentUser.email);
+      }
     }
+  }, [currentUser]);
+
+  // Check if user has permission to create events/requests - PERMISSION-BASED ONLY
+  useEffect(() => {
+    const checkCreatePermission = async () => {
+      try {
+        const rawUser = localStorage.getItem("unite_user");
+        const user = rawUser ? JSON.parse(rawUser) : null;
+        const token =
+          localStorage.getItem("unite_token") ||
+          sessionStorage.getItem("unite_token");
+        const API_URL = process.env.NEXT_PUBLIC_API_URL || "";
+        
+        // If no token, user is unauthenticated - cannot create
+        if (!token) {
+          setCanCreateEvent(false);
+          return;
+        }
+        
+        // Default to true for authenticated users (if we can't check, assume allowed)
+        let hasPermission = true;
+        
+        // Helper function to check if a permission string contains the capability
+        const checkPermissionString = (permString: string, capability: string): boolean => {
+          if (!permString || typeof permString !== 'string') return false;
+          // Handle comma-separated permissions like "event.create,read,update"
+          const perms = permString.split(',').map(p => p.trim());
+          // Check for exact match, wildcard all (*.*), or resource wildcard (event.*, request.*)
+          const hasExactMatch = perms.includes(capability);
+          const hasWildcard = perms.includes('*.*');
+          const [res, action] = capability.split('.');
+          const hasResourceWildcard = perms.some(p => {
+            // Check for resource.* (e.g., 'event.*', 'request.*')
+            return p === `${res}.*` || p === '*.*';
+          });
+          return hasExactMatch || hasWildcard || hasResourceWildcard;
+        };
+        
+        // Helper to check permissions array (handles both formats)
+        const checkPermissionsArray = (permissions: any[]): boolean => {
+          if (!Array.isArray(permissions) || permissions.length === 0) return false;
+          
+          return permissions.some((perm: any) => {
+            if (typeof perm === 'string') {
+              // Handle comma-separated string format: 'event.initiate,read,update'
+              if (perm.includes(',')) {
+                return checkPermissionString(perm, 'event.initiate') || 
+                       checkPermissionString(perm, 'request.initiate');
+              }
+              // Handle single permission string - ONLY check initiate (not create)
+              return perm === 'event.initiate' || 
+                     perm === 'request.initiate' ||
+                     perm === '*.*' ||
+                     perm === 'event.*' ||
+                     perm === 'request.*';
+            }
+            // Handle structured permission objects (if any)
+            if (perm && typeof perm === 'object') {
+              const resource = perm.resource;
+              const actions = Array.isArray(perm.actions) ? perm.actions : [];
+              // Only check for initiate (not create) - create is for workflow operations only
+              if (resource === '*' && (actions.includes('*') || actions.includes('initiate'))) return true;
+              if ((resource === 'event' || resource === 'request') && actions.includes('initiate')) return true;
+            }
+            return false;
+          });
+        };
+        
+        // Extract user ID from multiple sources
+        let userId = user?._id || user?.id || user?.ID || user?.userId || user?.user_id;
+        
+        // If user ID not found in user object, try to get it from JWT token
+        if (!userId && token) {
+          try {
+            const payload = decodeJwt(token);
+            userId = payload?.id || payload?.userId || payload?.user_id || payload?._id || payload?.sub;
+          } catch (e) {
+            // Failed to decode JWT - continue without userId
+          }
+        }
+        
+        // PRIORITY 1: Check localStorage permissions FIRST (faster, no API call needed)
+        if (user?.permissions && Array.isArray(user.permissions) && user.permissions.length > 0) {
+          const found = checkPermissionsArray(user.permissions);
+          // If we have permissions data, use it to determine access
+          setCanCreateEvent(found);
+          return;
+        }
+        
+        // PRIORITY 2: Try API for most accurate permission data
+        if (token && API_URL) {
+          try {
+            const headers: any = { "Content-Type": "application/json" };
+            headers["Authorization"] = `Bearer ${token}`;
+            
+            // Try /api/auth/me first (doesn't require user ID)
+            const meRes = await fetch(`${API_URL}/api/auth/me`, {
+              headers,
+              credentials: "include",
+            });
+            
+            if (meRes.ok) {
+              const meBody = await meRes.json();
+              const meUser = meBody.user || meBody.data || meBody;
+              const permissions = meUser?.permissions || [];
+              
+              if (Array.isArray(permissions) && permissions.length > 0) {
+                const found = checkPermissionsArray(permissions);
+                setCanCreateEvent(found);
+                return;
+              }
+            }
+          } catch (meErr) {
+            // Failed to fetch from /api/auth/me - continue to next check
+          }
+        }
+        
+        // Fallback: Try /api/users/:userId/capabilities if we have userId
+        if (userId && token && API_URL) {
+            try {
+              const headers: any = { "Content-Type": "application/json" };
+              headers["Authorization"] = `Bearer ${token}`;
+              
+              const res = await fetch(`${API_URL}/api/users/${userId}/capabilities`, {
+                headers,
+                credentials: "include",
+              });
+              
+              if (res.ok) {
+                const body = await res.json();
+                const capabilities = body.data?.capabilities || body.capabilities || body.data || [];
+                
+                if (Array.isArray(capabilities) && capabilities.length > 0) {
+                  const found = checkPermissionsArray(capabilities);
+                  setCanCreateEvent(found);
+                  return;
+                }
+              }
+            } catch (apiErr) {
+              // Failed to fetch capabilities - continue to check user object as fallback
+            }
+          }
+          
+        // PRIORITY 3: Check roles for permissions
+        if (user?.roles && Array.isArray(user.roles)) {
+            // Try hasCapability utility for structured roles - ONLY check initiate (not create)
+            const found = hasCapability(user, 'event.initiate') || hasCapability(user, 'request.initiate');
+            if (found) {
+              setCanCreateEvent(true);
+              return;
+            }
+            
+            // Also check if roles have permissions arrays
+            for (const role of user.roles) {
+              if (role && role.permissions && Array.isArray(role.permissions)) {
+                const found = checkPermissionsArray(role.permissions);
+                if (found) {
+                  setCanCreateEvent(true);
+                  return;
+                }
+              }
+            }
+        }
+        
+        // PRIORITY 4: Check nested data structures
+        if (user?.data && user.data.permissions) {
+          const found = checkPermissionsArray(user.data.permissions);
+          if (found) {
+            setCanCreateEvent(true);
+            return;
+          }
+        }
+        
+        // Default: If authenticated but no explicit permissions found, allow (true)
+        // This is safer for UX - they can try to create and get an API error if denied
+        setCanCreateEvent(true);
+      } catch (err) {
+        // On error, default to true for authenticated users (safer UX)
+        const token = localStorage.getItem("unite_token") || sessionStorage.getItem("unite_token");
+        setCanCreateEvent(!!token);
+      }
+    };
+    
+    checkCreatePermission().catch(() => {
+      // On unhandled error, check if user is authenticated
+      const token = localStorage.getItem("unite_token") || sessionStorage.getItem("unite_token");
+      setCanCreateEvent(!!token);
+    });
   }, []);
+  
+  // Initialize locations provider for location resolution
+  const { getProvinceName, getDistrictName, getMunicipalityName, locations } = useLocations();
+  
+  // Initialize export hook
+  const { exportVisualPDF, exportOrganizedPDF } = useCalendarExport();
+  
   const [isDateTransitioning, setIsDateTransitioning] = useState(false);
   const [isViewTransitioning, setIsViewTransitioning] = useState(false);
   const [slideDirection, setSlideDirection] = useState<"left" | "right">(
@@ -262,6 +456,9 @@ export default function CalendarPage(props: any) {
     }
   };
 
+  // Note: extractId and parseServerDate are now in calendar-event-utils.ts
+  // parseServerDate is kept here for backward compatibility with other parts of the page
+
   const normalizeEventsMap = (
     input: Record<string, any> | undefined,
   ): Record<string, any[]> => {
@@ -386,108 +583,76 @@ export default function CalendarPage(props: any) {
 
   // Fetch real events from backend and populate week/month maps
   useEffect(() => {
-    let mounted = true;
-
-    const fetchData = async () => {
-      const startTime = Date.now();
-      setEventsLoading(true);
-      // Fetch all public events and filter client-side for approved events in the current month
-      let normalizedMonth: Record<string, any[]> = {};
-
-      try {
-        // Fetch public events only for the current month range (server-side filtering)
-        const year = currentDate.getFullYear();
-        const monthIndex = currentDate.getMonth(); // 0-based month
-        const monthStart = new Date(year, monthIndex, 1);
-        const monthEnd = new Date(year, monthIndex + 1, 0, 23, 59, 59, 999);
-
-        const publicUrl = `${API_BASE}/api/public/events?date_from=${encodeURIComponent(monthStart.toISOString())}&date_to=${encodeURIComponent(monthEnd.toISOString())}`;
-        const publicResp = await fetch(publicUrl, { credentials: "include" });
-        const publicJson = await publicResp.json();
-
-        if (
-          mounted &&
-          publicResp.ok &&
-          publicJson &&
-          Array.isArray(publicJson.data)
-        ) {
-          const monthEvents = publicJson.data;
-
-          // Batch fetch detailed info for all events in the month (single request)
-          const eventIds = monthEvents
-            .map((e: any) => e.Event_ID || e.EventId)
-            .filter(Boolean);
-          if (eventIds.length > 0) {
-            await fetchEventDetails(eventIds);
-          }
-
-          // Group by date
-          const eventsByDate: Record<string, any[]> = {};
-          monthEvents.forEach((event: any) => {
-            const startDate = parseServerDate(event.Start_Date);
-            if (!startDate) return;
-            const dateKey = dateToLocalKey(startDate);
-            if (!eventsByDate[dateKey]) eventsByDate[dateKey] = [];
-            eventsByDate[dateKey].push(event);
-          });
-
-          // Normalize keys to local YYYY-MM-DD
-          normalizedMonth = normalizeEventsMap(eventsByDate);
-          setMonthEventsByDate(normalizedMonth);
-
-          // Create week view by filtering month events to current week
-          const wkStart = new Date(currentDate);
-          const dayOfWeek = wkStart.getDay();
-          wkStart.setDate(wkStart.getDate() - dayOfWeek);
-          wkStart.setHours(0, 0, 0, 0);
-          const wkEnd = new Date(wkStart);
-          wkEnd.setDate(wkStart.getDate() + 6);
-
-          const weekEvents: Record<string, any[]> = {};
-
-          // First, collect all events that naturally fall within the current week dates
-          Object.keys(normalizedMonth).forEach((dateKey) => {
-            const events = normalizedMonth[dateKey] || [];
-            const eventDate = new Date(dateKey + "T00:00:00");
-
-            // Check if this date falls within the current week
-            if (eventDate >= wkStart && eventDate <= wkEnd) {
-              weekEvents[dateKey] = events;
-            }
-          });
-
-          setWeekEventsByDate(weekEvents);
-        } else if (mounted) {
-          setMonthEventsByDate({});
-          setWeekEventsByDate({});
-        }
-      } catch (error) {
-        if (mounted) {
-          setWeekEventsByDate({});
-          setMonthEventsByDate({});
-        }
-        // Optionally log: console.error('Failed to fetch calendar data', error);
-      } finally {
-        if (mounted) {
-          // Ensure minimum 1.5 second loading time for better UX
-          const elapsed = Date.now() - startTime;
-          const minDuration = 1000; // shorten artificial minimum loading time
-          if (elapsed < minDuration) {
-            await new Promise((resolve) =>
-              setTimeout(resolve, minDuration - elapsed),
-            );
-          }
-          setEventsLoading(false);
-        }
-      }
-    };
-
-    fetchData();
-
-    return () => {
-      mounted = false;
-    };
+    refreshCalendarData();
   }, [currentDate]);
+
+  // Pre-fetch permissions for all visible events
+  useEffect(() => {
+    const fetchPermissionsForEvents = async () => {
+      // Get all unique event IDs from week and month views
+      const allEventIds = new Set<string>();
+      const eventMap = new Map<string, any>();
+      
+      Object.values(weekEventsByDate).forEach((events) => {
+        events.forEach((event: any) => {
+          const evId = event.Event_ID || event.EventId || event.id;
+          if (evId && !eventPermissionsCache[evId]) {
+            allEventIds.add(evId);
+            eventMap.set(evId, event);
+          }
+        });
+      });
+      
+      Object.values(monthEventsByDate).forEach((events) => {
+        events.forEach((event: any) => {
+          const evId = event.Event_ID || event.EventId || event.id;
+          if (evId && !eventPermissionsCache[evId]) {
+            allEventIds.add(evId);
+            if (!eventMap.has(evId)) {
+              eventMap.set(evId, event);
+            }
+          }
+        });
+      });
+
+      // Fetch permissions for all events in parallel (with limit to avoid too many requests)
+      const eventIdsArray = Array.from(allEventIds).slice(0, 20); // Limit to 20 at a time
+      
+      // Get user ID
+      const rawUserStr =
+        typeof window !== "undefined" ? localStorage.getItem("unite_user") : null;
+      let parsedUser: any = null;
+      try {
+        parsedUser = rawUserStr ? JSON.parse(rawUserStr) : null;
+      } catch (e) {
+        parsedUser = null;
+      }
+      
+      const userId = parsedUser?._id || parsedUser?.id || parsedUser?.User_ID || null;
+      
+      await Promise.all(
+        eventIdsArray.map(async (evId) => {
+          const eventObj = eventMap.get(evId);
+          if (eventObj) {
+            try {
+              const permissions = await getEventActionPermissions(eventObj, userId, false);
+              setEventPermissionsCache((prev) => ({
+                ...prev,
+                [evId]: permissions,
+              }));
+            } catch (error) {
+              console.error(`[Calendar] Error fetching permissions for event ${evId}:`, error);
+            }
+          }
+        })
+      );
+    };
+
+    if (Object.keys(weekEventsByDate).length > 0 || Object.keys(monthEventsByDate).length > 0) {
+      fetchPermissionsForEvents();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [weekEventsByDate, monthEventsByDate]);
 
   const navigateWeek = async (direction: "prev" | "next") => {
     setIsDateTransitioning(true);
@@ -671,6 +836,8 @@ export default function CalendarPage(props: any) {
       activeView === "month" ? monthEventsByDate : weekEventsByDate;
     // Prefer normalized local key; fallback to ISO UTC key or raw date string if present
     const isoKey = date.toISOString().split("T")[0];
+    
+    
     let raw: any =
       source[key] || source[isoKey] || source[date.toString()] || [];
 
@@ -682,6 +849,7 @@ export default function CalendarPage(props: any) {
     }
 
     raw = Array.isArray(raw) ? raw : [];
+
 
     // Events from public API are already approved, no additional filtering needed
     const approved = raw;
@@ -700,17 +868,36 @@ export default function CalendarPage(props: any) {
     }
 
     // For both week and month views, avoid showing events on days other than their Start_Date
+    // Since events are already grouped by date key in weekEventsByDate/monthEventsByDate,
+    // this filter is mainly a safety check. However, we should be lenient to avoid filtering
+    // out events that should be displayed.
     const filterByStartDate = (ev: any) => {
+      // If we found events in the source for this date key, they're already filtered correctly
+      // Only filter if the event's start date clearly doesn't match
       let start: Date | null = null;
 
       try {
-        if (ev.Start_Date) start = parseServerDate(ev.Start_Date);
+        if (ev.Start_Date) {
+          start = parseServerDate(ev.Start_Date);
+        } else {
+          // If no Start_Date, but event is in the source for this date, allow it
+          // (might be a data inconsistency, but don't hide the event)
+          return true;
+        }
       } catch (err) {
-        start = null;
+        // If parsing fails, but event is in source for this date, allow it
+        return true; // Be lenient - if it's in the source for this date, show it
       }
-      if (!start) return false;
+      
+      if (!start) {
+        // No valid start date, but if it's in source for this date, allow it
+        return true;
+      }
 
-      return dateToLocalKey(start) === key;
+      const eventKey = dateToLocalKey(start);
+      const matches = eventKey === key;
+
+      return matches;
     };
 
     const finalList = deduped.filter(filterByStartDate);
@@ -806,314 +993,80 @@ export default function CalendarPage(props: any) {
         return true;
       });
 
+    // Transform events using utility functions
     return afterQuick.map((e: any) => {
       const eventId = e.Event_ID || e.EventId;
-      const detailedEvent = eventId ? detailedEvents[eventId] : null;
+      
+      // Since new endpoints return complete data with category and categoryData,
+      // use the event itself as detailedEvent (it already has all the data we need)
+      // Only use detailedEvents cache if it exists (for backward compatibility)
+      const detailedEvent = (eventId && detailedEvents[eventId]) ? detailedEvents[eventId] : e;
 
-      // Start date may come in different shapes (ISO, number, or mongo export object)
-      let start: Date | null = null;
-
-      if (e.Start_Date) {
-        try {
-          if (typeof e.Start_Date === "object" && e.Start_Date.$date) {
-            // mongo export shape: { $date: { $numberLong: '...' } } or { $date: 12345 }
-            const d = e.Start_Date.$date;
-
-            if (typeof d === "object" && d.$numberLong)
-              start = new Date(Number(d.$numberLong));
-            else start = new Date(d as any);
-          } else {
-            start = new Date(e.Start_Date as any);
-          }
-        } catch (err) {
-          start = null;
+      // Use transformEventData utility to create well-structured event object
+      const transformed = transformEventData(
+        e,
+        detailedEvent,
+        {
+          getProvinceName,
+          getDistrictName,
+          getMunicipalityName,
         }
-      }
+      );
 
-      const startTime = start
-        ? start.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })
-        : "";
-      // End time (if provided)
-      let end: Date | null = null;
-
-      if (e.End_Date) {
-        try {
-          if (typeof e.End_Date === "object" && e.End_Date.$date) {
-            const d = e.End_Date.$date;
-
-            if (typeof d === "object" && d.$numberLong)
-              end = new Date(Number(d.$numberLong));
-            else end = new Date(d as any);
-          } else {
-            end = new Date(e.End_Date as any);
-          }
-        } catch (err) {
-          end = null;
-        }
-      }
-      const endTime = end
-        ? end.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })
-        : "";
-
-      // Coordinator / stakeholder name — prioritize stakeholder over coordinator
-      const coordinatorName =
-        detailedEvent?.stakeholder?.Stakeholder_Name ||
-        detailedEvent?.stakeholder?.name ||
-        detailedEvent?.Stakeholder_Name ||
-        detailedEvent?.createdByName ||
-        detailedEvent?.raw?.createdByName ||
-        e.StakeholderName ||
-        e.stakeholder?.name ||
-        detailedEvent?.coordinator?.Coordinator_Name ||
-        detailedEvent?.coordinator?.name ||
-        detailedEvent?.Coordinator_Name ||
-        e.coordinator?.name ||
-        e.MadeByCoordinatorName ||
-        e.coordinatorName ||
-        e.Email ||
-        "Coordinator";
-
-      // District number — prefer detailed event coordinator district, then stakeholder district, then fall back to basic event data
-      const rawDistrictSource =
-        detailedEvent?.coordinator?.district_number ??
-        detailedEvent?.stakeholder?.district_number ??
-        detailedEvent?.coordinator?.District_Number ??
-        (detailedEvent?.coordinator?.district?.name
-          ? extractDistrictNumber(detailedEvent.coordinator.district.name)
-          : null) ??
-        (detailedEvent?.stakeholder?.district?.name
-          ? extractDistrictNumber(detailedEvent.stakeholder.district.name)
-          : null) ??
-        e.coordinator?.district_number ??
-        e.stakeholder?.district_number ??
-        e.district_number ??
-        e.DistrictNumber ??
-        e.district ??
-        (e.coordinator?.district?.name
-          ? extractDistrictNumber(e.coordinator.district.name)
-          : null) ??
-        (e.stakeholder?.district?.name
-          ? extractDistrictNumber(e.stakeholder.district.name)
-          : null);
-
-      // Compute a user-friendly district display. If `rawDistrictSource` is numeric, show ordinal style
-      // Otherwise it may be a slug like 'camarines-sur-district-v' — try to parse province and district from it.
-      let districtDisplay = "District TBD";
-      let provinceDisplay: string | null =
-        detailedEvent?.province ||
-        detailedEvent?.Province ||
-        detailedEvent?.coordinator?.province ||
-        detailedEvent?.stakeholder?.province ||
-        e.province ||
-        e.Province ||
-        null;
-
-      // If rawDistrictSource is a number (or parsable to number), use ordinal formatting
-      if (typeof rawDistrictSource === "number" || !isNaN(Number(rawDistrictSource))) {
-        const num = Number(rawDistrictSource);
-        districtDisplay = `${makeOrdinal(num)} District`;
-      } else if (typeof rawDistrictSource === "string") {
-        const s = rawDistrictSource as string;
-
-        // Helper: convert hyphen/underscore separated slug into humanized Title Case
-        const humanize = (inp: string) =>
-          inp
-            .replace(/[-_]+/g, " ")
-            .trim()
-            .split(/\s+/)
-            .map((w) => (w.length ? w.charAt(0).toUpperCase() + w.slice(1) : w))
-            .join(" ");
-
-        // Try to parse slug like 'camarines-sur-district-v' first
-        const slugMatch = s.match(/^(.*)-district-(.+)$/i);
-        if (slugMatch) {
-          const provSlug = slugMatch[1];
-          const distPart = slugMatch[2];
-
-          const prov = humanize(provSlug);
-          provinceDisplay = provinceDisplay || prov;
-
-          const distNum = Number(distPart);
-          const distLabel = !isNaN(distNum)
-            ? `${makeOrdinal(distNum)} District`
-            : `District ${distPart.toUpperCase()}`;
-
-          districtDisplay = distLabel;
-        } else {
-          // If slug contains hyphens/underscores and looks like province + district (e.g. 'camarines-sur-naga-city'),
-          // attempt to split into province and district pieces.
-          try {
-            if (s.includes("-") || s.includes("_")) {
-              const parts = s.split(/[-_]+/).map((p) => p.trim()).filter(Boolean);
-
-              if (parts.length === 1) {
-                districtDisplay = humanize(parts[0]);
-              } else if (parts.length === 2) {
-                provinceDisplay = provinceDisplay || humanize(parts[0]);
-                districtDisplay = humanize(parts[1]);
-              } else if (parts.length >= 3) {
-                // if 3+ parts, assume province = first..(n-2), district = last two joined
-                const provinceParts = parts.slice(0, parts.length - 2);
-                const districtParts = parts.slice(parts.length - 2);
-                provinceDisplay = provinceDisplay || humanize(provinceParts.join(" "));
-                districtDisplay = humanize(districtParts.join(" "));
-              } else {
-                const simple = s.trim();
-                if (simple) districtDisplay = simple;
-              }
-            } else {
-              const simple = s.trim();
-              if (simple) districtDisplay = simple;
-            }
-          } catch (err) {
-            const simple = s.trim();
-            if (simple) districtDisplay = simple;
-          }
-        }
-      }
-
-      // Province display only (derived from detailed event or parsed slug)
-      // `provinceDisplay` already contains the parsed province name when available
-
-      // Determine category (case-insensitive, check both Category and category)
-      const rawCat = (e.Category ?? e.category ?? "").toString().toLowerCase();
-      let typeKey: string = "event";
-
-      if (rawCat.includes("blood")) typeKey = "blood-drive";
-      else if (rawCat.includes("train")) typeKey = "training";
-      else if (rawCat.includes("advoc")) typeKey = "advocacy";
-
-      // Helper to find count values across shapes (main event or categoryData)
-      const getVal = (keys: string[]) => {
-        // First check detailed event data
-        for (const k of keys) {
-          if (
-            detailedEvent &&
-            detailedEvent[k] !== undefined &&
-            detailedEvent[k] !== null
-          )
-            return detailedEvent[k];
-          if (
-            detailedEvent?.categoryData &&
-            detailedEvent.categoryData[k] !== undefined &&
-            detailedEvent.categoryData[k] !== null
-          )
-            return detailedEvent.categoryData[k];
-        }
-        // Then check basic event data
-        for (const k of keys) {
-          if (e[k] !== undefined && e[k] !== null) return e[k];
-          if (
-            e.categoryData &&
-            e.categoryData[k] !== undefined &&
-            e.categoryData[k] !== null
-          )
-            return e.categoryData[k];
-        }
-
-        return undefined;
-      };
-
-      let countType = "";
-      let count = "";
-      const targetDonation = getVal([
-        "Target_Donation",
-        "TargetDonation",
-        "Target_Donations",
-      ]);
-      const maxParticipants = getVal([
-        "MaxParticipants",
-        "Max_Participants",
-        "MaxParticipant",
-      ]);
-      const expectedAudience = getVal([
-        "ExpectedAudienceSize",
-        "Expected_AudienceSize",
-        "ExpectedAudience",
-      ]);
-
-      if (typeKey === "blood-drive" && targetDonation !== undefined) {
-        countType = "Goal Count";
-        count = `${targetDonation} u.`;
-      } else if (typeKey === "training" && maxParticipants !== undefined) {
-        countType = "Participant Count";
-        count = `${maxParticipants} no.`;
-      } else if (typeKey === "advocacy" && expectedAudience !== undefined) {
-        countType = "Audience Count";
-        count = `${expectedAudience} no.`;
-      } else {
-        countType = "Details";
-        count = "View event";
-      }
-
-      const baseTitle = e.Title || e.Event_Title || e.title || "Event Title";
-      // For month view we keep the title as the event title only; tooltip will show times
-      const displayTitle = baseTitle;
-      // color codes: blood-drive -> red, training -> orange, advocacy -> blue
-      let color = "#3b82f6"; // default blue (advocacy)
-
-      if (typeKey === "blood-drive") color = "#ef4444";
-      else if (typeKey === "training") color = "#f97316"; // orange-500
-      else if (typeKey === "advocacy") color = "#3b82f6"; // blue-500
-
+      // Return transformed event with backward-compatible fields for month view
       return {
-        title: displayTitle,
-        startTime,
-        endTime,
-        time: startTime,
-        type: typeKey,
-        district: districtDisplay,
-        province: provinceDisplay,
-        location:
-          detailedEvent?.Location ||
-          detailedEvent?.location ||
-          e.Location ||
-          e.location ||
-          "Location to be determined",
-        countType,
-        count,
-        coordinatorName,
-        raw: e,
-        color,
+        ...transformed,
+        time: transformed.startTime, // For backward compatibility
+        type: transformed.category, // For backward compatibility
+        coordinatorName: transformed.ownerName, // For backward compatibility
+        raw: e, // Keep raw event for actions/modals
       };
     });
   };
 
   // Handlers for toolbar actions
-  const handleExport = async () => {
+  const handleExport = async (exportType: string) => {
+    if (!exportType) return;
+    
+    setIsExportLoading(true);
     try {
-      const year = currentDate.getFullYear();
-      const month = currentDate.getMonth();
-      const publicUrl = `${API_BASE}/api/public/events`;
-      const res = await fetch(publicUrl, { credentials: "include" });
-      const body = await res.json();
+      const monthYear = formatMonthYear(currentDate);
+      const filename = `calendar-${monthYear.replace(' ', '-').toLowerCase()}`;
 
-      if (res.ok && Array.isArray(body.data)) {
-        // Filter for events in the current month (public events are already approved)
-        const monthEvents = body.data.filter((event: any) => {
-          // Check if event is in current month
-          const startDate = parseServerDate(event.Start_Date);
-          if (!startDate) return false;
-          return (
-            startDate.getFullYear() === year && startDate.getMonth() === month
-          );
+      if (exportType === 'visual') {
+        // Only export if month view is active
+        if (activeView !== 'month') {
+          console.warn('Visual export only available in month view');
+          alert('Please switch to month view to export the calendar.');
+          setIsExportLoading(false);
+          return;
+        }
+
+        // Get organization name if available (could be from user context or settings)
+        const organizationName = 'Bicol Transfusion Service Center'; // Default, can be made configurable (note: "Centre" is correct spelling)
+        
+        // Pass monthEventsByDate, currentDate, and organizationName to export function
+        const result = await exportVisualPDF(monthEventsByDate, currentDate, organizationName);
+        
+        if (!result.success) {
+          const errorMsg = result.error || 'Failed to export calendar';
+          throw new Error(errorMsg);
+        }
+      } else if (exportType === 'organized') {
+        // Get all events for current month from monthEventsByDate
+        const allEvents: any[] = [];
+        Object.values(monthEventsByDate).forEach((dayEvents) => {
+          allEvents.push(...dayEvents);
         });
-
-        const blob = new Blob([JSON.stringify(monthEvents, null, 2)], {
-          type: "application/json",
-        });
-        const href = URL.createObjectURL(blob);
-        const a = document.createElement("a");
-
-        a.href = href;
-        a.download = `calendar-${year}-${month + 1}.json`;
-        document.body.appendChild(a);
-        a.click();
-        a.remove();
-        URL.revokeObjectURL(href);
+        
+        await exportOrganizedPDF(allEvents, monthYear, filename);
       }
-    } catch (e) {
-      // ignore export failures silently
+    } catch (error) {
+      console.error('Export failed:', error);
+      const errorMessage = error instanceof Error ? error.message : 'An unknown error occurred';
+      alert(`Export failed: ${errorMessage}`);
+    } finally {
+      setIsExportLoading(false);
     }
   };
 
@@ -1148,20 +1101,31 @@ export default function CalendarPage(props: any) {
       const monthStart = new Date(year, monthIndex, 1);
       const monthEnd = new Date(year, monthIndex + 1, 0, 23, 59, 59, 999);
 
-      const publicUrl = `${API_BASE}/api/public/events?date_from=${encodeURIComponent(monthStart.toISOString())}&date_to=${encodeURIComponent(monthEnd.toISOString())}`;
-      const publicResp = await fetch(publicUrl, { credentials: "include" });
-      const publicJson = await publicResp.json();
+      // Check if user is authenticated to use /api/me/events, otherwise use /api/events/all
+      const token =
+        typeof window !== "undefined" &&
+        (localStorage.getItem("unite_token") ||
+          sessionStorage.getItem("unite_token"));
 
-      if (publicResp.ok && Array.isArray(publicJson.data)) {
-        const monthEvents = publicJson.data;
+      const headers: any = { "Content-Type": "application/json" };
+      if (token) headers["Authorization"] = `Bearer ${token}`;
 
-        // Batch fetch detailed information for all events in the month
-        const eventIds = monthEvents
-          .map((e: any) => e.Event_ID || e.EventId)
-          .filter(Boolean);
-        if (eventIds.length > 0) {
-          await fetchEventDetails(eventIds);
-        }
+      // Use /api/me/events if authenticated, otherwise /api/events/all
+      const eventsUrl = token
+        ? `${API_BASE}/api/me/events?date_from=${encodeURIComponent(monthStart.toISOString())}&date_to=${encodeURIComponent(monthEnd.toISOString())}`
+        : `${API_BASE}/api/events/all?date_from=${encodeURIComponent(monthStart.toISOString())}&date_to=${encodeURIComponent(monthEnd.toISOString())}`;
+
+      const eventsResp = await fetch(eventsUrl, {
+        headers,
+        credentials: token ? undefined : "include",
+      });
+      const eventsJson = await eventsResp.json();
+
+      if (eventsResp.ok && eventsJson.success && Array.isArray(eventsJson.data)) {
+        const monthEvents = eventsJson.data;
+
+        // Events from new endpoints are already populated with location names, category data, etc.
+        // No need for batch fetch - data is already complete
 
         // Group by date
         const eventsByDate: Record<string, any[]> = {};
@@ -1183,28 +1147,44 @@ export default function CalendarPage(props: any) {
         wkStart.setHours(0, 0, 0, 0);
         const wkEnd = new Date(wkStart);
         wkEnd.setDate(wkStart.getDate() + 6);
+        wkEnd.setHours(23, 59, 59, 999);
+
+        // Generate all date keys for the week to ensure consistent matching
+        const weekDateKeys = new Set<string>();
+        for (let i = 0; i < 7; i++) {
+          const weekDate = new Date(wkStart);
+          weekDate.setDate(wkStart.getDate() + i);
+          weekDateKeys.add(dateToLocalKey(weekDate));
+        }
 
         const weekEvents: Record<string, any[]> = {};
 
+        // Use date key matching instead of Date object comparison to avoid timezone issues
         Object.keys(normalizedMonth).forEach((dateKey) => {
           const events = normalizedMonth[dateKey] || [];
-          const eventDate = new Date(dateKey + "T00:00:00");
 
-          if (eventDate >= wkStart && eventDate <= wkEnd) {
+          // Check if this date key falls within the current week using key matching
+          if (weekDateKeys.has(dateKey)) {
             weekEvents[dateKey] = events;
           }
         });
 
         setWeekEventsByDate(weekEvents);
+      } else {
+        // If new endpoint fails, fall back to empty state
+        setMonthEventsByDate({});
+        setWeekEventsByDate({});
       }
     } catch (e) {
-      // ignore
+      console.error("[refreshCalendarData] Error fetching events:", e);
+      setMonthEventsByDate({});
+      setWeekEventsByDate({});
     }
   };
 
   // Perform an admin action (Accepted/Rejected/Rescheduled) given an Event_ID.
   // This will fetch the event to determine the linked request id, then call
-  // the admin-action endpoint on the request.
+  // the unified actions endpoint on the request.
   const performAdminActionByEventId = async (
     eventId: string,
     action: string,
@@ -1245,29 +1225,33 @@ export default function CalendarPage(props: any) {
     if (!requestId)
       throw new Error("Unable to determine request id for action");
 
-    const body: any = { action, note: note ? note.trim() : undefined };
+    // Map old action names to new unified action names
+    const actionMap: Record<string, string> = {
+      "Accepted": "accept",
+      "Rejected": "reject",
+      "Rescheduled": "reschedule",
+      "Cancelled": "cancel",
+    };
+    const unifiedAction = actionMap[action] || action.toLowerCase();
 
-    if (rescheduledDate) body.rescheduledDate = rescheduledDate;
+    const body: any = { action: unifiedAction, note: note ? note.trim() : undefined };
+
+    if (rescheduledDate) body.proposedDate = rescheduledDate;
 
     let res;
 
     if (token) {
       res = await fetchWithAuth(
-        `${API_BASE}/api/requests/${encodeURIComponent(requestId)}/admin-action`,
+        `${API_BASE}/api/event-requests/${encodeURIComponent(requestId)}/actions`,
         { method: "POST", body: JSON.stringify(body) },
       );
     } else {
-      const legacyBody = {
-        adminId: user?.id || user?.Admin_ID || null,
-        ...body,
-      };
-
       res = await fetch(
-        `${API_BASE}/api/requests/${encodeURIComponent(requestId)}/admin-action`,
+        `${API_BASE}/api/event-requests/${encodeURIComponent(requestId)}/actions`,
         {
           method: "POST",
           headers,
-          body: JSON.stringify(legacyBody),
+          body: JSON.stringify(body),
           credentials: "include",
         },
       );
@@ -1378,7 +1362,7 @@ export default function CalendarPage(props: any) {
           ...eventPayload,
         };
 
-        const res = await fetch(`${API_BASE}/api/events/direct`, {
+        const res = await fetch(`${API_BASE}/api/events`, {
           method: "POST",
           headers,
           body: JSON.stringify(body),
@@ -1389,6 +1373,10 @@ export default function CalendarPage(props: any) {
 
         // refresh requests list to show the newly created event
         await refreshCalendarData();
+        // Clear permission cache to refresh permissions
+        setEventPermissionsCache({});
+        setEventPermissionsLoading({});
+        clearPermissionCache();
 
         return resp;
       } else {
@@ -1403,7 +1391,7 @@ export default function CalendarPage(props: any) {
           ...eventPayload,
         };
 
-        const res = await fetch(`${API_BASE}/api/requests`, {
+        const res = await fetch(`${API_BASE}/api/event-requests`, {
           method: "POST",
           headers,
           body: JSON.stringify(body),
@@ -1414,6 +1402,10 @@ export default function CalendarPage(props: any) {
           throw new Error(resp.message || "Failed to create request");
 
         await refreshCalendarData();
+        // Clear permission cache to refresh permissions
+        setEventPermissionsCache({});
+        setEventPermissionsLoading({});
+        clearPermissionCache();
 
         return resp;
       }
@@ -1515,10 +1507,12 @@ export default function CalendarPage(props: any) {
     }),
   };
 
-  // Build dropdown menus matching campaign design
+  // Build dropdown menus using permission-based evaluation
   const getMenuByStatus = (event: any) => {
-    // Calendar events are from public API; assume Approved for action availability
-    const status = "Approved";
+    // Calendar events are from public API; determine status from event
+    const evRaw = event.raw || event;
+    const status = evRaw.Status || evRaw.status || "Approved";
+    const evId = evRaw.Event_ID || evRaw.EventId || evRaw.id;
 
     // Unauthenticated users: view-only
     const token =
@@ -1545,196 +1539,154 @@ export default function CalendarPage(props: any) {
       );
     }
 
-    // Parse current user
-    const rawUserStr =
-      typeof window !== "undefined" ? localStorage.getItem("unite_user") : null;
-    let parsedUser: any = null;
-    try {
-      parsedUser = rawUserStr ? JSON.parse(rawUserStr) : null;
-    } catch (e) {
-      parsedUser = null;
+    // Check if permissions are loading
+    // Note: Permission fetching is handled by useEffect hook, not during render
+    const isLoading = evId ? eventPermissionsLoading[evId] || false : false;
+
+    // Get cached permissions (or default to view-only if not yet loaded)
+    const permissions = evId && eventPermissionsCache[evId]
+      ? eventPermissionsCache[evId]
+      : {
+          canView: true,
+          canEdit: false,
+          canManageStaff: false,
+          canReschedule: false,
+          canCancel: false,
+          canDelete: false,
+        };
+
+    // Determine event status for action availability
+    const normalizedStatus = String(status || "Approved").toLowerCase();
+    const isApproved = normalizedStatus.includes("approve");
+    const isCancelled = normalizedStatus.includes("cancel");
+    const isCompleted = normalizedStatus.includes("complete");
+
+    // Show loading state if permissions are being fetched
+    if (isLoading) {
+      return (
+        <DropdownMenu aria-label="Event actions menu" variant="faded">
+          <DropdownSection title="Actions">
+            <DropdownItem
+              key="loading"
+              isDisabled
+              startContent={
+                <div className="w-4 h-4 border-2 border-gray-300 border-t-gray-600 rounded-full animate-spin" />
+              }
+            >
+              Loading permissions...
+            </DropdownItem>
+          </DropdownSection>
+        </DropdownMenu>
+      );
     }
 
-    const info = getUserInfo();
-    const userIsAdmin = !!info.isAdmin;
-    const userCoordinatorId =
-      parsedUser?.Coordinator_ID ||
-      parsedUser?.CoordinatorId ||
-      parsedUser?.CoordinatorId ||
-      parsedUser?.Coordinator ||
-      parsedUser?.Coordinator_ID;
-    const userStakeholderId =
-      parsedUser?.Stakeholder_ID ||
-      parsedUser?.StakeholderId ||
-      parsedUser?.StakeholderId ||
-      parsedUser?.Stakeholder ||
-      parsedUser?.Stakeholder_ID;
-
-    // Helpers to extract district/province objects from various shapes
-    const extractDistrictProvince = (obj: any) => {
-      if (!obj)
-        return { district_number: null, district_name: null, province: null };
-      return {
-        district_number:
-          obj.District_Number ||
-          obj.district_number ||
-          obj.District_ID ||
-          obj.DistrictId ||
-          null,
-        district_name:
-          obj.District_Name || obj.district_name || obj.district || null,
-        province: obj.Province || obj.province || obj.Province_Name || null,
-      };
-    };
-
-    // Determine event ownership and related metadata (use detailedEvents when available)
-    const evRaw = event.raw || {};
-    const evId = evRaw.Event_ID || evRaw.EventId || evRaw.id;
-    const detailed = evId ? detailedEvents[evId] : null;
-
-    const eventCoordinatorId =
-      evRaw.MadeByCoordinatorID ||
-      evRaw.MadeByCoordinatorId ||
-      evRaw.coordinatorId ||
-      detailed?.coordinator?.id ||
-      detailed?.coordinator?.Coordinator_ID;
-    const eventStakeholderId =
-      evRaw.MadeByStakeholderID ||
-      evRaw.MadeByStakeholderId ||
-      evRaw.stakeholder ||
-      detailed?.stakeholder?.id ||
-      detailed?.stakeholder?.Stakeholder_ID;
-
-    const eventStakeholderMeta =
-      detailed?.stakeholder ||
-      evRaw.stakeholder ||
-      evRaw.MadeByStakeholder ||
-      evRaw.MadeByStakeholderMeta ||
-      null;
-    const stakeholderDP = extractDistrictProvince(eventStakeholderMeta);
-
-    const userDP = extractDistrictProvince(parsedUser || {});
-
-    const coordinatorOwns =
-      userCoordinatorId &&
-      eventCoordinatorId &&
-      String(userCoordinatorId) === String(eventCoordinatorId);
-    const stakeholderOwns =
-      userStakeholderId &&
-      eventStakeholderId &&
-      String(userStakeholderId) === String(eventStakeholderId);
-
-    // Coordinator may act if they own the event OR the event is owned by a stakeholder in the same district/province
-    const sameDistrictForCoordinator =
-      (userDP.district_number &&
-        stakeholderDP.district_number &&
-        String(userDP.district_number) ===
-          String(stakeholderDP.district_number)) ||
-      (userDP.district_name &&
-        stakeholderDP.district_name &&
-        String(userDP.district_name).toLowerCase() ===
-          String(stakeholderDP.district_name).toLowerCase());
-    const sameProvinceForCoordinator =
-      userDP.province &&
-      stakeholderDP.province &&
-      String(userDP.province).toLowerCase() ===
-        String(stakeholderDP.province).toLowerCase();
-
-    const userIsCoordinator = !!(
-      userCoordinatorId ||
-      String(info.role || "")
-        .toLowerCase()
-        .includes("coordinator")
-    );
-
-    const coordinatorHasFull =
-      userIsCoordinator &&
-      (coordinatorOwns ||
-        (eventStakeholderId &&
-          (sameDistrictForCoordinator || sameProvinceForCoordinator)) ||
-        stakeholderOwns);
-
-    const userIsStakeholder = !!(
-      userStakeholderId ||
-      String(info.role || "")
-        .toLowerCase()
-        .includes("stakeholder")
-    );
-    const stakeholderHasFull = userIsStakeholder && stakeholderOwns;
-
-    // Build allowed action flags
-    const allowView = true;
-    const allowEdit = userIsAdmin || coordinatorHasFull || stakeholderHasFull;
-    const allowManageStaff =
-      userIsAdmin || coordinatorHasFull || stakeholderHasFull;
-    const allowResched =
-      userIsAdmin || coordinatorHasFull || stakeholderHasFull;
-    const allowCancel = userIsAdmin || coordinatorHasFull || stakeholderHasFull;
-
-    const approvedMenu = (
-      <DropdownMenu aria-label="Event actions menu" variant="faded">
-        <DropdownSection showDivider title="Actions">
-          {allowView ? (
-            <DropdownItem
-              key="view"
-              description="View this event"
-              startContent={<Eye />}
-              onPress={() => handleOpenViewEvent(event.raw)}
-            >
-              View Event
-            </DropdownItem>
+    // Build menu based on status and permissions
+    if (isCancelled) {
+      // Cancelled events: view + delete (if admin has permission)
+      return (
+        <DropdownMenu aria-label="Event actions menu" variant="faded">
+          <DropdownSection title="Actions">
+            {permissions.canView ? (
+              <DropdownItem
+                key="view"
+                description="View this event"
+                startContent={<Eye />}
+                onPress={() => handleOpenViewEvent(event.raw)}
+              >
+                View Event
+              </DropdownItem>
+            ) : null}
+          </DropdownSection>
+          {permissions.canDelete ? (
+            <DropdownSection title="Danger zone">
+              <DropdownItem
+                key="delete"
+                className="text-danger"
+                color="danger"
+                description="Delete this event"
+                startContent={
+                  <Trash2 className="text-xl text-danger pointer-events-none shrink-0" />
+                }
+                onPress={() => {
+                  // TODO: Implement delete handler
+                }}
+              >
+                Delete
+              </DropdownItem>
+            </DropdownSection>
           ) : null}
-          {allowEdit ? (
-            <DropdownItem
-              key="edit"
-              description="Edit an event"
-              startContent={<Edit />}
-              onPress={() => handleOpenEditEvent(event.raw)}
-            >
-              Edit Event
-            </DropdownItem>
-          ) : null}
-          {allowManageStaff ? (
-            <DropdownItem
-              key="manage-staff"
-              description="Manage staff for this event"
-              startContent={<Users />}
-              onPress={() => setManageStaffOpenId(event.raw.Event_ID)}
-            >
-              Manage Staff
-            </DropdownItem>
-          ) : null}
-          {allowResched ? (
-            <DropdownItem
-              key="reschedule"
-              description="Reschedule this event"
-              startContent={<Clock className="w-3 h-3 text-gray-500" />}
-              onPress={() => setRescheduleOpenId(event.raw.Event_ID)}
-            >
-              Reschedule Event
-            </DropdownItem>
-          ) : null}
-        </DropdownSection>
-        <DropdownSection title="Danger zone">
-          {allowCancel ? (
-            <DropdownItem
-              key="cancel"
-              className="text-danger"
-              color="danger"
-              description="Cancel an event"
-              startContent={
-                <Trash2 className="text-xl text-danger pointer-events-none shrink-0" />
-              }
-              onPress={() => setCancelOpenId(event.raw.Event_ID)}
-            >
-              Cancel
-            </DropdownItem>
-          ) : null}
-        </DropdownSection>
-      </DropdownMenu>
-    );
+        </DropdownMenu>
+      );
+    }
 
-    const defaultMenu = (
+    if (isApproved || isCompleted) {
+      // Approved/Completed events: full action set based on permissions
+      return (
+        <DropdownMenu aria-label="Event actions menu" variant="faded">
+          <DropdownSection showDivider title="Actions">
+            {permissions.canView ? (
+              <DropdownItem
+                key="view"
+                description="View this event"
+                startContent={<Eye />}
+                onPress={() => handleOpenViewEvent(event.raw)}
+              >
+                View Event
+              </DropdownItem>
+            ) : null}
+            {permissions.canEdit ? (
+              <DropdownItem
+                key="edit"
+                description="Edit an event"
+                startContent={<Edit />}
+                onPress={() => handleOpenEditEvent(event.raw)}
+              >
+                Edit Event
+              </DropdownItem>
+            ) : null}
+            {permissions.canManageStaff ? (
+              <DropdownItem
+                key="manage-staff"
+                description="Manage staff for this event"
+                startContent={<Users />}
+                onPress={() => setManageStaffOpenId(event.raw.Event_ID)}
+              >
+                Manage Staff
+              </DropdownItem>
+            ) : null}
+            {permissions.canReschedule ? (
+              <DropdownItem
+                key="reschedule"
+                description="Reschedule this event"
+                startContent={<Clock className="w-3 h-3 text-gray-500" />}
+                onPress={() => setRescheduleOpenId(event.raw.Event_ID)}
+              >
+                Reschedule Event
+              </DropdownItem>
+            ) : null}
+          </DropdownSection>
+          {permissions.canCancel ? (
+            <DropdownSection title="Danger zone">
+              <DropdownItem
+                key="cancel"
+                className="text-danger"
+                color="danger"
+                description="Cancel an event"
+                startContent={
+                  <Trash2 className="text-xl text-danger pointer-events-none shrink-0" />
+                }
+                onPress={() => setCancelOpenId(event.raw.Event_ID)}
+              >
+                Cancel
+              </DropdownItem>
+            </DropdownSection>
+          ) : null}
+        </DropdownMenu>
+      );
+    }
+
+    // Default: view-only for other statuses
+    return (
       <DropdownMenu aria-label="Event actions menu" variant="faded">
         <DropdownSection title="Actions">
           <DropdownItem
@@ -1748,9 +1700,6 @@ export default function CalendarPage(props: any) {
         </DropdownSection>
       </DropdownMenu>
     );
-
-    if (status === "Approved") return approvedMenu;
-    return defaultMenu;
   };
 
   // View/Edit handlers: open campaign modals with fetched event details
@@ -1784,9 +1733,15 @@ export default function CalendarPage(props: any) {
       const headers: any = { "Content-Type": "application/json" };
 
       if (token) headers["Authorization"] = `Bearer ${token}`;
+      
+      // Use public endpoint if user is not authenticated
+      const endpoint = token 
+        ? `/api/events/${encodeURIComponent(eventId)}`
+        : `/api/public/events/${encodeURIComponent(eventId)}`;
+      
       // Always fetch the full event details from backend. Log the raw response to help debugging.
       const res = await fetch(
-        `${API_BASE}/api/events/${encodeURIComponent(eventId)}`,
+        `${API_BASE}${endpoint}`,
         { headers },
       );
       const body = await res.json();
@@ -1935,8 +1890,9 @@ export default function CalendarPage(props: any) {
           <div className="w-full lg:w-auto">
             <CalendarToolbar
               showCreate={allowCreate}
-              showExport={false}
+              showExport={activeView === 'month'}
               isMobile={isMobile}
+              isExporting={isExportLoading}
               onAdvancedFilter={handleAdvancedFilter}
               onCreateEvent={allowCreate ? handleCreateEvent : undefined}
               onExport={handleExport}
@@ -2026,107 +1982,26 @@ export default function CalendarPage(props: any) {
                       ) : (
                         <div className="space-y-2 sm:space-y-3">
                           {dayEvents.map((event, eventIndex) => (
-                            <div
+                            <CalendarEventCard
                               key={eventIndex}
-                              className="bg-white rounded-lg border border-gray-200 p-2 sm:p-3 hover:shadow-md active:shadow-sm transition-shadow touch-manipulation"
-                            >
-                              {/* Three-dot menu */}
-                              <div className="flex justify-between items-start mb-1">
-                                <h4 className="font-semibold text-gray-900 text-xs leading-tight pr-2 line-clamp-2 flex-1">
-                                  {event.title}
-                                </h4>
-                                <Dropdown>
-                                  <DropdownTrigger>
-                                    <Button
-                                      isIconOnly
-                                      aria-label="Event actions"
-                                      className="hover:text-default-800 min-w-6 h-6 flex-shrink-0"
-                                      size="sm"
-                                      variant="light"
-                                    >
-                                      <MoreVertical className="w-3 h-3 sm:w-4 sm:h-4" />
-                                    </Button>
-                                  </DropdownTrigger>
-                                  {getMenuByStatus(event)}
-                                </Dropdown>
-                              </div>
-
-                              {/* Profile */}
-                              <div className="flex items-center gap-1 mb-2">
-                                <div
-                                  className="h-4 w-4 sm:h-6 sm:w-6 rounded-full flex-shrink-0 flex items-center justify-center"
-                                  style={{
-                                    backgroundColor: getProfileColor(
-                                      event.coordinatorName,
-                                    ),
-                                  }}
-                                >
-                                  <span className="text-white text-[10px] sm:text-xs">
-                                    {getProfileInitial(event.coordinatorName)}
-                                  </span>
-                                </div>
-                                <span className="text-[10px] sm:text-xs text-gray-600 truncate">
-                                  {event.coordinatorName}
-                                </span>
-                              </div>
-
-                              {/* Time and Type Badges */}
-                              <div className="flex gap-2 mb-3">
-                                <div className="bg-gray-100 rounded px-2 py-1 flex items-center gap-1">
-                                  <Clock className="w-3 h-3 text-gray-500" />
-                                  <span className="text-xs text-gray-700">
-                                    {event.time}
-                                  </span>
-                                </div>
-                                <div className="bg-gray-100 rounded px-1.5 sm:px-2 py-0.5 sm:py-1">
-                                  <span className="text-xs text-gray-700">
-                                    {eventLabelsMap[event.type as EventType]}
-                                  </span>
-                                </div>
-                              </div>
-
-                              {/* Province (new) */}
-                              <div className="mb-1">
-                                <div className="text-xs font-medium text-gray-700 mb-0.5">
-                                  Province
-                                </div>
-                                <div className="text-xs text-gray-600 line-clamp-1">
-                                  {event.province || "-"}
-                                </div>
-                              </div>
-
-                              {/* District (legacy) */}
-                              <div className="mb-1">
-                                <div className="text-xs font-medium text-gray-700 mb-0.5">
-                                  District
-                                </div>
-                                <div className="text-xs text-gray-600 line-clamp-1">
-                                  {event.district}
-                                </div>
-                              </div>
-
-                              {/* Location */}
-                              <div className="mb-2">
-                                <div className="text-xs font-medium text-gray-700 mb-0.5">
-                                  Location
-                                </div>
-                                <div className="text-xs text-gray-600 line-clamp-2">
-                                  {event.location}
-                                </div>
-                              </div>
-
-                              {/* Count */}
-                              <div className="border-t border-gray-200 pt-1 sm:pt-2">
-                                <div className="flex justify-between items-center">
-                                  <span className="text-xs text-gray-600">
-                                    {event.countType}
-                                  </span>
-                                  <span className="text-sm sm:text-lg font-bold text-red-500">
-                                    {event.count}
-                                  </span>
-                                </div>
-                              </div>
-                            </div>
+                              title={event.title}
+                              ownerName={event.coordinatorName || event.ownerName || "Coordinator"}
+                              startTime={event.startTime || event.time || ""}
+                              endTime={event.endTime}
+                              category={event.category || event.type || "event"}
+                              province={event.province}
+                              district={event.district}
+                              municipality={event.municipality}
+                              location={event.location}
+                              countType={event.countType}
+                              count={event.count}
+                              rawEvent={event.raw || event}
+                              getMenuByStatus={getMenuByStatus}
+                              categoryLabel={event.categoryLabel || eventLabelsMap[event.category as EventType] || eventLabelsMap[event.type as EventType] || "Event"}
+                              getProfileInitial={getProfileInitial}
+                              getProfileColor={getProfileColor}
+                              color={event.color}
+                            />
                           ))}
                         </div>
                       )}
@@ -2139,6 +2014,7 @@ export default function CalendarPage(props: any) {
 
           {/* Month View */}
           <div
+            id="calendar-month-view"
             ref={monthViewRef}
             className={`transition-all duration-500 ease-in-out w-full ${getViewTransitionStyle("month")}`}
           >
@@ -2204,7 +2080,7 @@ export default function CalendarPage(props: any) {
                                 color: event.color,
                               }}
                               tabIndex={0}
-                              title={`${eventLabelsMap[event.type as EventType]} : ${event.startTime || ""}${event.endTime ? ` - ${event.endTime}` : ""}`}
+                              title={`${event.categoryLabel || eventLabelsMap[event.type as EventType] || "Event"}: ${event.title}`}
                               onClick={() => handleOpenViewEvent(event.raw)}
                               onKeyDown={(e) => {
                                 if (e.key === "Enter" || e.key === " ") {
@@ -2212,15 +2088,8 @@ export default function CalendarPage(props: any) {
                                 }
                               }}
                             >
-                              <div className="flex items-center gap-2">
-                                <span className="truncate block">
-                                  {event.title}
-                                </span>
-                                {event.startTime ? (
-                                  <span className="text-xs font-semibold ml-1">
-                                    {event.startTime}
-                                  </span>
-                                ) : null}
+                              <div className="break-words whitespace-normal leading-tight">
+                                {event.title}
                               </div>
                             </div>
                           ))}
@@ -2253,6 +2122,9 @@ export default function CalendarPage(props: any) {
         onSaved={async () => {
           // refresh calendar after saving staff
           await refreshCalendarData();
+          // Clear permission cache to refresh permissions
+          setEventPermissionsCache({});
+          clearPermissionCache();
         }}
       />
       <EventRescheduleModal
@@ -2264,6 +2136,9 @@ export default function CalendarPage(props: any) {
         onSaved={async () => {
           // refresh calendar after reschedule
           await refreshCalendarData();
+          // Clear permission cache to refresh permissions
+          setEventPermissionsCache({});
+          clearPermissionCache();
         }}
       />
       <EditEventModal
@@ -2278,6 +2153,9 @@ export default function CalendarPage(props: any) {
           setViewModalOpen(false);
           setEditModalOpen(false);
           await refreshCalendarData();
+          // Clear permission cache to refresh permissions
+          setEventPermissionsCache({});
+          clearPermissionCache();
         }}
       />
       {/* Accept confirmation modal */}

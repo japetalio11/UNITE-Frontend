@@ -1,10 +1,15 @@
 "use client";
 
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo, useRef } from "react";
 import { useRouter } from "next/navigation";
 
 import { getUserInfo } from "../../../utils/getUserInfo";
 import { debug, warn } from "../../../utils/devLogger";
+import { listStakeholders, deleteStakeholder } from "@/services/stakeholderService";
+import { useStakeholderManagement } from "@/hooks/useStakeholderManagement";
+import { getUserAuthority } from "@/utils/getUserAuthority";
+import { decodeJwt } from "@/utils/decodeJwt";
+import { useCurrentUser } from "@/hooks/useCurrentUser";
 
 import Topbar from "@/components/layout/topbar";
 import StakeholderToolbar from "@/components/stakeholder-management/stakeholder-management-toolbar";
@@ -58,6 +63,8 @@ export default function StakeholderManagement() {
   const [filters, setFilters] = useState<{
     province?: string;
     districtId?: string;
+    organizationType?: string;
+    [key: string]: any;
   }>({});
   const [openQuickFilter, setOpenQuickFilter] = useState(false);
   const [openAdvancedFilter, setOpenAdvancedFilter] = useState(false);
@@ -79,29 +86,53 @@ export default function StakeholderManagement() {
   const [municipalityCache, setMunicipalityCache] = useState<
     Record<string, string>
   >({});
+  const [municipalitiesMap, setMunicipalitiesMap] = useState<
+    Record<string, any>
+  >({});
   const [isAcceptModalOpen, setIsAcceptModalOpen] = useState(false);
   const [isRejectModalOpen, setIsRejectModalOpen] = useState(false);
   const [pendingAcceptId, setPendingAcceptId] = useState<string | null>(null);
   const [pendingRejectId, setPendingRejectId] = useState<string | null>(null);
   const [rejectReason, setRejectReason] = useState("");
 
+  // Use a ref to track if initial fetch has been done to avoid double-fetch
+  const initialFetchDone = useRef(false);
+
+  // Fetch current user from API
+  const { user: currentUser } = useCurrentUser();
+  
   // Do not call getUserInfo() synchronously — read it on mount so server and client
   // produce the same initial HTML; update user-derived state after hydration.
   const [userInfo, setUserInfo] = useState<any | null>(null);
-  const [displayName, setDisplayName] = useState("Bicol Medical Center");
-  const [displayEmail, setDisplayEmail] = useState("bmc@gmail.com");
+  const [displayName, setDisplayName] = useState("unite user");
+  const [displayEmail, setDisplayEmail] = useState("unite@health.tech");
   const [canManageStakeholders, setCanManageStakeholders] = useState(false);
-  const [userDistrictId, setUserDistrictId] = useState<string | null>(null);
-  const [openUserDistrictId, setOpenUserDistrictId] = useState<string | null>(
-    null,
-  );
-  const [userAccountType, setUserAccountType] = useState<string | null>(null);
+  const [checkingAccess, setCheckingAccess] = useState(true);
+  const [canApproveReject, setCanApproveReject] = useState(false);
+  
+  // Use stakeholder management hook for business logic
+  const { isSystemAdmin } = useStakeholderManagement();
   // Add Pagination State
   const [currentPage, setCurrentPage] = useState(1);
   const itemsPerPage = 10; // Or whatever size you prefer
 
   // Mobile navigation state (handled by MobileNav component)
   const [isMobile, setIsMobile] = useState(false);
+
+  // Update display name and email from API user data
+  useEffect(() => {
+    if (currentUser) {
+      if (currentUser.fullName) {
+        setDisplayName(currentUser.fullName);
+      } else if (currentUser.firstName || currentUser.lastName) {
+        const nameParts = [currentUser.firstName, currentUser.middleName, currentUser.lastName].filter(Boolean);
+        setDisplayName(nameParts.join(" ") || "unite user");
+      }
+      if (currentUser.email) {
+        setDisplayEmail(currentUser.email);
+      }
+    }
+  }, [currentUser]);
 
   // Reset to page 1 when search or tab changes
   useEffect(() => {
@@ -139,6 +170,7 @@ export default function StakeholderManagement() {
         (coordinator.organization || coordinator.entity || "").toLowerCase().includes(q) ||
         (coordinator.province || "").toLowerCase().includes(q) ||
         (coordinator.district || "").toLowerCase().includes(q) ||
+        (coordinator.coverageArea || coordinator.municipality || "").toLowerCase().includes(q) ||
         (
           (municipalityCache && municipalityCache[String(coordinator.municipality)]) ||
           coordinator.municipality ||
@@ -244,79 +276,201 @@ export default function StakeholderManagement() {
     }
   }, []);
 
+  // Permission-based access check using backend API
   useEffect(() => {
-    try {
-      const info = getUserInfo();
-
-      setUserInfo(info);
-      const rawUser = info?.raw || null;
-      const staffType =
-        rawUser?.StaffType ||
-        rawUser?.Staff_Type ||
-        rawUser?.staff_type ||
-        rawUser?.staffType ||
-        (rawUser?.user &&
-          (rawUser.user.StaffType ||
-            rawUser.user.staff_type ||
-            rawUser.user.staffType)) ||
-        null;
-      const isStaffAdmin =
-        !!staffType && String(staffType).toLowerCase() === "admin";
-      const resolvedRole = info?.role || null;
-      const roleLower = resolvedRole ? String(resolvedRole).toLowerCase() : "";
-      const isSystemAdmin =
-        !!info?.isAdmin ||
-        (roleLower.includes("sys") && roleLower.includes("admin"));
-
-      // Allow management when the user is a system admin OR has StaffType 'admin'.
-      // Previous logic required both which could incorrectly block sys-admin users.
-      const resolvedCanManage = !!(isSystemAdmin || isStaffAdmin || roleLower === "admin");
-      setCanManageStakeholders(resolvedCanManage);
-      // Determine a default account type for non-sysadmin roles (e.g. Coordinators)
-      let accountType: string | null = null;
+    const checkPageAccess = async () => {
       try {
-        const staffLower = (staffType || "").toString().toLowerCase();
-        if (staffLower === "coordinator" || roleLower.includes("coordinator")) {
-          accountType = "LGU";
+        const info = getUserInfo();
+        setUserInfo(info);
+        
+        // Check page access via backend API
+        const base = (process.env.NEXT_PUBLIC_API_URL || "").replace(/\/$/, "");
+        const token =
+          typeof window !== "undefined"
+            ? localStorage.getItem("unite_token") ||
+              sessionStorage.getItem("unite_token")
+            : null;
+
+        if (!token) {
+          router.replace('/auth/signin');
+          return;
+        }
+
+        const url = base
+          ? `${base}/api/pages/check/stakeholder-management`
+          : `/api/pages/check/stakeholder-management`;
+
+        const response = await fetch(url, {
+          headers: {
+            'Authorization': `Bearer ${token}`,
+          },
+        });
+
+        const data = await response.json();
+
+        if (data.success && data.canAccess) {
+          setCanManageStakeholders(true);
+          // Update user info if not already set or if we have better data
+          if (info?.displayName && !displayName) {
+            setDisplayName(info.displayName);
+          } else if (info?.raw?.First_Name && !displayName) {
+            setDisplayName(info.raw.First_Name);
+          }
+          if (info?.email && !displayEmail) {
+            setDisplayEmail(info.email);
+          } else if (info?.raw?.Email && !displayEmail) {
+            setDisplayEmail(info.raw.Email);
+          }
+          
+          // Check if user can approve/reject signup requests
+          // Requirements: authority >= 60 AND staff.create permission (or admin)
+          // Try multiple paths to get userId - including JWT token fallback
+          let userId = info?.raw?.id || 
+                       info?.raw?._id || 
+                       (info as any)?.id || 
+                       info?.raw?.User_ID || 
+                       info?.raw?.userId ||
+                       null;
+          
+          // Fallback: try to get userId from JWT token
+          if (!userId && token) {
+            try {
+              const decoded = decodeJwt(token);
+              userId = decoded?.id || decoded?.userId || decoded?._id || null;
+            } catch (e) {
+              // JWT decode failed, continue
+            }
+          }
+          
+          // Check isAdmin from multiple locations - handle both boolean and string values
+          // Use info.isAdmin first (this is computed by getUserInfo() and checks StaffType)
+          const rawIsAdmin = info?.raw?.isAdmin;
+          const isAdminFromInfo = Boolean(info?.isAdmin) ||  // This checks StaffType === 'admin'
+                                 Boolean(rawIsAdmin === true || rawIsAdmin === 'true' || rawIsAdmin === 1) ||
+                                 Boolean(info?.raw?.isSystemAdmin) || 
+                                 false;
+          
+          // Also check StaffType for admin (redundant but safe)
+          const staffType = info?.raw?.StaffType || info?.raw?.staff_type || '';
+          const isAdminByStaffType = staffType && String(staffType).toLowerCase() === 'admin';
+          
+          // Check if user has wildcard permissions (*.*) which indicates admin
+          // Try to get permissions from localStorage directly
+          let permissions: any[] = [];
+          try {
+            const rawUser = localStorage.getItem('unite_user');
+            if (rawUser) {
+              const parsedUser = JSON.parse(rawUser);
+              permissions = parsedUser?.permissions || 
+                           parsedUser?.Permissions || 
+                           parsedUser?.user?.permissions ||
+                            parsedUser?.data?.permissions ||
+                            info?.raw?.permissions || 
+                            (info as any)?.permissions || 
+                            [];
+            }
+          } catch (e) {
+            permissions = info?.raw?.permissions || (info as any)?.permissions || [];
+          }
+          
+          const hasWildcardPermissions = Array.isArray(permissions) && 
+                                       permissions.some((p: any) => {
+                                         if (typeof p === 'string') {
+                                           return p === '*.*' || p === '*';
+                                         }
+                                         if (typeof p === 'object' && p !== null) {
+                                           return (p.resource === '*' && (p.actions === '*' || (Array.isArray(p.actions) && p.actions.includes('*'))));
+                                         }
+                                         return false;
+                                       });
+          
+          const isAdmin = isAdminFromInfo || isAdminByStaffType || hasWildcardPermissions;
+          
+          // Quick check: if user is admin from info, grant permissions immediately
+          if (isAdmin) {
+            setCanApproveReject(true);
+            // Don't return early - continue to check userId for authority if available
+          }
+          
+          if (userId) {
+            try {
+              const authority = await getUserAuthority(userId);
+              // System admins (authority >= 100) and operational admins (authority >= 80) get approve/reject permissions
+              const isSystemAdminByAuthority = authority !== null && authority >= 100;
+              const isOperationalAdmin = authority !== null && authority >= 80;
+              const isAdmin = isAdminFromInfo || isSystemAdminByAuthority || isOperationalAdmin;
+              
+              // Admins (authority >= 80 or isAdmin flag) automatically get approve/reject permissions
+              if (isAdmin) {
+                setCanApproveReject(true);
+              } else {
+                // For non-admins, check staff.create permission via API
+                const permissionUrl = base
+                  ? `${base}/api/permissions/check`
+                  : `/api/permissions/check`;
+                
+                let hasStaffCreate = false;
+                try {
+                  const permissionResponse = await fetch(permissionUrl, {
+                    method: 'POST',
+                    headers: {
+                      'Content-Type': 'application/json',
+                      'Authorization': `Bearer ${token}`,
+                    },
+                    body: JSON.stringify({
+                      resource: 'staff',
+                      action: 'create',
+                    }),
+                  });
+                  
+                  if (permissionResponse.ok) {
+                    const permissionData = await permissionResponse.json();
+                    hasStaffCreate = permissionData.success && permissionData.hasPermission;
+                  }
+                } catch (permErr) {
+                  // Default to false for security
+                  hasStaffCreate = false;
+                }
+                
+                // User can approve/reject if: authority >= 60 AND has staff.create
+                const canApprove = authority !== null && authority >= 60 && hasStaffCreate;
+                setCanApproveReject(canApprove);
+              }
+            } catch (permError) {
+              // Default to false for security
+              setCanApproveReject(false);
+            }
+          } else {
+            setCanApproveReject(false);
+          }
+          
+          // Access is now permission-based, no need for account type logic
+          setCheckingAccess(false);
+        } else {
+          // Access denied - redirect to error page
+          setCanManageStakeholders(false);
+          setCheckingAccess(false);
+          try {
+            router.replace('/error');
+          } catch (e) {
+            /* ignore navigation errors */
+          }
         }
       } catch (e) {
-        accountType = null;
-      }
-      setUserAccountType(accountType);
-      // Stakeholders cannot access this page
-      if (roleLower === "stakeholder") {
+        // On error, deny access for security
+        setCanManageStakeholders(false);
+        setCheckingAccess(false);
         try {
           router.replace('/error');
-        } catch (e) {
-          /* ignore navigation errors during SSR */
+        } catch (err) {
+          /* ignore navigation errors */
         }
-        return;
       }
-      setDisplayName(info?.displayName || "Bicol Medical Center");
-      setDisplayEmail(info?.email || "bmc@gmail.com");
-      // determine logged-in user's district id (if any)
-      try {
-        const rawUser = localStorage.getItem("unite_user");
-        const u = rawUser ? JSON.parse(rawUser) : null;
-        const uid =
-          u?.District_ID ||
-          u?.DistrictId ||
-          u?.districtId ||
-          (u?.District && (u.District.District_ID || u.District.DistrictId)) ||
-          (info?.raw &&
-            (info.raw.District_ID ||
-              info.raw.DistrictId ||
-              info.raw.districtId)) ||
-          null;
+    };
 
-        setUserDistrictId(uid || null);
-      } catch (e) {
-        /* ignore */
-      }
-    } catch (e) {
-      /* ignore */
-    }
-  }, []);
+    checkPageAccess();
+  }, [router]);
+
 
   // Load districts once so we can resolve District_ID -> friendly names and province
   useEffect(() => {
@@ -398,6 +552,50 @@ export default function StakeholderManagement() {
     };
 
     loadProvinces();
+  }, []);
+
+  // Load municipalities with district and province relationships
+  useEffect(() => {
+    const loadMunicipalities = async () => {
+      try {
+        const base = (process.env.NEXT_PUBLIC_API_URL || "").replace(/\/$/, "");
+        const url = base
+          ? `${base}/api/locations/type/municipality?limit=1000`
+          : `/api/locations/type/municipality?limit=1000`;
+        const token =
+          typeof window !== "undefined"
+            ? localStorage.getItem("unite_token") ||
+              sessionStorage.getItem("unite_token")
+            : null;
+        const headers: any = {};
+
+        if (token) headers["Authorization"] = `Bearer ${token}`;
+        const res = await fetch(url, { headers });
+
+        if (!res.ok) return;
+        const text = await res.text();
+        const json = text ? JSON.parse(text) : null;
+        const items = json?.data || [];
+
+        const map: Record<string, any> = {};
+        const cache: Record<string, string> = {};
+
+        for (const m of items) {
+          // Index by _id
+          if (m._id) {
+            map[String(m._id)] = m;
+            cache[String(m._id)] = m.name || m.Name || "";
+          }
+        }
+
+        setMunicipalitiesMap(map);
+        setMunicipalityCache(cache);
+      } catch (e) {
+        // ignore municipality load errors
+      }
+    };
+
+    loadMunicipalities();
   }, []);
 
   // Update stakeholder names when provinces are loaded
@@ -552,8 +750,7 @@ export default function StakeholderManagement() {
         }
       }
 
-      setUserDistrictId(uid || null);
-      setOpenUserDistrictId(uid || null);
+      // Note: userDistrictId is no longer needed - removed setUserDistrictId call
       // Include both centralized getUserInfo and raw parsed object for diagnostics
       let infoForDebug = null;
 
@@ -582,7 +779,6 @@ export default function StakeholderManagement() {
 
   const handleModalClose = () => {
     setIsAddModalOpen(false);
-    setOpenUserDistrictId(null);
   };
 
   const handleCodeCreated = (code: any) => {
@@ -593,159 +789,19 @@ export default function StakeholderManagement() {
     setModalError(null);
     setIsCreating(true);
     try {
-      const base = (process.env.NEXT_PUBLIC_API_URL || "").replace(/\/$/, "");
-      let rawUser = null;
-
-      try {
-        rawUser = localStorage.getItem("unite_user");
-      } catch (e) {
-        rawUser = null;
+      // Use stakeholderService to create stakeholder
+      const { createStakeholder } = await import("@/services/stakeholderService");
+      const response = await createStakeholder(data);
+      
+      // Check if creation was successful
+      if (!response.success) {
+        // Throw error to prevent modal from closing
+        const error: any = new Error(response.message || "Failed to create stakeholder");
+        error.status = 400; // Mark as 400 error for proper handling
+        error.body = { message: response.message };
+        throw error;
       }
-      const user = rawUser ? JSON.parse(rawUser) : null;
-      const token =
-        typeof window !== "undefined"
-          ? localStorage.getItem("unite_token") ||
-            sessionStorage.getItem("unite_token")
-          : null;
-      // Always post to the register endpoint per backend routes
-      const url = base
-        ? `${base}/api/stakeholders/register`
-        : `/api/stakeholders/register`;
-
-      // Resolve District_ID robustly: the frontend may have a Mongo _id, a legacy
-      // District_ID (like CSUR-001), or a generic numeric/string id. Prefer the
-      // canonical District.District_ID when available by looking up the
-      // pre-fetched `districtsList`. Also include the DB object id as a
-      // supplemental field to maximize compatibility with different backends.
-      let resolvedDistrictValue: any =
-        data.districtId || data.district || userDistrictId || null;
-      let resolvedDistrictObj: any = null;
-
-      try {
-        if (
-          resolvedDistrictValue &&
-          Array.isArray(districtsList) &&
-          districtsList.length > 0
-        ) {
-          const found = districtsList.find(
-            (d: any) =>
-              String(d._id) === String(resolvedDistrictValue) ||
-              String(d.id) === String(resolvedDistrictValue) ||
-              String(d.District_ID) === String(resolvedDistrictValue),
-          );
-
-          if (found) {
-            resolvedDistrictObj = found;
-            // Prefer the human-readable District_ID (e.g. CSUR-001) if present,
-            // otherwise fall back to the DB _id so the backend can validate.
-            resolvedDistrictValue =
-              found.District_ID ||
-              found._id ||
-              found.id ||
-              resolvedDistrictValue;
-          }
-        }
-      } catch (e) {
-        // ignore lookup errors and fall back to raw values
-      }
-
-      const payload: any = {
-        // Legacy/previously used keys (kept for backward compatibility)
-        First_Name: data.firstName,
-        Middle_Name: data.middleName || null,
-        Last_Name: data.lastName,
-        Email: data.stakeholderEmail,
-        Organization_Institution: data.organization || null,
-        Phone_Number: data.contactNumber,
-        Password: data.password,
-        Province_Name: data.province,
-        // Account type (LGU / Others)
-        Account_Type: data.accountType || data.accountType || null,
-        // Primary field used by backend validations
-        District_ID: resolvedDistrictValue || null,
-        // Supplemental: include DB object id when available (some backends expect this)
-        District_ObjectId:
-          resolvedDistrictObj?._id || resolvedDistrictObj?.id || null,
-        City_Municipality: data.cityMunicipality || null,
-        // Provide municipality DB id (backend register expects `municipality` id)
-        municipality: data.municipality || data.cityMunicipality || null,
-
-        // New/normalized keys expected by `stakeholder.service.register`
-        firstName: data.firstName,
-        middleName: data.middleName || null,
-        lastName: data.lastName,
-        email: data.stakeholderEmail,
-        phoneNumber: data.contactNumber,
-        password: data.password,
-        organizationInstitution: data.organization || null,
-        // accountType for normalized payload
-        accountType: data.accountType || null,
-        // Send DB object ids for district/province/municipality where possible
-        district: resolvedDistrictObj?._id || resolvedDistrictValue || null,
-        province: resolvedDistrictObj?.Province_ID || data.provinceId || null,
-      };
-
-      // If coordinator creating, include Coordinator_ID
-      if (!canManageStakeholders) {
-        let coordId = user?.id || user?.ID || null;
-
-        try {
-          const raw = localStorage.getItem("unite_user");
-          const parsed = raw ? JSON.parse(raw) : null;
-
-          coordId =
-            coordId ||
-            parsed?.role_data?.coordinator_id ||
-            parsed?.coordinator_id ||
-            parsed?.id ||
-            coordId;
-        } catch (e) {
-          /* ignore */
-        }
-        if (coordId) payload.Coordinator_ID = coordId;
-      }
-
-      const headers: any = { "Content-Type": "application/json" };
-
-      if (token) headers["Authorization"] = `Bearer ${token}`;
-
-      const res = await fetch(url, {
-        method: "POST",
-        headers,
-        body: JSON.stringify(payload),
-      });
-      const text = await res.text();
-      let json: any = null;
-
-      try {
-        json = text ? JSON.parse(text) : null;
-      } catch (err) {
-        throw new Error(
-          `Invalid JSON response when creating stakeholder: ${text.slice(0, 200)}`,
-        );
-      }
-      if (!res.ok) {
-        const rawMsg =
-          json?.message ||
-          text ||
-          `Failed to create stakeholder (status ${res.status})`;
-        let pretty = String(rawMsg);
-
-        if (/email/i.test(pretty))
-          pretty =
-            "That email is already registered or invalid. Please use a different email.";
-        else if (/district/i.test(pretty))
-          pretty = "Invalid district selected.";
-        else if (/password/i.test(pretty))
-          pretty = "Password invalid. Please ensure it meets requirements.";
-        else {
-          pretty = pretty.replace(/[_\-]/g, " ");
-          pretty = pretty.charAt(0).toUpperCase() + pretty.slice(1);
-        }
-        setModalError(pretty);
-        throw new Error(pretty);
-      }
-
+      
       setLoading(true);
       setError(null);
       try {
@@ -758,8 +814,24 @@ export default function StakeholderManagement() {
 
       setIsAddModalOpen(false);
     } catch (err: any) {
-      if (!modalError)
-        setModalError(err?.message || "Failed to create stakeholder");
+      // Extract error message
+      const errorMessage = err?.message || err?.body?.message || "Failed to create stakeholder";
+      
+      // Check if this is a validation warning (400 status) that might not prevent creation
+      // If the error mentions capabilities but stakeholder might still be created, show as warning
+      if (err?.status === 400 && errorMessage.includes("capabilities")) {
+        // This might be a warning - still show it but don't treat as fatal
+        setModalError(`Warning: ${errorMessage}. Please verify the stakeholder was created correctly.`);
+      } else if (err?.body?.retry || errorMessage.includes("try again") || errorMessage.includes("EMAIL_RECYCLED")) {
+        // Email was recycled from inactive user - user should retry
+        setModalError(errorMessage + " Click 'Add Stakeholder' again to retry.");
+      } else {
+        // For all other errors (including "Email already exists"), show error and keep modal open
+        setModalError(errorMessage);
+        // Don't close modal on error - let user see the error and fix it
+      }
+      // Re-throw error so modal knows not to close
+      throw err;
     } finally {
       setIsCreating(false);
     }
@@ -786,41 +858,12 @@ export default function StakeholderManagement() {
   };
 
   const handleUpdateStakeholder = (id: string) => {
-    // fetch stakeholder details and open edit modal
-    (async () => {
-      try {
-        setLoading(true);
-        const base = (process.env.NEXT_PUBLIC_API_URL || "").replace(/\/$/, "");
-        const url = base
-          ? `${base}/api/stakeholders/${encodeURIComponent(id)}`
-          : `/api/stakeholders/${encodeURIComponent(id)}`;
-        const token =
-          typeof window !== "undefined"
-            ? localStorage.getItem("unite_token") ||
-              sessionStorage.getItem("unite_token")
-            : null;
-        const headers: any = { "Content-Type": "application/json" };
-
-        if (token) headers["Authorization"] = `Bearer ${token}`;
-        const res = await fetch(url, { headers });
-        const text = await res.text();
-        const json = text ? JSON.parse(text) : null;
-
-        if (!res.ok)
-          throw new Error(
-            json?.message ||
-              `Failed to fetch stakeholder (status ${res.status})`,
-          );
-        const data = json.data || json.stakeholder || json || null;
-
-        setEditingStakeholder(data);
-        setIsEditModalOpen(true);
-      } catch (e: any) {
-        alert(e?.message || "Failed to load stakeholder");
-      } finally {
-        setLoading(false);
-      }
-    })();
+    // Find stakeholder from current list
+    const stakeholder = stakeholders.find((s: any) => s.id === id || s._id === id);
+    if (stakeholder) {
+      setEditingStakeholder(stakeholder);
+      setIsEditModalOpen(true);
+    }
   };
 
   // Instead of immediate delete, show confirm modal that requires typing full name
@@ -833,27 +876,11 @@ export default function StakeholderManagement() {
   const confirmDeleteStakeholder = async (id: string) => {
     try {
       setLoading(true);
-      const base = (process.env.NEXT_PUBLIC_API_URL || "").replace(/\/$/, "");
-      const url = base
-        ? `${base}/api/stakeholders/${encodeURIComponent(id)}`
-        : `/api/stakeholders/${encodeURIComponent(id)}`;
-      const token =
-        typeof window !== "undefined"
-          ? localStorage.getItem("unite_token") ||
-            sessionStorage.getItem("unite_token")
-          : null;
-      const headers: any = { "Content-Type": "application/json" };
-
-      if (token) headers["Authorization"] = `Bearer ${token}`;
-      const res = await fetch(url, { method: "DELETE", headers });
-      const text = await res.text();
-      const json = text ? JSON.parse(text) : null;
-
-      if (!res.ok)
-        throw new Error(
-          json?.message ||
-            `Failed to delete stakeholder (status ${res.status})`,
-        );
+      // Use centralized stakeholderService delete helper which calls DELETE /api/users/:id
+      const resp = await deleteStakeholder(id);
+      if (!resp || !resp.success) {
+        throw new Error(resp?.message || 'Failed to delete stakeholder');
+      }
       // Reload both stakeholders and signup requests
       await Promise.all([fetchStakeholders(), fetchSignupRequests()]);
     } catch (err: any) {
@@ -863,206 +890,98 @@ export default function StakeholderManagement() {
     }
   };
 
-  // Fetch stakeholders from backend and normalize shape for the table
+  // Fetch stakeholders from backend using capability-based endpoint
   const fetchStakeholders = async (appliedFilters?: {
     province?: string;
     districtId?: string;
+    organizationType?: string;
+    [key: string]: any;
   }) => {
-    const startTime = Date.now();
-
     setLoading(true);
     setError(null);
     try {
-      // Use NEXT_PUBLIC_API_URL from .env.local (inlined at build time)
-      const base = (process.env.NEXT_PUBLIC_API_URL || "").replace(/\/$/, "");
-      // get logged-in user and token from local/session storage
-      let rawUser = null;
-
-      try {
-        rawUser = localStorage.getItem("unite_user");
-      } catch (e) {
-        rawUser = null;
-      }
-      const user = rawUser ? JSON.parse(rawUser) : null;
-      const token =
-        typeof window !== "undefined"
-          ? localStorage.getItem("unite_token") ||
-            sessionStorage.getItem("unite_token")
-          : null;
-
-      // choose admin-managed endpoint only when the logged-in user is BOTH a system admin and has StaffType 'Admin'
-      const adminId =
-        user?.id ||
-        user?.ID ||
-        user?.Staff_ID ||
-        user?.StaffId ||
-        user?.Admin_ID ||
-        user?.adminId ||
-        null;
-      const fetchIsSystemAdmin = !!userInfo?.isAdmin;
-      const fetchRaw = user || null;
-      const fetchStaffType =
-        fetchRaw?.StaffType ||
-        fetchRaw?.Staff_Type ||
-        fetchRaw?.staff_type ||
-        fetchRaw?.staffType ||
-        (fetchRaw?.user &&
-          (fetchRaw.user.StaffType ||
-            fetchRaw.user.staff_type ||
-            fetchRaw.user.staffType)) ||
-        null;
-      const fetchIsStaffAdmin =
-        !!fetchStaffType && String(fetchStaffType).toLowerCase() === "admin";
-      const useAdminEndpoint = !!(
-        fetchIsSystemAdmin &&
-        fetchIsStaffAdmin &&
-        adminId
-      );
-      // detect if the user is a coordinator so we limit results to their district
-      const fetchIsCoordinator =
-        !!fetchStaffType &&
-        String(fetchStaffType).toLowerCase() === "coordinator";
-      // attempt to read user's district id from several possible shapes (including role_data)
-      const userDistrictId =
-        user?.District_ID ||
-        user?.DistrictId ||
-        user?.districtId ||
-        (user?.role_data &&
-          (user.role_data.district_id ||
-            user.role_data.districtId ||
-            user.role_data.district)) ||
-        (user?.District &&
-          (user.District.District_ID || user.District.District_Number)) ||
-        (userInfo?.raw &&
-          (userInfo.raw.District_ID ||
-            userInfo.raw.DistrictId ||
-            userInfo.raw.districtId ||
-            (userInfo.raw.role_data &&
-              (userInfo.raw.role_data.district_id ||
-                userInfo.raw.role_data.districtId)))) ||
-        null;
-
-      // attach filters as query params when present
-      const params = new URLSearchParams();
-
-      params.set("limit", "1000");
+      // Build filters for capability-based endpoint
       const af = appliedFilters || filters || {};
+      const apiFilters: any = {
+        isActive: true,
+      };
 
-      // If the logged-in user is NOT a system admin (i.e., a coordinator), restrict to their district
-      // unless an explicit filter is applied. Use page-level canManageStakeholders flag which
-      // represents system admin capability.
-      if (af.districtId) params.set("district_id", String(af.districtId));
-      else if (!canManageStakeholders && userDistrictId)
-        params.set("district_id", String(userDistrictId));
-      if (af.province) params.set("province", String(af.province));
+      // Add organization type filter if specified
+      if (af.organizationType) {
+        apiFilters.organizationType = String(af.organizationType);
+      }
 
-      const url = base
-        ? `${base}/api/stakeholders?${params.toString()}`
-        : `/api/stakeholders?${params.toString()}`;
+      // Use capability-based endpoint to get users with request.review permission
+      const response = await listStakeholders(apiFilters);
 
-      // Debug: log computed request details so we can verify coordinator filtering
-      try {
-        debug("[fetchStakeholders] request debug", {
-          userInfo:
-            userInfo && Object.keys(userInfo).length
-              ? {
-                  displayName: userInfo.displayName,
-                  role: userInfo.role,
-                  isAdmin: userInfo.isAdmin,
-                }
-              : null,
-          storedUserPreview: user
-            ? {
-                id: user.id || user.ID || user.Stakeholder_ID || null,
-                staffType:
-                  user.StaffType || user.staff_type || user.staffType || null,
-                role_data: user.role_data || null,
-              }
-            : null,
-          canManageStakeholders,
-          fetchIsCoordinator,
-          userDistrictId,
-          params: params.toString(),
-          url,
-          tokenPresent: !!token,
-        });
-      } catch (e) {}
+      if (!response.success || !response.data) {
+        throw new Error((response as any).message || "Failed to fetch stakeholders");
+      }
 
-      const headers: any = {};
+      // Transform response data to match expected format
+      let items = response.data || [];
 
-      if (token) headers["Authorization"] = `Bearer ${token}`;
-      let res = await fetch(url, { headers });
-
-      // If the admin-specific endpoint isn't implemented on some backends
-      // the server may return a 404 HTML page. In that case automatically
-      // retry the generic `/api/stakeholders` endpoint as a graceful
-      // fallback so the UI still works and doesn't surface an internal
-      // route-not-found message to the user.
-      if (!res.ok && res.status === 404 && useAdminEndpoint) {
-        try {
-          const fallbackUrl = base
-            ? `${base}/api/stakeholders?${params.toString()}`
-            : `/api/stakeholders?${params.toString()}`;
-
-          res = await fetch(fallbackUrl, { headers });
-        } catch (e) {
-          // ignore fallback network errors and continue to parse original response
+      // Defensive client-side filter: remove any users that are system admins or coordinators
+      // (server should already enforce this, but double-check on client for safety)
+      items = items.filter((s: any) => {
+        if (s.isSystemAdmin) return false;
+        const roles = s.roles || s.Roles || s.rolesAssigned || null;
+        if (Array.isArray(roles)) {
+          for (const r of roles) {
+            const code = (r.code || r.code?.toLowerCase?.() || r || '').toString().toLowerCase();
+            if (code === 'coordinator' || code === 'system-admin' || code === 'system_admin') return false;
+          }
         }
-      }
+        return true;
+      });
+      
+      // First, collect all unique municipality IDs and fetch their ancestors in parallel
+      const uniqueMunicipalityIds = new Set<string>();
+      items.forEach((s: any) => {
+        const municipalityId = s.locations?.municipalityId || 
+                               s.locations?.municipality?._id || 
+                               s.locations?.municipality?.id ||
+                               s.municipality?._id ||
+                               s.municipality?.id ||
+                               null;
+        if (municipalityId) {
+          uniqueMunicipalityIds.add(String(municipalityId));
+        }
+      });
 
-      // Read as text first to avoid JSON parse errors when the server returns HTML (like a 404 page)
-      const text = await res.text();
-      let json: any = null;
+      // Fetch ancestors for all unique municipalities in parallel
+      const municipalityAncestorsMap: Record<string, any[]> = {};
+      if (uniqueMunicipalityIds.size > 0) {
+        const base = (process.env.NEXT_PUBLIC_API_URL || "").replace(/\/$/, "");
+        const token =
+          typeof window !== "undefined"
+            ? localStorage.getItem("unite_token") ||
+              sessionStorage.getItem("unite_token")
+            : null;
+        const headers: any = {};
+        if (token) headers["Authorization"] = `Bearer ${token}`;
 
-      try {
-        json = text ? JSON.parse(text) : null;
-      } catch (parseErr) {
-        // If response is not valid JSON, include a short snippet in the error to help debugging
-        const snippet = text.slice(0, 300);
-
-        throw new Error(
-          "Failed to fetch stakeholders (unexpected server response)",
+        await Promise.all(
+          Array.from(uniqueMunicipalityIds).map(async (municipalityId) => {
+            try {
+              const url = base
+                ? `${base}/api/locations/${municipalityId}/ancestors`
+                : `/api/locations/${municipalityId}/ancestors`;
+              const res = await fetch(url, { headers });
+              if (res.ok) {
+                const text = await res.text();
+                const json = text ? JSON.parse(text) : null;
+                const ancestors = json?.data || [];
+                municipalityAncestorsMap[municipalityId] = ancestors;
+              }
+            } catch (e) {
+              // Ignore errors for individual municipalities
+            }
+          })
         );
       }
 
-      if (!res.ok) {
-        // Prefer backend message when safe, but avoid echoing internal route
-        // diagnostics to users. Provide a simple, actionable message.
-        throw new Error(
-          "Failed to fetch stakeholders. Please try again later.",
-        );
-      }
-
-      // backend stakeholder list returns items with First_Name, Middle_Name, Last_Name, Email, Phone_Number, Province_Name, District_ID or District_Name
-      const items = json.data || json.stakeholders || [];
-
-      // Debug: log which district IDs are present in the response
-      try {
-        const returnedDistricts = Array.from(
-          new Set(
-            items.map(
-              (it: any) =>
-                it.District_ID ||
-                it.district_id ||
-                it.DistrictId ||
-                it.districtId ||
-                it.District ||
-                it.District_Name ||
-                it.District_Name ||
-                "",
-            ),
-          ),
-        ).filter(Boolean);
-
-        debug(
-          "[fetchStakeholders] response districts:",
-          returnedDistricts,
-          "itemsCount:",
-          items.length,
-        );
-      } catch (e) {
-        /* ignore */
-      }
+      // Map users to stakeholder format
       const mapped = items.map((s: any) => {
         // Build full name supporting both legacy (First_Name) and normalized (firstName) keys
         const fullName = [
@@ -1072,751 +991,138 @@ export default function StakeholderManagement() {
         ]
           .filter(Boolean)
           .join(" ");
-        // Prefer a populated District object when available
-        let districtObj = s.District || s.District_Details || null;
-
-        // If not populated, try to resolve from prefetched districtsMap using District_ID
-        if (!districtObj && districtsMap && (s.District_ID || s.DistrictId)) {
-          districtObj =
-            districtsMap[String(s.District_ID || s.DistrictId)] || null;
-        }
-
-        // If still not populated, try to resolve using the districtsList by matching
-        // against known id fields (DB _id, id, or District_ID). This covers cases
-        // where the backend returns `district` as an ObjectId reference instead
-        // of a populated object or a legacy District_ID string.
-        if (
-          !districtObj &&
-          Array.isArray(districtsList) &&
-          districtsList.length > 0
-        ) {
-          const candidate = districtsList.find((d: any) => {
-            const sid =
-              s.district ||
-              s.district_id ||
-              s.districtId ||
-              s.District_ID ||
-              s.DistrictId ||
-              s.District;
-
-            if (!sid) return false;
-
-            return (
-              String(d._id) === String(sid) ||
-              String(d.id) === String(sid) ||
-              String(d.District_ID) === String(sid) ||
-              String(d.District_ID) === String(s.District_ID)
-            );
-          });
-
-          if (candidate) districtObj = candidate;
-        }
-        // Compute province display: prefer explicit Province_Name, else use populated province
-        let province = s.Province_Name || s.province?.name || "";
-
-        let districtDisplay = "";
-
-        if (s.district?.name) {
-          districtDisplay = s.district.name;
-        } else if (districtObj) {
-          districtDisplay = formatDistrict(districtObj);
-        } else if (s.District_Name) {
-          districtDisplay = s.District_Name;
-        } else if (s.District_ID || s.district) {
-          // fallback: try to infer number from District_ID like CSUR-001 -> 1
-          const idCandidate = s.District_ID || s.district;
-          const m = String(idCandidate).match(/(\d+)$/);
-
-          if (m) {
-            const num = Number(m[1]);
-
-            if (!Number.isNaN(num))
-              districtDisplay = `${ordinalSuffix(num)} District`;
-          } else {
-            districtDisplay = String(idCandidate);
+        
+        // Resolve municipality name (just the name, not "Municipality → Barangay")
+        const resolveMunicipality = (): string => {
+          // Use new user model structure first
+          if (s.locations) {
+            const muniName = s.locations.municipalityName || s.locations.municipality?.name || "";
+            if (muniName) return muniName;
           }
-        }
+          
+          // Fallback to legacy structure
+          const muniName = s.municipality?.name || s.City_Municipality || s.Municipality || s.City || s.cityMunicipality || "";
+          if (muniName) return muniName;
+          
+          return "";
+        };
+        
+        // Resolve province and district from municipality ancestors
+        const resolveProvinceAndDistrict = (): { province: string; district: string } => {
+          let resolvedProvince = "";
+          let resolvedDistrict = "";
+          
+          // Try to get municipalityId from locations
+          const municipalityId = s.locations?.municipalityId || 
+                                 s.locations?.municipality?._id || 
+                                 s.locations?.municipality?.id ||
+                                 s.municipality?._id ||
+                                 s.municipality?.id ||
+                                 null;
+          
+          if (municipalityId && municipalityAncestorsMap[String(municipalityId)]) {
+            const ancestors = municipalityAncestorsMap[String(municipalityId)];
+            
+            // Ancestors are returned from root (province) to immediate parent (district)
+            // Find district (type === 'district' or type === 'city' with isCity metadata)
+            const district = ancestors.find((a: any) => 
+              a.type === 'district' || 
+              (a.type === 'city' && a.metadata?.isCity)
+            );
+            
+            // Find province (type === 'province')
+            const province = ancestors.find((a: any) => a.type === 'province');
+            
+            if (district) {
+              // Look up district in districtsMap to get formatted name
+              const districtId = district._id || district.id;
+              if (districtId && districtsMap && districtsMap[String(districtId)]) {
+                resolvedDistrict = formatDistrict(districtsMap[String(districtId)]);
+              } else {
+                resolvedDistrict = district.name || district.Name || district.District_Name || "";
+              }
+            }
+            
+            if (province) {
+              // Look up province in provincesMap
+              const provinceId = province._id || province.id;
+              if (provinceId && provincesMap[String(provinceId)]) {
+                resolvedProvince = provincesMap[String(provinceId)];
+              } else {
+                resolvedProvince = province.name || province.Name || province.Province_Name || "";
+              }
+            }
+          }
+          
+          // Fallback: try direct province/district fields from user object
+          if (!resolvedProvince) {
+            resolvedProvince = s.Province_Name || 
+                              s.province?.name || 
+                              s.province?.Province_Name ||
+                              "";
+          }
+          
+          if (!resolvedDistrict) {
+            resolvedDistrict = s.District_Name || 
+                              s.district?.name || 
+                              s.district?.District_Name ||
+                              "";
+          }
+          
+          return { province: resolvedProvince, district: resolvedDistrict };
+        };
+        
+        // Format organization from new user model structure
+        const formatOrganization = (): string => {
+          // Use new user model structure first (embedded organizations array)
+          if (s.organizations && Array.isArray(s.organizations) && s.organizations.length > 0) {
+            const org = s.organizations[0];
+            return org.organizationName || org.name || "";
+          }
+          
+          // Fallback to legacy structure
+          const tryValues = [
+            s.Organization_Institution,
+            s.Organization,
+            s.organization,
+            s.OrganizationName,
+            s.Organization_Name,
+            s.organization_institution,
+            s.Organisation,
+            s.organisation,
+            s.OrganizationInstitution,
+          ];
+
+          for (const v of tryValues) {
+            if (v !== undefined && v !== null && String(v).trim() !== "")
+              return String(v).trim();
+          }
+
+          return "";
+        };
+
+        const { province, district } = resolveProvinceAndDistrict();
+        const municipalityName = resolveMunicipality();
 
         return {
-          id: s.Stakeholder_ID || s.id || "",
+          id: s._id || s.Stakeholder_ID || s.id || "",
+          _id: s._id || s.id || "",
           name: fullName,
           email: s.Email || s.email || "",
           phone: s.Phone_Number || s.phoneNumber || s.phone || "",
-          province: province || "",
-          municipality:
-            s.municipality?.name ||
-            s.City_Municipality ||
-            s.Municipality ||
-            s.City ||
-            s.cityMunicipality ||
-            s.municipality ||
-            s.municipality_id ||
-            "",
-          // Resolve organization from multiple possible shapes, including nested objects
-          organization: ((): string => {
-            const tryValues = [
-              s.Organization_Institution,
-              s.Organization,
-              s.organization,
-              s.OrganizationName,
-              s.Organization_Name,
-              s.organization_institution,
-              s.Organisation,
-              s.organisation,
-              s.OrganizationInstitution,
-              s.data && s.data.Organization_Institution,
-              s.data && s.data.organization,
-              s.stakeholder && s.stakeholder.Organization_Institution,
-              s.stakeholder && s.stakeholder.organization,
-              s.result && s.result.Organization_Institution,
-              s.details && s.details.Organization_Institution,
-            ];
-
-            for (const v of tryValues) {
-              if (v !== undefined && v !== null && String(v).trim() !== "")
-                return String(v).trim();
-            }
-            // As a last resort, do a shallow scan for any key name that looks like organization/institution
-            for (const k of Object.keys(s || {})) {
-              const key = String(k).toLowerCase();
-
-              if (
-                key.includes("organ") ||
-                key.includes("institut") ||
-                key.includes("organisation")
-              ) {
-                const v = s[k];
-
-                if (v !== undefined && v !== null && String(v).trim() !== "")
-                  return String(v).trim();
-              }
-            }
-
-            return "";
-          })(),
-          district: districtDisplay,
-        };
-
-        return {
-          id: s.Stakeholder_ID || s.id || "",
-          name: fullName,
-          email: s.Email || s.email || "",
-          phone: s.Phone_Number || s.phoneNumber || s.phone || "",
-          province: province || "",
-          municipality:
-            s.City_Municipality ||
-            s.Municipality ||
-            s.City ||
-            s.cityMunicipality ||
-            s.municipality ||
-            s.municipality_id ||
-            "",
-          // Resolve organization from multiple possible shapes, including nested objects
-          organization: ((): string => {
-            const tryValues = [
-              s.Organization_Institution,
-              s.Organization,
-              s.organization,
-              s.OrganizationName,
-              s.Organization_Name,
-              s.organization_institution,
-              s.Organisation,
-              s.organisation,
-              s.OrganizationInstitution,
-              s.data && s.data.Organization_Institution,
-              s.data && s.data.organization,
-              s.stakeholder && s.stakeholder.Organization_Institution,
-              s.stakeholder && s.stakeholder.organization,
-              s.result && s.result.Organization_Institution,
-              s.details && s.details.Organization_Institution,
-            ];
-
-            for (const v of tryValues) {
-              if (v !== undefined && v !== null && String(v).trim() !== "")
-                return String(v).trim();
-            }
-            // As a last resort, do a shallow scan for any key name that looks like organization/institution
-            for (const k of Object.keys(s || {})) {
-              const key = String(k).toLowerCase();
-
-              if (
-                key.includes("organ") ||
-                key.includes("institut") ||
-                key.includes("organisation")
-              ) {
-                const v = s[k];
-
-                if (v !== undefined && v !== null && String(v).trim() !== "")
-                  return String(v).trim();
-              }
-            }
-
-            return "";
-          })(),
-          district: districtDisplay,
+          province: province,
+          municipality: municipalityName,
+          organization: formatOrganization(),
+          district: district,
+          // Include raw data for edit modal
+          locations: s.locations,
+          organizations: s.organizations,
+          roles: s.roles,
         };
       });
 
-      // Resolve municipality names for any mapped items that only have an id
-      const needsMunicipalityResolve: Array<{
-        districtId: string;
-        municipalityId: string;
-      }> = [];
-
-      mapped.forEach((m: any, idx: number) => {
-        const raw = items[idx] || {};
-        const munId =
-          raw.municipality ||
-          raw.Municipality ||
-          raw.municipality_id ||
-          raw.Municipality_ID ||
-          null;
-
-        if (munId && !municipalityCache[String(munId)]) {
-          needsMunicipalityResolve.push({
-            districtId: String(
-              raw.district?._id ||
-              raw.district?.id ||
-              raw.district ||
-              raw.District_ID ||
-              raw.DistrictId ||
-              ""
-            ),
-            municipalityId: String(munId),
-          });
-        }
-      });
-
-      // Also collect district ids that couldn't be resolved to objects so we can
-      // fetch their details (some backends return only ObjectId refs like 'district')
-      const needsDistrictResolve: string[] = [];
-
-      mapped.forEach((m: any, idx: number) => {
-        const raw = items[idx] || {};
-        const did =
-          raw.district ||
-          raw.District ||
-          raw.district_id ||
-          raw.District_ID ||
-          raw.districtId ||
-          raw.DistrictId ||
-          null;
-
-        // if we have a district id but no human-friendly district/province in the mapped row
-        if (did && (!m.district || String(m.district).trim() === "")) {
-          if (!needsDistrictResolve.includes(String(did)))
-            needsDistrictResolve.push(String(did));
-        }
-      });
-
-      if (needsMunicipalityResolve.length > 0) {
-        // Group by district to minimize requests
-        const byDistrict: Record<string, Set<string>> = {};
-
-        for (const n of needsMunicipalityResolve) {
-          const d = n.districtId || "";
-
-          if (!byDistrict[d]) byDistrict[d] = new Set();
-          byDistrict[d].add(n.municipalityId);
-        }
-
-        (async () => {
-          try {
-            const base = (process.env.NEXT_PUBLIC_API_URL || "").replace(
-              /\/$/,
-              "",
-            );
-            const token =
-              typeof window !== "undefined"
-                ? localStorage.getItem("unite_token") ||
-                  sessionStorage.getItem("unite_token")
-                : null;
-            const headers: any = {};
-
-            if (token) headers["Authorization"] = `Bearer ${token}`;
-
-            const newCache: Record<string, string> = { ...municipalityCache };
-
-            for (const districtIdKey of Object.keys(byDistrict)) {
-              if (!districtIdKey) continue;
-              const url = base
-                ? `${base}/api/locations/districts/${encodeURIComponent(String(districtIdKey))}/municipalities`
-                : `/api/locations/districts/${encodeURIComponent(String(districtIdKey))}/municipalities`;
-
-              try {
-                const res = await fetch(url, { headers });
-
-                if (!res.ok) continue;
-                const txt = await res.text();
-                let body: any = null;
-
-                try {
-                  body = txt ? JSON.parse(txt) : null;
-                } catch {
-                  body = null;
-                }
-                const itemsMun = (body && (body.data || body)) || [];
-
-                for (const mm of itemsMun) {
-                  const id = String(
-                    mm._id ||
-                      mm.id ||
-                      mm.Municipality_ID ||
-                      mm.MunicipalityId ||
-                      mm.name ||
-                      mm.Name ||
-                      mm.City_Municipality ||
-                      "",
-                  );
-                  const label = String(
-                    mm.name || mm.Name || mm.City_Municipality || mm.City || mm,
-                  );
-
-                  if (id) newCache[id] = label;
-                }
-              } catch (e) {
-                // ignore
-              }
-            }
-
-            // If cache changed, update state and remap displayed stakeholders
-            setMunicipalityCache((prev) => {
-              const merged = { ...prev, ...newCache };
-
-              return merged;
-            });
-
-            // Update stakeholders display using new cache
-            setStakeholders((prev) =>
-              prev.map((p: any) => {
-                const rawIndex = mapped.findIndex((x: any) => x.id === p.id);
-
-                if (rawIndex === -1) return p;
-                const raw = items[rawIndex] || {};
-                const mid =
-                  raw.municipality ||
-                  raw.Municipality ||
-                  raw.municipality_id ||
-                  raw.Municipality_ID ||
-                  null;
-
-                if (
-                  mid &&
-                  (newCache[String(mid)] || municipalityCache[String(mid)])
-                ) {
-                  return {
-                    ...p,
-                    municipality:
-                      newCache[String(mid)] || municipalityCache[String(mid)],
-                  };
-                }
-
-                return p;
-              }),
-            );
-          } catch (e) {
-            // ignore
-          }
-        })();
-
-        // If there are district IDs that weren't resolved to objects, fetch their details
-        // and update districtsMap/districtsList so province/district display can be populated.
-        if (needsDistrictResolve.length > 0) {
-          (async () => {
-            try {
-              const base = (process.env.NEXT_PUBLIC_API_URL || "").replace(
-                /\/$/,
-                "",
-              );
-              const token =
-                typeof window !== "undefined"
-                  ? localStorage.getItem("unite_token") ||
-                    sessionStorage.getItem("unite_token")
-                  : null;
-              const headers: any = {};
-
-              if (token) headers["Authorization"] = `Bearer ${token}`;
-
-              const fetchedDistricts: any[] = [];
-
-              for (const did of needsDistrictResolve) {
-                if (!did) continue;
-                try {
-                  const url = base
-                    ? `${base}/api/districts/${encodeURIComponent(did)}`
-                    : `/api/districts/${encodeURIComponent(did)}`;
-                  const res = await fetch(url, { headers });
-
-                  if (!res.ok) continue;
-                  const txt = await res.text();
-                  let body: any = null;
-
-                  try {
-                    body = txt ? JSON.parse(txt) : null;
-                  } catch {
-                    body = null;
-                  }
-                  const d = body?.data || body?.district || body || null;
-
-                  if (d) fetchedDistricts.push(d);
-                } catch (e) {
-                  // ignore per-district errors
-                }
-              }
-
-              if (fetchedDistricts.length > 0) {
-                // merge into districtsMap and districtsList
-                setDistrictsMap((prev) => {
-                  const next = { ...(prev || {}) } as Record<string, any>;
-
-                  for (const d of fetchedDistricts) {
-                    if (d.District_ID) next[String(d.District_ID)] = d;
-                    if (d._id) next[String(d._id)] = d;
-                  }
-
-                  return next;
-                });
-
-                setDistrictsList((prev) => {
-                  const copy = Array.isArray(prev) ? [...prev] : [];
-
-                  for (const d of fetchedDistricts) {
-                    const exists = copy.find(
-                      (x: any) =>
-                        String(x._id) === String(d._id) ||
-                        String(x.District_ID) === String(d.District_ID),
-                    );
-
-                    if (!exists) copy.push(d);
-                  }
-
-                  return copy;
-                });
-
-                // Re-map stakeholders to include resolved district/province names
-                setStakeholders((prev) =>
-                  prev.map((p: any) => {
-                    const rawIndex = mapped.findIndex(
-                      (x: any) => x.id === p.id,
-                    );
-
-                    if (rawIndex === -1) return p;
-                    const raw = items[rawIndex] || {};
-                    const sid =
-                      raw.district ||
-                      raw.district_id ||
-                      raw.District_ID ||
-                      raw.District ||
-                      raw.districtId ||
-                      raw.DistrictId;
-
-                    if (!sid) return p;
-                    const found = fetchedDistricts.find(
-                      (fd) =>
-                        String(fd._id) === String(sid) ||
-                        String(fd.District_ID) === String(sid),
-                    );
-
-                    if (!found) return p;
-                    // compute display strings similar to mapping above
-                    const ordinalSuffix = (n: number | string) => {
-                      const num = Number(n);
-
-                      if (Number.isNaN(num)) return String(n);
-                      const j = num % 10,
-                        k = num % 100;
-
-                      if (j === 1 && k !== 11) return `${num}st`;
-                      if (j === 2 && k !== 12) return `${num}nd`;
-                      if (j === 3 && k !== 13) return `${num}rd`;
-
-                      return `${num}th`;
-                    };
-                    const formatDistrict = (districtObj: any) => {
-                      if (!districtObj) return "";
-                      if (districtObj.District_Number)
-                        return `${ordinalSuffix(districtObj.District_Number)} District`;
-                      if (districtObj.District_Name)
-                        return districtObj.District_Name;
-
-                      return "";
-                    };
-
-                    const provinceName =
-                      found.Province_Name ||
-                      found.Province ||
-                      found.ProvinceName ||
-                      "";
-                    const districtDisplay =
-                      formatDistrict(found) ||
-                      found.District_Name ||
-                      found.District_ID ||
-                      String(sid);
-
-                    return {
-                      ...p,
-                      province: provinceName || p.province || "",
-                      district: districtDisplay || p.district || "",
-                    };
-                  }),
-                );
-              }
-            } catch (e) {
-              // ignore district resolve errors
-            }
-          })();
-        }
-      }
-
-      // Additional municipality resolution pass: group any remaining municipality ids by district
-      // Use broader field fallbacks to detect municipality ids even in mixed-shaped responses.
-      (async () => {
-        try {
-          const base = (process.env.NEXT_PUBLIC_API_URL || "").replace(
-            /\/$/,
-            "",
-          );
-          const token =
-            typeof window !== "undefined"
-              ? localStorage.getItem("unite_token") ||
-                sessionStorage.getItem("unite_token")
-              : null;
-          const headers: any = {};
-
-          if (token) headers["Authorization"] = `Bearer ${token}`;
-
-          const byDistrict2: Record<string, Set<string>> = {};
-
-          for (const raw of items) {
-            const mid =
-              raw.municipality ||
-              raw.Municipality ||
-              raw.municipality_id ||
-              raw.Municipality_ID ||
-              raw.municipalityId ||
-              raw.MunicipalityId ||
-              null;
-
-            if (!mid) continue;
-            if (municipalityCache[String(mid)]) continue; // already known
-
-            const did =
-              String(
-                raw.district?._id ||
-                raw.district?.id ||
-                raw.district ||
-                raw.District ||
-                raw.district_id ||
-                raw.District_ID ||
-                raw.districtId ||
-                raw.DistrictId ||
-                ""
-              );
-
-            if (!did) continue; // cannot resolve without district
-
-            if (!byDistrict2[String(did)]) byDistrict2[String(did)] = new Set();
-            byDistrict2[String(did)].add(String(mid));
-          }
-
-          if (Object.keys(byDistrict2).length === 0) return;
-
-          const newCache: Record<string, string> = { ...municipalityCache };
-
-          for (const districtIdKey of Object.keys(byDistrict2)) {
-            try {
-              const url = base
-                ? `${base}/api/locations/districts/${encodeURIComponent(String(districtIdKey))}/municipalities`
-                : `/api/locations/districts/${encodeURIComponent(String(districtIdKey))}/municipalities`;
-              const res = await fetch(url, { headers });
-
-              if (!res.ok) continue;
-              const txt = await res.text();
-              let body: any = null;
-
-              try {
-                body = txt ? JSON.parse(txt) : null;
-              } catch {
-                body = null;
-              }
-              const itemsMun = (body && (body.data || body)) || [];
-
-              for (const mm of itemsMun) {
-                const id = String(
-                  mm._id ||
-                    mm.id ||
-                    mm.Municipality_ID ||
-                    mm.MunicipalityId ||
-                    mm.name ||
-                    mm.Name ||
-                    mm.City_Municipality ||
-                    "",
-                );
-                const label = String(
-                  mm.name || mm.Name || mm.City_Municipality || mm.City || mm,
-                );
-
-                if (id) newCache[id] = label;
-              }
-            } catch (e) {
-              // ignore per-district errors
-            }
-          }
-
-          // Merge and update state if changed
-          setMunicipalityCache((prev) => {
-            const merged = { ...prev, ...newCache };
-
-            return merged;
-          });
-
-          // Update stakeholders display using new cache
-          setStakeholders((prev) =>
-            prev.map((p: any) => {
-              const rawIndex = mapped.findIndex((x: any) => x.id === p.id);
-
-              if (rawIndex === -1) return p;
-              const raw = items[rawIndex] || {};
-              const mid =
-                raw.municipality ||
-                raw.Municipality ||
-                raw.municipality_id ||
-                raw.Municipality_ID ||
-                raw.municipalityId ||
-                raw.MunicipalityId ||
-                null;
-
-              if (
-                mid &&
-                (newCache[String(mid)] || municipalityCache[String(mid)])
-              ) {
-                return {
-                  ...p,
-                  municipality:
-                    newCache[String(mid)] || municipalityCache[String(mid)],
-                };
-              }
-
-              return p;
-            }),
-          );
-        } catch (e) {
-          // ignore
-        }
-      })();
-
-      // Debug: log detailed information for any items where organization resolved to empty
-      try {
-        const missingOrg = items.filter((s: any) => {
-          const org =
-            s.Organization_Institution ||
-            s.Organization ||
-            s.organization ||
-            s.OrganizationName ||
-            s.Organization_Name ||
-            s.organization_institution ||
-            s.Organisation ||
-            s.organisation ||
-            s.OrganizationInstitution ||
-            "";
-
-          return !org || String(org).trim() === "";
-        });
-
-        if (missingOrg && missingOrg.length > 0) {
-          // Build a concise diagnostic for each missing-org item
-          const diag = missingOrg.slice(0, 10).map((s: any) => ({
-            id: s.Stakeholder_ID || s.id || "(no-id)",
-            name:
-              [s.First_Name, s.Middle_Name, s.Last_Name]
-                .filter(Boolean)
-                .join(" ") ||
-              s.name ||
-              "(no-name)",
-            // candidate organization-like fields and their values
-            candidates: {
-              Organization_Institution: s.Organization_Institution,
-              Organization: s.Organization,
-              organization: s.organization,
-              OrganizationName: s.OrganizationName,
-              Organization_Name: s.Organization_Name,
-              organization_institution: s.organization_institution,
-              Organisation: s.Organisation,
-              organisation: s.organisation,
-              OrganizationInstitution: s.OrganizationInstitution,
-            },
-            keys: Object.keys(s || {}).slice(0, 20),
-            raw: s,
-          }));
-
-          warn(
-            "[fetchStakeholders] stakeholders missing organization (diagnostics):",
-            diag,
-          );
-        }
-        // Also log the first few mapped items for inspection
-        debug(
-          "[fetchStakeholders] mapped sample (first 5):",
-          mapped.slice(0, 5),
-        );
-
-        // Fallback: if some mapped items still have empty organization, attempt to fetch
-        // full stakeholder details for those items (limited to first 10) — some list
-        // endpoints may omit certain fields while the detail endpoint returns them.
-        const needFix = mapped
-          .filter(
-            (m: any) =>
-              (!m.organization || String(m.organization).trim() === "") && m.id,
-          )
-          .slice(0, 10);
-
-        if (needFix.length > 0) {
-          try {
-            await Promise.all(
-              needFix.map(async (m: any) => {
-                const url2 = base
-                  ? `${base}/api/stakeholders/${encodeURIComponent(m.id)}`
-                  : `/api/stakeholders/${encodeURIComponent(m.id)}`;
-                const res2 = await fetch(url2, { headers });
-
-                if (!res2.ok) return;
-                const t2 = await res2.text();
-                let j2: any = null;
-
-                try {
-                  j2 = t2 ? JSON.parse(t2) : null;
-                } catch {
-                  return;
-                }
-                const s2 = j2?.data || j2?.stakeholder || j2 || null;
-
-                if (!s2) return;
-                const org2 =
-                  s2.Organization_Institution ||
-                  s2.Organization ||
-                  s2.organization ||
-                  s2.OrganizationName ||
-                  s2.Organization_Name ||
-                  s2.organization_institution ||
-                  null;
-
-                if (org2 && String(org2).trim() !== "") {
-                  const idx = mapped.findIndex((x: any) => x.id === m.id);
-
-                  if (idx >= 0) mapped[idx].organization = String(org2).trim();
-                }
-              }),
-            );
-          } catch (e) {
-            // ignore fallback errors
-          }
-        }
-      } catch (e) {
-        /* ignore debug errors */
-      }
-
-      // Apply client-side extra filters (if backend doesn't support them)
-      const extra: any = af || {};
+      // Apply client-side filters
+      const extra: any = appliedFilters || filters || {};
       let finalMapped = mapped;
 
       try {
@@ -1890,20 +1196,11 @@ export default function StakeholderManagement() {
       }
 
       setStakeholders(finalMapped);
-
-      // Add artificial delay for fast fetches to show loading animation longer
-      const elapsedTime = Date.now() - startTime;
-      const minLoadingTime = 1500; // 1.5 seconds
-      if (elapsedTime < minLoadingTime) {
-        await new Promise(resolve => setTimeout(resolve, minLoadingTime - elapsedTime));
-      }
-
       setLoading(false);
     } catch (err: any) {
       setError(err.message || "Unknown error");
       setLoading(false);
     }
-    updateStakeholderNames();
   };
 
   // If we prefetch districts after the initial load, re-run stakeholder fetch so
@@ -1914,6 +1211,25 @@ export default function StakeholderManagement() {
       updateStakeholderNames();
     }
   }, [districtsMap]);
+
+  // Re-fetch stakeholders when municipalities/districts/provinces are loaded so province/district can be resolved
+  useEffect(() => {
+    if (
+      municipalitiesMap && 
+      districtsMap && 
+      provincesMap &&
+      Object.keys(municipalitiesMap).length > 0 && 
+      Object.keys(districtsMap as Record<string, any>).length > 0 && 
+      Object.keys(provincesMap).length > 0
+    ) {
+      // Only re-fetch if initial fetch has been done (to avoid double-fetch on initial load)
+      if (initialFetchDone.current) {
+        fetchStakeholders();
+      } else {
+        initialFetchDone.current = true;
+      }
+    }
+  }, [municipalitiesMap, districtsMap, provincesMap]);
 
   // Integrate top-level search bar with current filters. Whenever searchQuery changes
   // re-run fetch with combined filters so search and quick/advanced filters combine.
@@ -1956,7 +1272,6 @@ export default function StakeholderManagement() {
 
       setSignupRequests(mapped);
     } catch (err: any) {
-      console.error("Failed to fetch signup requests:", err);
       setError(err.message || "Failed to fetch signup requests");
     }
   };
@@ -1993,7 +1308,6 @@ export default function StakeholderManagement() {
       await fetchStakeholders();
       await fetchSignupRequests();
     } catch (err: any) {
-      console.error("Failed to accept request:", err);
       setError(err.message || "Failed to accept request");
     } finally {
       setPendingAcceptId(null);
@@ -2023,12 +1337,28 @@ export default function StakeholderManagement() {
       setSignupRequests(prev => prev.filter(req => req.id !== pendingRejectId));
       setRejectReason("");
     } catch (err: any) {
-      console.error("Failed to reject request:", err);
       setError(err.message || "Failed to reject request");
     } finally {
       setPendingRejectId(null);
     }
   };
+
+  // Show loading state while checking access
+  if (checkingAccess) {
+    return (
+      <div className="min-h-screen bg-white flex items-center justify-center">
+        <div className="text-center">
+          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-danger mx-auto mb-4"></div>
+          <p className="text-gray-600">Checking access...</p>
+        </div>
+      </div>
+    );
+  }
+
+  // If access denied, don't render (redirect will happen)
+  if (!canManageStakeholders) {
+    return null;
+  }
 
   return (
     <div className="min-h-screen bg-white relative">
@@ -2038,7 +1368,7 @@ export default function StakeholderManagement() {
 
       {/* Page Header */}
       <div className="px-4 sm:px-6 pt-6 pb-4 flex items-center justify-between">
-        <h1 className="text-2xl font-semibold text-gray-900">Stakeholder <span className="hidden md:inline">Management</span></h1>
+        <h1 className="text-2xl font-semibold text-gray-900">Stakeholders <span className="hidden md:inline">(Review & Approval)</span></h1>
         {/* MobileNav component renders hamburger and notifications on small screens */}
       </div>
 
@@ -2068,6 +1398,12 @@ export default function StakeholderManagement() {
 
       {/* Table Content */}
       <div className="px-4 sm:px-6 py-4 bg-gray-50">
+        {error && (
+          <div className="mb-4 p-4 bg-red-50 border border-red-200 rounded-lg">
+            <p className="text-sm text-red-700 font-medium">Error loading stakeholders</p>
+            <p className="text-xs text-red-600 mt-1">{error}</p>
+          </div>
+        )}
         <StakeholderTable
           // Pass the SLICED data here
           coordinators={paginatedData} 
@@ -2085,20 +1421,17 @@ export default function StakeholderManagement() {
           loading={loading}
           isAdmin={canManageStakeholders}
           isRequests={selectedTab === "pending"}
-          onAcceptRequest={handleAcceptRequest}
-          onRejectRequest={handleRejectRequest}
+          onAcceptRequest={canApproveReject ? handleAcceptRequest : undefined}
+          onRejectRequest={canApproveReject ? handleRejectRequest : undefined}
+          canApproveReject={canApproveReject}
         />
       </div>
 
       {/* Add Stakeholder Modal */}
       <AddStakeholderModal
-        districtsProp={districtsList}
         isOpen={isAddModalOpen}
         isSubmitting={isCreating}
-        isSysAdmin={canManageStakeholders}
         modalError={modalError}
-        userDistrictId={openUserDistrictId ?? userDistrictId}
-        userAccountType={userAccountType ?? undefined}
         onClearError={() => setModalError(null)}
         onClose={handleModalClose}
         onSubmit={handleModalSubmit}
@@ -2119,11 +1452,8 @@ export default function StakeholderManagement() {
       />
       {/* Edit Stakeholder Modal */}
       <EditStakeholderModal
-        coordinator={editingStakeholder}
+        stakeholder={editingStakeholder}
         isOpen={isEditModalOpen}
-        isSysAdmin={canManageStakeholders}
-        districtsProp={districtsList}
-        userDistrictId={userDistrictId}
         onClose={() => {
           setIsEditModalOpen(false);
           setEditingStakeholder(null);

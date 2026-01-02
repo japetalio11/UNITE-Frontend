@@ -43,18 +43,48 @@ const ConfirmModal: React.FC<Props> = ({
   const [validationError, setValidationError] = React.useState<string | null>(
     null,
   );
+  const [isSubmitting, setIsSubmitting] = React.useState(false);
+  // Ref-based lock to prevent race conditions (set synchronously before state updates)
+  const isSubmittingRef = React.useRef(false);
 
   const handleConfirm = async () => {
-    setValidationError(null);
-    if (requireNote && (!note || note.trim().length === 0)) {
-      setValidationError("Please provide a reason");
+    // Prevent duplicate submissions - check ref first (synchronous, prevents race conditions)
+    if (isSubmittingRef.current) {
+      console.warn("[ConfirmModal] ❌ BLOCKED: Already submitting (ref check), ignoring duplicate call");
+      return;
+    }
+    
+    // Also check state (redundant but safe)
+    if (isSubmitting) {
+      console.warn("[ConfirmModal] ❌ BLOCKED: Already submitting (state check), ignoring duplicate call");
       return;
     }
 
-    await onConfirm(note.trim());
-    setNote("");
+    // Set ref immediately (synchronous) to prevent race conditions
+    isSubmittingRef.current = true;
+
     setValidationError(null);
-    onClose();
+    if (requireNote && (!note || note.trim().length === 0)) {
+      setValidationError("Please provide a reason");
+      // Reset ref if validation fails
+      isSubmittingRef.current = false;
+      return;
+    }
+
+    try {
+      setIsSubmitting(true);
+      await onConfirm(note.trim());
+      setNote("");
+      setValidationError(null);
+      onClose();
+    } catch (error) {
+      console.error("[ConfirmModal] Error in onConfirm:", error);
+      // Don't close modal on error, let the parent handle it
+    } finally {
+      setIsSubmitting(false);
+      // Reset ref in finally to ensure it's always cleared
+      isSubmittingRef.current = false;
+    }
   };
 
   return (
@@ -134,10 +164,21 @@ const ConfirmModal: React.FC<Props> = ({
           </div>
         </ModalBody>
         <ModalFooter>
-          <Button className="w-full" variant="bordered" onPress={onClose}>
+          <Button 
+            className="w-full" 
+            variant="bordered" 
+            onPress={onClose}
+            isDisabled={isSubmitting}
+          >
             Cancel
           </Button>
-          <Button className="w-full" color={color} onPress={handleConfirm}>
+          <Button 
+            className="w-full" 
+            color={color} 
+            onPress={handleConfirm}
+            isLoading={isSubmitting}
+            isDisabled={isSubmitting}
+          >
             {confirmText}
           </Button>
         </ModalFooter>

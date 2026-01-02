@@ -35,9 +35,11 @@ const RescheduleModal: React.FC<Props> = ({
   const [validationError, setValidationError] = React.useState<string | null>(
     null,
   );
+  const [isSubmitting, setIsSubmitting] = React.useState(false);
 
   const handleConfirm = async () => {
     setValidationError(null);
+    
     if (!rescheduledDate) {
       setValidationError("Please choose a new date");
       return;
@@ -53,6 +55,7 @@ const RescheduleModal: React.FC<Props> = ({
         return;
       }
     } catch (e) {
+      console.error("[RescheduleModal] Date validation error:", e);
       setValidationError("Invalid date selected");
       return;
     }
@@ -69,16 +72,31 @@ const RescheduleModal: React.FC<Props> = ({
           ? rescheduledDate.toISOString()
           : new Date(rescheduledDate).toISOString();
 
-    await onConfirm(currentDate || "", newDateISO, note.trim());
-
-    setRescheduledDate(null);
-    setNote("");
-    setValidationError(null);
-    onClose();
+    setIsSubmitting(true);
+    try {
+      await onConfirm(currentDate || "", newDateISO, note.trim());
+      
+      setRescheduledDate(null);
+      setNote("");
+      setValidationError(null);
+      onClose();
+    } catch (error) {
+      console.error("[RescheduleModal] Error in onConfirm:", error);
+      const errorMessage = (error as Error).message || "Failed to reschedule";
+      setValidationError(errorMessage);
+      // Don't close modal on error so user can see the error
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
   return (
-    <Modal isOpen={isOpen} placement="center" size="md" onClose={onClose}>
+    <Modal 
+      isOpen={isOpen} 
+      placement="center" 
+      size="md" 
+      onClose={isSubmitting ? undefined : onClose}
+    >
       <ModalContent>
         <ModalHeader className="flex flex-col gap-1">
           <div className="flex items-center gap-2">
@@ -126,11 +144,22 @@ const RescheduleModal: React.FC<Props> = ({
           </div>
         </ModalBody>
         <ModalFooter>
-          <Button className="w-full" variant="bordered" onPress={onClose}>
+          <Button 
+            className="w-full" 
+            variant="bordered" 
+            onPress={onClose}
+            isDisabled={isSubmitting}
+          >
             Cancel
           </Button>
-          <Button className="w-full" color="primary" onPress={handleConfirm}>
-            Reschedule
+          <Button 
+            className="w-full" 
+            color="primary" 
+            onPress={handleConfirm}
+            isLoading={isSubmitting}
+            isDisabled={isSubmitting}
+          >
+            {isSubmitting ? "Rescheduling..." : "Reschedule"}
           </Button>
         </ModalFooter>
       </ModalContent>

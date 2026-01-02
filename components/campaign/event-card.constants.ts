@@ -19,7 +19,10 @@ export const ACTION_SYNONYMS: Record<string, string[]> = {
   cancel: ["cancel", "cancelled", "canceled"],
   confirm: ["confirm", "confirmed", "creator-confirm", "creator-confirmed"],
   decline: ["decline", "creator-decline", "creator-declined", "reject"],
-  "manage-staff": ["manage-staff", "staff"],
+  "manage-staff": ["manage-staff", "staff", "manage-staff", "add-staff"],
+  edit: ["edit", "update", "modify"],
+  delete: ["delete", "remove"],
+  view: ["view", "read", "see"],
 };
 
 export const FALLBACK_ACTION_MAP: Record<string, string[]> = {

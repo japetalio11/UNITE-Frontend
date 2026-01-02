@@ -1,10 +1,12 @@
 "use client";
 
-import React, { useState, useEffect, useMemo } from "react";
+import React, { useState, useEffect, useMemo, useRef, useCallback, startTransition } from "react";
 import { Ticket, Calendar as CalIcon, PersonPlanetEarth, Persons, Bell, Gear } from "@gravity-ui/icons";
 import { Modal } from "@heroui/modal";
+import { Spinner } from "@heroui/spinner";
 
 import { getUserInfo } from "../../../utils/getUserInfo";
+import { useCurrentUser } from "@/hooks/useCurrentUser";
 import MobileNav from "@/components/tools/mobile-nav";
 
 import Topbar from "@/components/layout/topbar";
@@ -18,6 +20,9 @@ import EditEventModal from "@/components/campaign/event-edit-modal";
 
 import { useLoading } from "@/components/ui/loading-overlay";
 import { useLocations } from "../../../components/providers/locations-provider";
+import { fetchWithRetry, cancelRequests } from "@/utils/fetchWithRetry";
+import { getCachedResponse, cacheResponse, invalidateCache, DEFAULT_TTL } from "@/utils/requestCache";
+import { clearPermissionCache } from "@/utils/eventActionPermissions";
 
 /**
  * Campaign Page Component
@@ -31,7 +36,7 @@ export default function CampaignPage() {
 
   const { setIsLoading } = useLoading();
 
-  const { locations, getDistrictsForProvince, getMunicipalitiesForDistrict, getAllProvinces, getAllMunicipalities } = useLocations();
+  const { locations, loading: locationsLoading, getDistrictsForProvince, getMunicipalitiesForDistrict, getAllProvinces, getAllMunicipalities, refreshAll: refreshLocations } = useLocations();
 
   useEffect(() => {
     if (!selectedDate) setSelectedDate(new Date());
@@ -46,6 +51,10 @@ export default function CampaignPage() {
   const [selectedTab, setSelectedTab] = useState("all");
   const [currentPage, setCurrentPage] = useState(1);
   const pageSize = 6; // show max 6 requests per page
+  
+  // Fetch current user from API
+  const { user: currentUser } = useCurrentUser();
+  
   const [currentUserName, setCurrentUserName] = useState<string>("");
   const [currentUserEmail, setCurrentUserEmail] = useState<string>("");
   const [quickFilter, setQuickFilter] = useState<{
@@ -70,6 +79,12 @@ export default function CampaignPage() {
   const [requests, setRequests] = useState<any[]>([]);
   const [totalRequestsCount, setTotalRequestsCount] = useState<number>(0);
   const [isServerPaged, setIsServerPaged] = useState<boolean>(false);
+  const [requestCounts, setRequestCounts] = useState({
+    all: 0,
+    approved: 0,
+    pending: 0,
+    rejected: 0,
+  });
   const [publicEvents, setPublicEvents] = useState<any[]>([]);
   const [isLoadingRequests, setIsLoadingRequests] = useState(false);
   const [requestsError, setRequestsError] = useState("");
@@ -78,26 +93,76 @@ export default function CampaignPage() {
   const [viewLoading, setViewLoading] = useState(false);
   const [editModalOpen, setEditModalOpen] = useState(false);
   const [editRequest, setEditRequest] = useState<any>(null);
+  const [isRefreshing, setIsRefreshing] = useState(false);
 
   const [initialLoadDone, setInitialLoadDone] = useState(false);
+  const isRefreshingRef = useRef(false);
 
   const API_URL = process.env.NEXT_PUBLIC_API_URL || "";
 
   const [provinces, setProvinces] = useState<any[]>([]);
   const [districts, setDistricts] = useState<any[]>([]);
   const [municipalities, setMunicipalities] = useState<any[]>([]);
+  const hasRefreshedRef = useRef(false);
 
+  // Update provinces when locations data changes
+  // Only depend on the actual data, not the callbacks (which are stable but change reference)
   useEffect(() => {
-    setProvinces(getAllProvinces());
-  }, [getAllProvinces]);
+    const provincesList = Object.values(locations.provinces || {});
+    // Ensure provinces have _id and name fields
+    const normalizedProvinces = provincesList
+      .filter(p => p && p._id && p.name)
+      .map(p => ({
+        ...p,
+        _id: String(p._id),
+        name: String(p.name)
+      }));
+    
+    if (normalizedProvinces.length > 0) {
+      setProvinces(normalizedProvinces);
+      hasRefreshedRef.current = false; // Reset when we have data
+    }
+    // Remove auto-refresh logic - trust LocationsProvider to handle loading
+    // The provider will fetch on mount and refresh every 30 minutes
+  }, [locations.provinces]);
 
-  useEffect(() => {
-    setMunicipalities(getAllMunicipalities());
-  }, [getAllMunicipalities]);
+  // Municipalities are fetched dynamically when district is selected, not from global cache
+  // This useEffect is kept for backward compatibility but municipalities should be fetched via API
 
   const fetchDistricts = async (provinceId: number | string) => {
-    const districtsForProvince = getDistrictsForProvince(provinceId.toString());
-    setDistricts(districtsForProvince);
+    if (!provinceId) {
+      setDistricts([]);
+      return;
+    }
+
+    try {
+      const token =
+        localStorage.getItem("unite_token") ||
+        sessionStorage.getItem("unite_token");
+      const headers: any = { "Content-Type": "application/json" };
+      if (token) headers["Authorization"] = `Bearer ${token}`;
+
+      // Fetch districts from API for the selected province
+      const res = await fetch(`${API_URL}/api/locations/provinces/${provinceId}/districts`, {
+        headers,
+        credentials: "include",
+      });
+      const body = await res.json();
+
+      if (res.ok && body.data) {
+        const districtsList = Array.isArray(body.data) ? body.data : [];
+        setDistricts(districtsList);
+      } else {
+        // Fallback: use provider's cached districts
+        const districtsForProvince = getDistrictsForProvince(provinceId.toString());
+        setDistricts(districtsForProvince);
+      }
+    } catch (err) {
+      console.error("Error fetching districts:", err);
+      // Fallback: use provider's cached districts
+      const districtsForProvince = getDistrictsForProvince(provinceId.toString());
+      setDistricts(districtsForProvince);
+    }
   };
 
   // Helper to parse a variety of date shapes (ISO string, ms timestamp,
@@ -141,8 +206,23 @@ export default function CampaignPage() {
     return null;
   };
 
-  // Extracted fetchRequests so we can reuse after creating events
-  const fetchRequests = async (fetchAll = false) => {
+  const mapTabToStatusParam = (tab: string) => {
+    if (!tab || tab === "all") return undefined;
+    // Normalize to lowercase for case-insensitive matching
+    const normalizedTab = tab.toLowerCase().trim();
+    // Backend expects "pending" (not "pending-review") to map to status group
+    // The backend's _mapStatusFilterToStatusGroup maps "pending" to [PENDING_REVIEW, REVIEW_RESCHEDULED]
+    if (normalizedTab === "approved") return "approved";
+    if (normalizedTab === "pending") return "pending";
+    if (normalizedTab === "rejected") return "rejected";
+
+    return normalizedTab;
+  };
+
+  // Note: fetchGlobalCounts removed - counts are now included in fetchRequests response
+
+  // Optimized fetchRequests with caching, retry, and deduplication
+  const fetchRequests = async (options?: { forceRefresh?: boolean }): Promise<void> => {
     setIsLoadingRequests(true);
     setRequestsError("");
 
@@ -156,59 +236,353 @@ export default function CampaignPage() {
 
       // Build query params for server-side filtering
       const params = new URLSearchParams();
+      const skip = (currentPage - 1) * pageSize;
+      params.set("skip", String(skip));
+      params.set("limit", String(pageSize));
 
-      // Always fetch all requests for client-side filtering and pagination
-      params.set("page", "1");
-      params.set("limit", "10000"); // High limit to get all
+      const statusParam = mapTabToStatusParam(selectedTab);
+      if (statusParam) {
+        params.set("status", statusParam);
+        debug("[Campaign] Fetching requests with status filter:", statusParam, "for tab:", selectedTab);
+      } else {
+        debug("[Campaign] Fetching all requests (no status filter)");
+      }
+
       if (searchQuery && searchQuery.trim())
         params.set("search", searchQuery.trim());
-      // NOTE: Do not send `status` to the server here. Backend status tokens
-      // vary and returning server-filtered lists causes mismatches and empty
-      // results. We fetch the page(s) and apply a deterministic client-side
-      // filter based on `event.Status` to ensure tabs show the expected items.
-      // Do not send date_from/date_to to server; advanced date filtering is
-      // performed client-side against the event's Start_Date to avoid server
-      // timezone/format mismatches.
+
       if (quickFilter?.category && quickFilter.category !== "all")
         params.set("category", quickFilter.category);
-      if (searchQuery && searchQuery.trim())
-        params.set("search", searchQuery.trim());
-      // NOTE: Do not send `status` to the server here. Backend status tokens
-      // vary and returning server-filtered lists causes mismatches and empty
-      // results. We fetch the page(s) and apply a deterministic client-side
-      // filter based on `event.Status` to ensure tabs show the expected items.
-      // Do not send date_from/date_to to server; advanced date filtering is
-      // performed client-side against the event's Start_Date to avoid server
-      // timezone/format mismatches.
-      if (quickFilter?.category && quickFilter.category !== "all")
-        params.set("category", quickFilter.category);
+      if (quickFilter?.startDate) params.set("date_from", quickFilter.startDate);
+      if (quickFilter?.endDate) params.set("date_to", quickFilter.endDate);
+      if (quickFilter?.province) params.set("province", String(quickFilter.province));
+      if (quickFilter?.district)
+        params.set("district", String(quickFilter.district));
+      if (quickFilter?.municipality)
+        params.set("municipalityId", String(quickFilter.municipality));
 
-      const url = `${API_URL}/api/requests/me?${params.toString()}`;
-      // Request fresh data (avoid cached 304 responses) so client-side filters
-      // are applied to a current payload.
-      const res = await fetch(url, { headers, cache: "no-store" });
-      const body = await res.json();
+      if (advancedFilter.title)
+        params.set("title", String(advancedFilter.title));
+      if (advancedFilter.coordinator)
+        params.set("coordinator", String(advancedFilter.coordinator));
+      if (advancedFilter.stakeholder)
+        params.set("stakeholder", String(advancedFilter.stakeholder));
+      if (advancedFilter.start)
+        params.set("date_from", String(advancedFilter.start));
+      if (advancedFilter.end)
+        params.set("date_to", String(advancedFilter.end));
 
-      if (!res.ok) throw new Error(body.message || "Failed to fetch requests");
+      // Add fields=minimal for list view to reduce payload size
+      params.set("fields", "minimal");
+      
+      const url = `${API_URL}/api/event-requests?${params.toString()}`;
+      const fetchOptions: RequestInit = { 
+        headers, 
+        cache: "no-store"
+      };
 
-      // body.data is array of requests (controllers return { success, data, pagination })
-      const data = body.data || [];
-      const list = Array.isArray(data) ? data : [];
+      // Check cache first - show cached data immediately if available (skip if force refresh)
+      const forceRefresh = options?.forceRefresh || false;
+      if (!forceRefresh) {
+        const cachedData = getCachedResponse(url, fetchOptions);
+        if (cachedData) {
+          debug("[Campaign] Using cached response");
+          const responseData = cachedData.data || {};
+          const list = Array.isArray(responseData.requests) ? responseData.requests : [];
+          const totalCount = responseData.count ?? list.length;
+          
+          setRequests(list);
+          setTotalRequestsCount(totalCount);
+          setIsServerPaged(totalCount > list.length);
+          setRequestsError("");
+          
+          if (responseData.statusCounts) {
+            setRequestCounts({
+              all: responseData.statusCounts.all ?? 0,
+              approved: responseData.statusCounts.approved ?? 0,
+              pending: responseData.statusCounts.pending ?? 0,
+              rejected: responseData.statusCounts.rejected ?? 0,
+            });
+          }
+          
+          // Continue to fetch fresh data in background (don't set loading to false yet)
+        }
+      } else {
+        debug("[Campaign] Force refresh - skipping cache");
+      }
+
+      // Fetch with retry and exponential backoff
+      const res = await fetchWithRetry(url, fetchOptions, {
+        maxRetries: 3,
+        timeout: 30000, // 30 seconds
+      });
+
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        const errorMsg = body.message || `Failed to fetch requests (${res.status} ${res.statusText})`;
+        throw new Error(errorMsg);
+      }
+
+      const body = await res.json().catch((parseError) => {
+        console.error("[Campaign] Failed to parse response JSON:", parseError);
+        throw new Error("Invalid response from server");
+      });
+
+      // Cache the response
+      cacheResponse(url, body, fetchOptions, DEFAULT_TTL.list);
+
+      // Process response
+      const responseData = body.data || {};
+      const list = Array.isArray(responseData.requests) ? responseData.requests : 
+                   Array.isArray(body.data) ? body.data : 
+                   Array.isArray(body) ? body : [];
+      const totalCount = responseData.count ?? list.length;
+
+      debug("[Campaign] Fetched requests:", {
+        tab: selectedTab,
+        statusParam,
+        count: list.length,
+        totalCount,
+        firstItemStatus: list[0]?.status || list[0]?.Status || "N/A"
+      });
 
       setRequests(list);
-      // Since we fetch all, total is the list length
-      setTotalRequestsCount(list.length);
-      // Always client-side pagination
-      setIsServerPaged(false);
-      // if server returned pagination, update UI page data (optional)
-      // You can store pagination in state if needed (not implemented here)
+      setTotalRequestsCount(totalCount);
+      setIsServerPaged(totalCount > list.length);
+      setRequestsError("");
+
+      if (responseData.statusCounts) {
+        setRequestCounts({
+          all: responseData.statusCounts.all ?? 0,
+          approved: responseData.statusCounts.approved ?? 0,
+          pending: responseData.statusCounts.pending ?? 0,
+          rejected: responseData.statusCounts.rejected ?? 0,
+        });
+      }
     } catch (err: any) {
-      console.error("Fetch requests error", err);
-      setRequestsError(err.message || "Failed to fetch requests");
-      setErrorModalMessage(err.message || "Failed to fetch requests");
+      // Extract error message properly
+      let errorMessage = "Failed to fetch requests";
+      
+      if (err) {
+        if (typeof err === "string") {
+          errorMessage = err;
+        } else if (err instanceof Error) {
+          errorMessage = err.message || errorMessage;
+        } else if (err.message) {
+          errorMessage = String(err.message);
+        } else {
+          errorMessage = String(err);
+        }
+        
+        // User-friendly error messages
+        if (err.name === "AbortError" || errorMessage.includes("aborted") || errorMessage.includes("timeout")) {
+          errorMessage = "Request timed out. Please check your connection and try again.";
+        } else if (errorMessage.includes("Failed to fetch") || errorMessage.includes("network")) {
+          errorMessage = "Network error. Please check your connection and try again.";
+        }
+      }
+      
+      console.error("[Campaign] Fetch requests error:", {
+        error: errorMessage,
+        errorType: err?.name || typeof err,
+        fullError: err,
+      });
+      
+      setRequestsError(errorMessage);
+      setErrorModalMessage(errorMessage);
       setErrorModalOpen(true);
     } finally {
       setIsLoadingRequests(false);
+    }
+  };
+
+  // Optimistically update a request in the local state before server confirmation
+  const optimisticallyUpdateRequest = useCallback((requestId: string, updateData: any) => {
+    setRequests((prevRequests) => {
+      return prevRequests.map((req) => {
+        // Check if this is the request we're updating
+        const reqId = req.Request_ID || req.RequestId || req.requestId || req._id;
+        if (String(reqId) !== String(requestId)) {
+          return req;
+        }
+
+        // Create an updated copy of the request
+        const updatedRequest = { ...req };
+
+        // Update direct request fields
+        if (updateData.Event_Title !== undefined) {
+          updatedRequest.Event_Title = updateData.Event_Title;
+        }
+        if (updateData.Location !== undefined) {
+          updatedRequest.Location = updateData.Location;
+        }
+        if (updateData.Email !== undefined) {
+          updatedRequest.Email = updateData.Email;
+        }
+        if (updateData.Phone_Number !== undefined) {
+          updatedRequest.Phone_Number = updateData.Phone_Number;
+        }
+        if (updateData.Event_Description !== undefined) {
+          updatedRequest.Event_Description = updateData.Event_Description;
+        }
+        if (updateData.Start_Date !== undefined) {
+          updatedRequest.Start_Date = updateData.Start_Date;
+        }
+        if (updateData.End_Date !== undefined) {
+          updatedRequest.End_Date = updateData.End_Date;
+        }
+        if (updateData.Date !== undefined) {
+          updatedRequest.Date = updateData.Date;
+        }
+
+        // Update nested event object if present
+        if (updatedRequest.event) {
+          updatedRequest.event = {
+            ...updatedRequest.event,
+            ...(updateData.Event_Title !== undefined && { Event_Title: updateData.Event_Title }),
+            ...(updateData.Location !== undefined && { Location: updateData.Location }),
+            ...(updateData.Email !== undefined && { Email: updateData.Email }),
+            ...(updateData.Phone_Number !== undefined && { Phone_Number: updateData.Phone_Number }),
+            ...(updateData.Event_Description !== undefined && { Event_Description: updateData.Event_Description }),
+            ...(updateData.Start_Date !== undefined && { Start_Date: updateData.Start_Date }),
+            ...(updateData.End_Date !== undefined && { End_Date: updateData.End_Date }),
+          };
+        }
+
+        // Update category-specific fields if present
+        if (updateData.TrainingType !== undefined) {
+          updatedRequest.TrainingType = updateData.TrainingType;
+        }
+        if (updateData.MaxParticipants !== undefined) {
+          updatedRequest.MaxParticipants = updateData.MaxParticipants;
+        }
+        if (updateData.Target_Donation !== undefined) {
+          updatedRequest.Target_Donation = updateData.Target_Donation;
+        }
+        if (updateData.TargetAudience !== undefined) {
+          updatedRequest.TargetAudience = updateData.TargetAudience;
+        }
+        if (updateData.ExpectedAudienceSize !== undefined) {
+          updatedRequest.ExpectedAudienceSize = updateData.ExpectedAudienceSize;
+        }
+
+        return updatedRequest;
+      });
+    });
+  }, []);
+
+  // Helper function to get user authority level
+  const getUserAuthority = (): number => {
+    const info = getUserInfo();
+    const user = currentUser || info.raw;
+    return user?.authority ?? info.raw?.authority ?? 20;
+  };
+
+  // Fetch calendar events based on user authority level
+  const fetchCalendarEvents = async (): Promise<void> => {
+    try {
+      const authority = getUserAuthority();
+      const token =
+        localStorage.getItem("unite_token") ||
+        sessionStorage.getItem("unite_token");
+      const headers: any = { "Content-Type": "application/json" };
+      
+      if (token) headers["Authorization"] = `Bearer ${token}`;
+
+      // Select endpoint based on authority level
+      // Admin (>= 80): Use /api/events/all for all events
+      // Coordinator (60-79) and Stakeholder (<= 59): Use /api/me/events for personalized events
+      let endpoint: string;
+      if (authority >= 80) {
+        endpoint = `${API_URL}/api/events/all`;
+      } else {
+        endpoint = `${API_URL}/api/me/events`;
+      }
+
+      debug("[Campaign] Fetching calendar events:", {
+        authority,
+        endpoint,
+        isAdmin: authority >= 80,
+      });
+
+      const res = await fetch(endpoint, {
+        headers,
+        credentials: "include",
+      });
+
+      if (!res.ok) {
+        // If authenticated endpoint fails, fallback to public events
+        if (authority < 80) {
+          debug("[Campaign] Authenticated endpoint failed, falling back to public events");
+          const fallbackRes = await fetch(`${API_URL}/api/public/events`);
+          const fallbackBody = await fallbackRes.json();
+          
+          if (fallbackRes.ok && Array.isArray(fallbackBody.data)) {
+            const list = fallbackBody.data.map((e: any) => ({
+              Event_ID: e.Event_ID,
+              Title: e.Title,
+              Start_Date: e.Start_Date,
+              Category: e.Category,
+            }));
+            setPublicEvents(list);
+          }
+          return;
+        }
+        throw new Error(`Failed to fetch calendar events (${res.status} ${res.statusText})`);
+      }
+
+      const body = await res.json();
+
+      // Handle different response formats
+      // /api/events/all returns { success: true, data: [...] }
+      // /api/me/events returns { success: true, data: [...] }
+      // /api/public/events returns { data: [...] }
+      let eventsList: any[] = [];
+      
+      if (body.success && Array.isArray(body.data)) {
+        eventsList = body.data;
+      } else if (Array.isArray(body.data)) {
+        eventsList = body.data;
+      } else if (Array.isArray(body)) {
+        eventsList = body;
+      }
+
+      // Map to calendar format used by CampaignCalendar
+      const list = eventsList.map((e: any) => ({
+        Event_ID: e.Event_ID,
+        Title: e.Event_Title || e.Title,
+        Start_Date: e.Start_Date,
+        Category: e.Category || e.category,
+      }));
+
+      debug("[Campaign] Fetched calendar events:", {
+        authority,
+        count: list.length,
+        endpoint,
+      });
+
+      // Store events in React state for the calendar
+      setPublicEvents(list);
+    } catch (e) {
+      console.error("[Campaign] Error fetching calendar events:", e);
+      // On error, try to fallback to public events
+      try {
+        const fallbackRes = await fetch(`${API_URL}/api/public/events`);
+        const fallbackBody = await fallbackRes.json();
+        
+        if (fallbackRes.ok && Array.isArray(fallbackBody.data)) {
+          const list = fallbackBody.data.map((e: any) => ({
+            Event_ID: e.Event_ID,
+            Title: e.Title,
+            Start_Date: e.Start_Date,
+            Category: e.Category,
+          }));
+          setPublicEvents(list);
+        }
+      } catch (fallbackError) {
+        // Ignore fallback failures - calendar will just be empty
+        debug("[Campaign] Fallback to public events also failed");
+      }
     }
   };
 
@@ -222,88 +596,84 @@ export default function CampaignPage() {
       setIsLoading(true);
     }
 
-    // load requests and also initialize the displayed user name/email for the topbar
+    // load requests on initial mount (counts are included in response)
     fetchRequests();
-    // fetch published events for the calendar
-    (async () => {
-      try {
-        const res = await fetch(`${API_URL}/api/public/events`);
-        const body = await res.json();
-
-        if (res.ok && Array.isArray(body.data)) {
-          // map to calendar format used by CampaignCalendar
-          const list = body.data.map((e: any) => ({
-            Event_ID: e.Event_ID,
-            Title: e.Title,
-            Start_Date: e.Start_Date,
-            Category: e.Category,
-          }));
-
-          // setRequests already used for cards; keep approved events in a separate state
-          // Store public events in React state for the calendar
-          setPublicEvents(list);
-        }
-      } catch (e) {
-        // ignore calendar load failures
-      }
-    })();
-    try {
-      const raw = localStorage.getItem("unite_user");
-
-      if (raw) {
-        const u = JSON.parse(raw);
-        const first =
-          u.First_Name ||
-          u.First_Name ||
-          u.first_name ||
-          u.FirstName ||
-          u.firstName ||
-          u.First ||
-          "";
-        const middle =
-          u.Middle_Name ||
-          u.MiddleName ||
-          u.middle_name ||
-          u.middleName ||
-          u.Middle ||
-          "";
-        const last =
-          u.Last_Name ||
-          u.LastName ||
-          u.last_name ||
-          u.lastName ||
-          u.Last ||
-          "";
-        const parts = [first, middle, last]
-          .map((p: any) => (p || "").toString().trim())
-          .filter(Boolean);
-        const full = parts.join(" ");
-        const email =
-          u.Email || u.email || u.Email_Address || u.emailAddress || "";
-
-        if (full) setCurrentUserName(full);
-        else if (u.name) setCurrentUserName(u.name);
-        if (email) setCurrentUserEmail(email);
-      }
-    } catch (err) {
-      // ignore malformed localStorage entry
-    }
-
+    // fetch personalized events for the calendar based on user authority
+    fetchCalendarEvents();
     // Mark initial load as done after setting states
     setInitialLoadDone(true);
-  }, []);
+  }, [currentUser]);
+
+  // Update display name and email from API user data
+  useEffect(() => {
+    if (currentUser) {
+      if (currentUser.fullName) {
+        setCurrentUserName(currentUser.fullName);
+      } else if (currentUser.firstName || currentUser.lastName) {
+        const nameParts = [currentUser.firstName, currentUser.middleName, currentUser.lastName].filter(Boolean);
+        setCurrentUserName(nameParts.join(" ") || "unite user");
+      }
+      if (currentUser.email) {
+        setCurrentUserEmail(currentUser.email);
+      }
+    }
+  }, [currentUser]);
+
+  // Memoize filter objects to prevent unnecessary re-renders
+  const quickFilterMemo = useMemo(() => quickFilter, [
+    quickFilter?.category,
+    quickFilter?.startDate,
+    quickFilter?.endDate,
+    quickFilter?.province,
+    quickFilter?.district,
+    quickFilter?.municipality,
+  ]);
+
+  const advancedFilterMemo = useMemo(() => advancedFilter, [
+    advancedFilter?.start,
+    advancedFilter?.end,
+    advancedFilter?.title,
+    advancedFilter?.requester,
+    advancedFilter?.municipality,
+    advancedFilter?.coordinator,
+    advancedFilter?.stakeholder,
+  ]);
+
+  // Track previous filter values to detect actual changes
+  const prevFiltersRef = useRef<{
+    quickFilter: typeof quickFilter;
+    advancedFilter: typeof advancedFilter;
+    searchQuery: string;
+    selectedTab: string;
+  }>({
+    quickFilter: null,
+    advancedFilter: {},
+    searchQuery: '',
+    selectedTab: 'all',
+  });
 
   // reset to first page whenever filters/search change
   useEffect(() => {
-    setCurrentPage(1);
-  }, [
-    searchQuery,
-    selectedTab,
-    JSON.stringify(quickFilter),
-    JSON.stringify(advancedFilter),
-  ]);
+    const filtersChanged = 
+      prevFiltersRef.current.searchQuery !== searchQuery ||
+      prevFiltersRef.current.selectedTab !== selectedTab ||
+      JSON.stringify(prevFiltersRef.current.quickFilter) !== JSON.stringify(quickFilterMemo) ||
+      JSON.stringify(prevFiltersRef.current.advancedFilter) !== JSON.stringify(advancedFilterMemo);
 
-  // Re-fetch requests whenever filters or pagination change
+    if (filtersChanged) {
+      setCurrentPage(1);
+      prevFiltersRef.current = {
+        quickFilter: quickFilterMemo,
+        advancedFilter: advancedFilterMemo,
+        searchQuery,
+        selectedTab,
+      };
+    }
+  }, [searchQuery, selectedTab, quickFilterMemo, advancedFilterMemo]);
+
+  // Note: Counts are now included in fetchRequests response, so no separate fetch needed
+
+  // Re-fetch requests whenever filters, pagination, or tab change
   useEffect(() => {
     // fetchRequests is defined above in the component scope
     (async () => {
@@ -317,23 +687,166 @@ export default function CampaignPage() {
     currentPage,
     selectedTab,
     searchQuery,
-    JSON.stringify(quickFilter),
-    JSON.stringify(advancedFilter),
+    quickFilterMemo,
+    advancedFilterMemo,
   ]);
 
+  // Debounce timer ref for refresh operations
+  const refreshDebounceTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const lastRefreshTimeRef = useRef<number>(0);
+
   // Listen for cross-component request updates and refresh the list
+  // Includes debouncing to prevent multiple simultaneous refresh calls
   useEffect(() => {
-    const handler = (evt: any) => {
+    const handler = async (evt: any) => {
       try {
+        const now = Date.now();
+        const timeSinceLastRefresh = now - lastRefreshTimeRef.current;
+        const minRefreshInterval = 100; // Minimum 100ms between refreshes (reduced from 500ms for faster updates)
+        const forceRefresh = evt?.detail?.forceRefresh || evt?.detail?.shouldRefresh;
+
         debug(
           "[Campaign] unite:requests-changed received, refreshing requests",
           evt?.detail,
+          { timeSinceLastRefresh, forceRefresh }
         );
-      } catch (e) {}
-      // Re-fetch current list to reflect updates made elsewhere
+
+        // Clear any pending refresh
+        if (refreshDebounceTimerRef.current) {
+          clearTimeout(refreshDebounceTimerRef.current);
+          refreshDebounceTimerRef.current = null;
+        }
+
+        // If force refresh is requested (from backend UI flags), skip debounce completely
+        const debounceDelay = forceRefresh ? 0 : Math.max(0, minRefreshInterval - timeSinceLastRefresh);
+        
+        // Cancel any pending requests for this endpoint (immediate)
+        cancelRequests(/event-requests/);
+        
+        // Invalidate cache immediately before any delay (synchronous)
+        if (evt?.detail?.cacheKeysToInvalidate && Array.isArray(evt.detail.cacheKeysToInvalidate)) {
+          evt.detail.cacheKeysToInvalidate.forEach((key: string) => {
+            const cachePattern = new RegExp(key.replace(/^\/api\//, '').replace(/\//g, '.*'));
+            invalidateCache(cachePattern);
+            debug(`[Campaign] Invalidated cache for: ${key}`);
+          });
+        } else {
+          // Fallback: invalidate all event-requests cache
+          invalidateCache(/event-requests/);
+        }
+        
+        // Clear permission cache immediately for faster refresh
+        if (evt?.detail?.requestId) {
+          // Try to extract event ID from the request if available
+          // This will be handled by the event card component, but we can also clear here
+          clearPermissionCache();
+        }
+        
+        // For force refresh, execute immediately without debounce
+        if (forceRefresh && debounceDelay === 0) {
+          try {
+            lastRefreshTimeRef.current = Date.now();
+            debug("[Campaign] Executing immediate force refresh after request change");
+            
+            // Fetch fresh requests (cache already invalidated above, force refresh to skip cache)
+            await fetchRequests({ forceRefresh: true }).catch(err => {
+              console.error("[Campaign] Error refreshing requests:", err);
+            });
+            
+            debug("[Campaign] Force refresh completed successfully");
+          } catch (e) {
+            console.error("[Campaign] Error in force refresh handler:", e);
+          }
+        } else {
+          // For non-force refresh, use minimal debounce
+          refreshDebounceTimerRef.current = setTimeout(async () => {
+            try {
+              lastRefreshTimeRef.current = Date.now();
+              debug("[Campaign] Executing refresh after request change", { forceRefresh });
+              
+              // Fetch fresh requests (cache already invalidated above)
+              await fetchRequests().catch(err => {
+                console.error("[Campaign] Error refreshing requests:", err);
+              });
+              
+              debug("[Campaign] Refresh completed successfully");
+            } catch (e) {
+              console.error("[Campaign] Error in refresh handler:", e);
+            } finally {
+              refreshDebounceTimerRef.current = null;
+            }
+          }, debounceDelay);
+        }
+      } catch (e) {
+        console.error("[Campaign] Error in event handler:", e);
+      }
+    };
+
+    // Handler for force-refresh events (bypasses debounce completely)
+    const forceRefreshHandler = async (evt: any) => {
       try {
-        fetchRequests();
-      } catch (e) {}
+        debug("[Campaign] unite:force-refresh-requests received, forcing immediate refresh", evt?.detail);
+        
+        // Clear any pending debounced refresh
+        if (refreshDebounceTimerRef.current) {
+          clearTimeout(refreshDebounceTimerRef.current);
+          refreshDebounceTimerRef.current = null;
+        }
+        
+        // Cancel any pending requests
+        cancelRequests(/event-requests/);
+        
+        // Invalidate cache immediately
+        if (evt?.detail?.cacheKeysToInvalidate && Array.isArray(evt.detail.cacheKeysToInvalidate)) {
+          evt.detail.cacheKeysToInvalidate.forEach((key: string) => {
+            const cachePattern = new RegExp(key.replace(/^\/api\//, '').replace(/\//g, '.*'));
+            invalidateCache(cachePattern);
+          });
+        } else {
+          invalidateCache(/event-requests/);
+        }
+        
+        // Force immediate refresh (no debounce)
+        lastRefreshTimeRef.current = Date.now();
+        await fetchRequests().catch(err => {
+          console.error("[Campaign] Error in force refresh:", err);
+        });
+        
+        debug("[Campaign] Force refresh completed");
+      } catch (e) {
+        console.error("[Campaign] Error in force refresh handler:", e);
+      }
+    };
+
+    // Handler for staff-updated events (specific to staff management)
+    const staffUpdatedHandler = async (evt: any) => {
+      try {
+        const { requestId, eventId } = evt?.detail || {};
+        debug("[Campaign] unite:staff-updated received, refreshing requests", {
+          requestId,
+          eventId,
+        });
+
+        // Invalidate cache for this specific request
+        if (requestId) {
+          invalidateCache(new RegExp(`event-requests/${encodeURIComponent(requestId)}`));
+        }
+        // Also invalidate list cache
+        invalidateCache(/event-requests\?/);
+
+        // Cancel any pending requests
+        cancelRequests(/event-requests/);
+
+        // Force immediate refresh
+        lastRefreshTimeRef.current = Date.now();
+        await fetchRequests({ forceRefresh: true }).catch(err => {
+          console.error("[Campaign] Error refreshing requests after staff update:", err);
+        });
+
+        debug("[Campaign] Staff update refresh completed");
+      } catch (e) {
+        console.error("[Campaign] Error in staff updated handler:", e);
+      }
     };
 
     if (typeof window !== "undefined") {
@@ -341,13 +854,35 @@ export default function CampaignPage() {
         "unite:requests-changed",
         handler as EventListener,
       );
+      window.addEventListener(
+        "unite:force-refresh-requests",
+        forceRefreshHandler as EventListener,
+      );
+      window.addEventListener(
+        "unite:staff-updated",
+        staffUpdatedHandler as EventListener,
+      );
     }
 
     return () => {
+      // Clear any pending refresh on unmount
+      if (refreshDebounceTimerRef.current) {
+        clearTimeout(refreshDebounceTimerRef.current);
+        refreshDebounceTimerRef.current = null;
+      }
+      
       try {
         window.removeEventListener(
           "unite:requests-changed",
           handler as EventListener,
+        );
+        window.removeEventListener(
+          "unite:force-refresh-requests",
+          forceRefreshHandler as EventListener,
+        );
+        window.removeEventListener(
+          "unite:staff-updated",
+          staffUpdatedHandler as EventListener,
         );
       } catch (e) {}
     };
@@ -422,43 +957,84 @@ export default function CampaignPage() {
     },
   ];
 
-  // Handler for search functionality
-  const handleSearch = (query: string) => {
-    setSearchQuery(query);
+  // Handler for search functionality - memoized with useCallback
+  const handleSearch = useCallback((query: string) => {
+    startTransition(() => {
+      setSearchQuery(query);
+    });
     debug("Searching for:", query);
-  };
+  }, []);
 
-  // Handler for user profile click
-  const handleUserClick = () => {
+  // Handler for user profile click - memoized with useCallback
+  const handleUserClick = useCallback(() => {
     debug("User profile clicked");
-  };
+  }, []);
 
-  // Handler for tab changes
-  const handleTabChange = (tab: string) => {
-    setSelectedTab(tab);
+  // Handler for tab changes - memoized with useCallback
+  const handleTabChange = useCallback((tab: string) => {
+    startTransition(() => {
+      setSelectedTab(tab);
+    });
     debug("Tab changed to:", tab);
-  };
+  }, []);
 
-  // Handler for export action
-  const handleExport = () => {
+  // Handler for export action - memoized with useCallback
+  const handleExport = useCallback(() => {
     debug("Exporting data...");
+  }, []);
+
+  // Handler for refresh requests
+  const handleRefreshRequests = async () => {
+    // Prevent multiple simultaneous refreshes
+    if (isRefreshingRef.current) {
+      return;
+    }
+    
+    try {
+      isRefreshingRef.current = true;
+      setIsRefreshing(true);
+      
+      debug("[Campaign] Manual refresh triggered");
+      
+      // Invalidate cache for event-requests
+      invalidateCache(/event-requests/);
+      
+      // Cancel any pending requests
+      cancelRequests(/event-requests/);
+      
+      // Fetch fresh data (will use current filters/pagination from state)
+      await fetchRequests();
+      
+      debug("[Campaign] Manual refresh completed");
+    } catch (error) {
+      console.error("[Campaign] Error refreshing requests:", error);
+      // Error is already handled in fetchRequests
+    } finally {
+      setIsRefreshing(false);
+      isRefreshingRef.current = false;
+    }
   };
 
-  // Handler for quick filter
-  const handleQuickFilter = (filter: any) => {
-    setQuickFilter(filter);
-  };
+  // Handler for quick filter - memoized with useCallback
+  const handleQuickFilter = useCallback((filter: any) => {
+    startTransition(() => {
+      setQuickFilter(filter);
+    });
+  }, []);
 
-  // Handler for advanced filter (expects { start?, title?, requester? })
-  const handleAdvancedFilter = (filter?: {
+  // Handler for advanced filter - memoized with useCallback
+  const handleAdvancedFilter = useCallback((filter?: {
     start?: string;
     end?: string;
     title?: string;
-    requester?: string;
+    coordinator?: string;
+    stakeholder?: string;
   }) => {
-    if (filter) setAdvancedFilter(filter);
-    else setAdvancedFilter({});
-  };
+    startTransition(() => {
+      if (filter) setAdvancedFilter(filter);
+      else setAdvancedFilter({});
+    });
+  }, []);
 
   // Handler for create event - maps modal data to backend payloads and posts
   const handleCreateEvent = async (eventType: string, data: any) => {
@@ -489,7 +1065,7 @@ export default function CampaignPage() {
           undefined,
         Email: data.email || undefined,
         Phone_Number: data.contactNumber || undefined,
-        categoryType:
+        Category:
           eventType === "blood-drive"
             ? "BloodDrive"
             : eventType === "training"
@@ -498,17 +1074,17 @@ export default function CampaignPage() {
       };
 
       // Category-specific mappings
-      if (eventPayload.categoryType === "Training") {
+      if (eventPayload.Category === "Training") {
         eventPayload.MaxParticipants = data.numberOfParticipants
           ? parseInt(data.numberOfParticipants, 10)
           : undefined;
         eventPayload.TrainingType = data.trainingType || undefined;
-      } else if (eventPayload.categoryType === "BloodDrive") {
+      } else if (eventPayload.Category === "BloodDrive") {
         eventPayload.Target_Donation = data.goalCount
           ? parseInt(data.goalCount, 10)
           : undefined;
         eventPayload.VenueType = data.venueType || undefined;
-      } else if (eventPayload.categoryType === "Advocacy") {
+      } else if (eventPayload.Category === "Advocacy") {
         eventPayload.TargetAudience =
           data.audienceType || data.targetAudience || undefined;
         eventPayload.Topic = data.topic || undefined;
@@ -518,82 +1094,59 @@ export default function CampaignPage() {
           : undefined;
       }
 
-      // If a coordinator was selected (admin or stakeholder flow), include it
+      // If a coordinator was selected, include it for request assignment
       if (data.coordinator) {
-        // For createEventRequest controller we need coordinatorId in body (coordinatorId param)
-        eventPayload.MadeByCoordinatorID = data.coordinator;
+        eventPayload.coordinatorId = data.coordinator;
       }
 
       // If a stakeholder was selected, include it so server can assign and notify accordingly
       if (data.stakeholder) {
-        eventPayload.MadeByStakeholderID = data.stakeholder;
-        // include explicit stakeholder reference (some controllers/validators accept this key)
-        eventPayload.stakeholder = data.stakeholder;
+        eventPayload.stakeholderId = data.stakeholder;
       }
 
-      // Decide endpoint based on user role. Use getUserInfo helper for robust detection.
-      const info = getUserInfo();
-      const roleStr = String(
-        info.role || user?.staff_type || user?.role || "",
-      ).toLowerCase();
-      const isAdmin = !!(info.isAdmin || roleStr.includes("admin"));
-      const isCoordinator = !!roleStr.includes("coordinator");
+      // Check user permissions to decide if we should create a direct event or a request
+      // Users with event.create permission can create direct events
+      // Others should create requests that go through approval workflow
+      const userAuthority = user?.authority || (user as any)?.authority || 20;
+      const isSystemAdmin = userAuthority >= 80;
 
-      if (isAdmin || isCoordinator) {
-        // Admin/Coordinator -> immediate publish endpoint
-        const creatorId =
-          user?.Admin_ID ||
-          user?.Coordinator_ID ||
-          user?.id ||
-          user?.ID ||
-          null;
-        const creatorRole =
-          info.role ||
-          user?.staff_type ||
-          user?.role ||
-          (isAdmin ? "Admin" : isCoordinator ? "Coordinator" : null);
-
-        const body = {
-          creatorId,
-          creatorRole,
-          ...eventPayload,
-        };
-
-        const res = await fetch(`${API_URL}/api/events/direct`, {
+      // For system admins or users creating with coordinator assignment, try direct event creation
+      // Otherwise, create a request that goes through approval workflow
+      if (isSystemAdmin && !data.coordinator) {
+        // System admin creating direct event (no coordinator needed)
+        const res = await fetch(`${API_URL}/api/events`, {
           method: "POST",
           headers,
-          body: JSON.stringify(body),
+          body: JSON.stringify(eventPayload),
         });
         const resp = await res.json();
 
         if (!res.ok) throw new Error(resp.message || "Failed to create event");
 
-        // refresh requests list to show the newly created event
+        // Invalidate cache and refresh requests list
+        invalidateCache(/event-requests/);
         await fetchRequests();
 
         return resp;
       } else {
-        // Stakeholder -> create request (needs coordinatorId)
-        if (!data.coordinator)
+        // Create request (goes through approval workflow)
+        // Coordinator assignment is required for stakeholders, optional for others
+        if (!data.coordinator && userAuthority < 60) {
           throw new Error("Coordinator is required for requests");
-        const stakeholderId =
-          user?.Stakeholder_ID || user?.StakeholderId || user?.id || null;
-        const body = {
-          coordinatorId: data.coordinator,
-          MadeByStakeholderID: stakeholderId,
-          ...eventPayload,
-        };
+        }
 
-        const res = await fetch(`${API_URL}/api/requests`, {
+        const res = await fetch(`${API_URL}/api/event-requests`, {
           method: "POST",
           headers,
-          body: JSON.stringify(body),
+          body: JSON.stringify(eventPayload),
         });
         const resp = await res.json();
 
         if (!res.ok)
           throw new Error(resp.message || "Failed to create request");
 
+        // Invalidate cache and refresh requests list
+        invalidateCache(/event-requests/);
         await fetchRequests();
 
         return resp;
@@ -634,18 +1187,18 @@ export default function CampaignPage() {
 
       if (token) headers["Authorization"] = `Bearer ${token}`;
 
-      const res = await fetch(`${API_URL}/api/requests/${requestId}`, {
+      const res = await fetch(`${API_URL}/api/event-requests/${requestId}`, {
         headers,
       });
       const body = await res.json();
 
       // debug: log raw response body from the API
-      debug("[Campaign] GET /api/requests/%s response body:", requestId, body);
+      debug("[Campaign] GET /api/event-requests/%s response body:", requestId, body);
       if (!res.ok)
         throw new Error(body.message || "Failed to fetch request details");
 
-      // controller returns { success, data: request }
-      const data = body.data || body.request || null;
+      // New API returns { success, data: { request } }
+      const data = body.data?.request || body.data || body.request || null;
 
       debug("[Campaign] parsed view request data:", data);
       setViewRequest(data || body);
@@ -680,14 +1233,15 @@ export default function CampaignPage() {
 
       if (token) headers["Authorization"] = `Bearer ${token}`;
 
-      const res = await fetch(`${API_URL}/api/requests/${requestId}`, {
+      const res = await fetch(`${API_URL}/api/event-requests/${requestId}`, {
         headers,
       });
       const body = await res.json();
 
       if (!res.ok)
         throw new Error(body.message || "Failed to fetch request details");
-      const data = body.data || body.request || null;
+      // New API returns { success, data: { request } }
+      const data = body.data?.request || body.data || body.request || null;
 
       setEditRequest(data || body);
       setEditModalOpen(true);
@@ -707,14 +1261,18 @@ export default function CampaignPage() {
     rescheduledDateISO: string,
     note: string,
   ) => {
-    if (!reqObj) return;
+    if (!reqObj) {
+      console.error("[CampaignPage] handleRescheduleEvent: reqObj is null");
+      return;
+    }
+
     const requestId =
-      reqObj.Request_ID || reqObj.RequestId || reqObj._id || reqObj.RequestId;
+      reqObj.Request_ID || reqObj.RequestId || reqObj._id || reqObj.requestId;
 
     if (!requestId) {
+      console.error("[CampaignPage] Unable to determine request id for reschedule");
       setErrorModalMessage("Unable to determine request id for reschedule");
       setErrorModalOpen(true);
-
       return;
     }
 
@@ -729,35 +1287,317 @@ export default function CampaignPage() {
       if (token) headers["Authorization"] = `Bearer ${token}`;
 
       const body: any = {
-        action: "Rescheduled",
-        rescheduledDate: rescheduledDateISO,
+        action: "reschedule",
+        proposedDate: rescheduledDateISO,
         note: note,
       };
 
-      // include admin/coordinator identity if available (server should derive from token ideally)
-      if (user && user.id) body.adminId = user.id;
-      if (user && user.staff_type) body.adminRole = user.staff_type;
-
       const res = await fetch(
-        `${API_URL}/api/requests/${requestId}/admin-action`,
+        `${API_URL}/api/event-requests/${requestId}/actions`,
         {
           method: "POST",
           headers,
           body: JSON.stringify(body),
         },
       );
+
       const resp = await res.json();
 
-      if (!res.ok)
-        throw new Error(resp.message || "Failed to reschedule request");
+      if (!res.ok) {
+        const errorMsg = resp.message || resp.errors?.join(", ") || "Failed to reschedule request";
+        console.error("[CampaignPage] Reschedule failed:", errorMsg, resp);
+        throw new Error(errorMsg);
+      }
 
-      // refresh requests list to reflect updated date/status
+      // Invalidate cache and refresh requests list
+      invalidateCache(/event-requests/);
+      
+      // Clear permission cache for this request's event
+      const eventId = reqObj?.Event_ID || reqObj?.eventId || reqObj?.event?.Event_ID || reqObj?.event?.EventId;
+      if (eventId) {
+        clearPermissionCache(String(eventId));
+      }
+      
       await fetchRequests();
 
       return resp;
     } catch (err: any) {
-      console.error("Reschedule error", err);
-      setErrorModalMessage(err?.message || "Failed to reschedule request");
+      console.error("[CampaignPage] Reschedule error:", err);
+      const errorMessage = err?.message || err?.errors?.join(", ") || "Failed to reschedule request";
+      setErrorModalMessage(errorMessage);
+      setErrorModalOpen(true);
+      throw err;
+    }
+  };
+
+  // Handle accept event action coming from EventCard
+  const handleAcceptEvent = async (reqObj: any, note?: string) => {
+    if (!reqObj) {
+      console.error("[CampaignPage] handleAcceptEvent: reqObj is null");
+      return;
+    }
+
+    // Check if request is already approved before attempting to accept
+    const currentStatus = reqObj?.status || reqObj?.Status;
+    const normalizedStatus = currentStatus ? String(currentStatus).toLowerCase().trim() : '';
+    const isAlreadyApproved = normalizedStatus === 'approved' || normalizedStatus.includes('approv');
+    
+    if (isAlreadyApproved) {
+      // Return success without making API call
+      return {
+        success: true,
+        message: 'Request is already approved',
+        data: { request: reqObj }
+      };
+    }
+
+    const requestId =
+      reqObj.Request_ID || reqObj.RequestId || reqObj._id || reqObj.requestId;
+
+    if (!requestId) {
+      console.error("[CampaignPage] Unable to determine request id for accept");
+      setErrorModalMessage("Unable to determine request id for accept");
+      setErrorModalOpen(true);
+      return;
+    }
+
+    try {
+      const token =
+        localStorage.getItem("unite_token") ||
+        sessionStorage.getItem("unite_token");
+      const headers: any = { "Content-Type": "application/json" };
+      if (token) headers["Authorization"] = `Bearer ${token}`;
+
+      const body: any = {
+        action: "accept",
+      };
+      // Note: Backend validator doesn't allow note for accept action, so we don't include it
+
+      const url = `${API_URL}/api/event-requests/${requestId}/actions`;
+      const fetchOptions: RequestInit = {
+        method: "POST",
+        headers,
+        body: JSON.stringify(body),
+      };
+
+      // Use fetchWithRetry which has proper timeout (30s) and retry logic
+      const res = await fetchWithRetry(url, fetchOptions, {
+        maxRetries: 3,
+        timeout: 30000, // 30 seconds
+      });
+
+      if (!res.ok) {
+        const resp = await res.json().catch(() => ({}));
+        const errorMsg = resp.message || resp.errors?.join(", ") || "Failed to accept request";
+        throw new Error(errorMsg);
+      }
+
+      const resp = await res.json();
+
+      // Invalidate cache and refresh requests list
+      invalidateCache(/event-requests/);
+      
+      // Clear permission cache for this request's event
+      const eventId = reqObj?.Event_ID || reqObj?.eventId || reqObj?.event?.Event_ID || reqObj?.event?.EventId;
+      if (eventId) {
+        clearPermissionCache(String(eventId));
+      }
+      
+      // Refresh requests list and dispatch event
+      await fetchRequests();
+      
+      // Dispatch single refresh event
+      if (typeof window !== "undefined") {
+        window.dispatchEvent(
+          new CustomEvent("unite:requests-changed", { 
+            detail: { 
+              requestId,
+              action: "accept",
+              forceRefresh: true,
+            } 
+          })
+        );
+      }
+
+      return resp;
+    } catch (err: any) {
+      console.error("[CampaignPage] handleAcceptEvent error:", err);
+      const errorMessage = err?.message || err?.errors?.join(", ") || "Failed to accept request";
+      setErrorModalMessage(errorMessage);
+      setErrorModalOpen(true);
+      throw err;
+    }
+  };
+
+  // Handle confirm event action coming from EventCard
+  const handleConfirmEvent = async (reqObj: any) => {
+    if (!reqObj) {
+      console.error("[CampaignPage] handleConfirmEvent: reqObj is null");
+      return;
+    }
+
+    const requestId =
+      reqObj.Request_ID || reqObj.RequestId || reqObj._id || reqObj.requestId;
+
+    if (!requestId) {
+      console.error("[CampaignPage] Unable to determine request id for confirm");
+      setErrorModalMessage("Unable to determine request id for confirm");
+      setErrorModalOpen(true);
+      return;
+    }
+
+    try {
+      const token =
+        localStorage.getItem("unite_token") ||
+        sessionStorage.getItem("unite_token");
+      const headers: any = { "Content-Type": "application/json" };
+      if (token) headers["Authorization"] = `Bearer ${token}`;
+
+      const body: any = {
+        action: "confirm",
+      };
+      // Note: Backend validator doesn't allow note for confirm action
+
+      const url = `${API_URL}/api/event-requests/${requestId}/actions`;
+      const fetchOptions: RequestInit = {
+        method: "POST",
+        headers,
+        body: JSON.stringify(body),
+      };
+
+      // Use fetchWithRetry which has proper timeout (30s) and retry logic
+      const res = await fetchWithRetry(url, fetchOptions, {
+        maxRetries: 3,
+        timeout: 30000, // 30 seconds
+      });
+
+      if (!res.ok) {
+        const resp = await res.json().catch(() => ({}));
+        const errorMsg = resp.message || resp.errors?.join(", ") || "Failed to confirm request";
+        throw new Error(errorMsg);
+      }
+
+      const resp = await res.json();
+
+      // Invalidate cache and refresh requests list
+      invalidateCache(/event-requests/);
+      
+      // Clear permission cache for this request's event
+      const eventId = reqObj?.Event_ID || reqObj?.eventId || reqObj?.event?.Event_ID || reqObj?.event?.EventId;
+      if (eventId) {
+        clearPermissionCache(String(eventId));
+      } else {
+        clearPermissionCache();
+      }
+      
+      // Refresh requests list and dispatch event
+      await fetchRequests();
+      
+      // Dispatch single refresh event
+      if (typeof window !== "undefined") {
+        window.dispatchEvent(
+          new CustomEvent("unite:requests-changed", { 
+            detail: { 
+              requestId,
+              action: "confirm",
+              forceRefresh: true,
+            } 
+          })
+        );
+      }
+
+      return resp;
+    } catch (err: any) {
+      console.error("[CampaignPage] handleConfirmEvent error:", err);
+      const errorMessage = err?.message || err?.errors?.join(", ") || "Failed to confirm request";
+      setErrorModalMessage(errorMessage);
+      setErrorModalOpen(true);
+      throw err;
+    }
+  };
+
+  // Handle reject event action coming from EventCard
+  const handleRejectEvent = async (reqObj: any, note?: string) => {
+    if (!reqObj) {
+      console.error("[CampaignPage] handleRejectEvent: reqObj is null");
+      return;
+    }
+
+    const requestId =
+      reqObj.Request_ID || reqObj.RequestId || reqObj._id || reqObj.requestId;
+
+    if (!requestId) {
+      console.error("[CampaignPage] Unable to determine request id for reject");
+      setErrorModalMessage("Unable to determine request id for reject");
+      setErrorModalOpen(true);
+      return;
+    }
+
+    try {
+      const token =
+        localStorage.getItem("unite_token") ||
+        sessionStorage.getItem("unite_token");
+      const headers: any = { "Content-Type": "application/json" };
+      if (token) headers["Authorization"] = `Bearer ${token}`;
+
+      const body: any = {
+        action: "reject",
+        note: note || "",
+      };
+
+      const url = `${API_URL}/api/event-requests/${requestId}/actions`;
+      const fetchOptions: RequestInit = {
+        method: "POST",
+        headers,
+        body: JSON.stringify(body),
+      };
+
+      // Use fetchWithRetry which has proper timeout (30s) and retry logic
+      const res = await fetchWithRetry(url, fetchOptions, {
+        maxRetries: 3,
+        timeout: 30000, // 30 seconds
+      });
+
+      if (!res.ok) {
+        const resp = await res.json().catch(() => ({}));
+        const errorMsg = resp.message || resp.errors?.join(", ") || "Failed to reject request";
+        throw new Error(errorMsg);
+      }
+
+      const resp = await res.json();
+
+      // Invalidate cache and refresh requests list
+      invalidateCache(/event-requests/);
+      
+      // Clear permission cache for this request's event
+      const eventId = reqObj?.Event_ID || reqObj?.eventId || reqObj?.event?.Event_ID || reqObj?.event?.EventId;
+      if (eventId) {
+        clearPermissionCache(String(eventId));
+      } else {
+        clearPermissionCache();
+      }
+      
+      // Refresh requests list and dispatch event
+      await fetchRequests();
+      
+      // Dispatch single refresh event
+      if (typeof window !== "undefined") {
+        window.dispatchEvent(
+          new CustomEvent("unite:requests-changed", { 
+            detail: { 
+              requestId,
+              action: "reject",
+              forceRefresh: true,
+            } 
+          })
+        );
+      }
+
+      return resp;
+    } catch (err: any) {
+      console.error("[CampaignPage] handleRejectEvent error:", err);
+      const errorMessage = err?.message || err?.errors?.join(", ") || "Failed to reject request";
+      setErrorModalMessage(errorMessage);
       setErrorModalOpen(true);
       throw err;
     }
@@ -767,7 +1607,7 @@ export default function CampaignPage() {
   const handleCancelEvent = async (reqObj: any) => {
     if (!reqObj) return;
     const requestId =
-      reqObj.Request_ID || reqObj.RequestId || reqObj._id || reqObj.RequestId;
+      reqObj.Request_ID || reqObj.RequestId || reqObj._id || reqObj.requestId;
 
     if (!requestId) {
       setErrorModalMessage("Unable to determine request id for cancellation");
@@ -786,29 +1626,17 @@ export default function CampaignPage() {
 
       if (token) headers["Authorization"] = `Bearer ${token}`;
 
-      // Get coordinator ID from user or request
-      const coordinatorId =
-        user?.Coordinator_ID || user?.id || reqObj.coordinator_id;
-
-      if (!coordinatorId) {
-        setErrorModalMessage(
-          "Unable to determine coordinator for cancellation",
-        );
-        setErrorModalOpen(true);
-
-        return;
-      }
-
-      const res = await fetch(`${API_URL}/api/requests/${requestId}`, {
+      // Cancel request - no need for coordinator ID, backend validates permissions
+      const res = await fetch(`${API_URL}/api/event-requests/${requestId}`, {
         method: "DELETE",
         headers,
-        body: JSON.stringify({ coordinatorId }),
       });
       const resp = await res.json();
 
       if (!res.ok) throw new Error(resp.message || "Failed to cancel request");
 
-      // refresh requests list to reflect cancellation
+      // Invalidate cache and refresh requests list
+      invalidateCache(/event-requests/);
       await fetchRequests();
 
       return resp;
@@ -883,246 +1711,20 @@ export default function CampaignPage() {
     return "Pending";
   };
 
-  const requestCounts = useMemo(() => {
-    const counts = {
-      approved: 0,
-      pending: 0,
-      rejected: 0,
-    };
-
-    requests.forEach((req) => {
-      const status = normalizeStatus(req);
-
-      if (status === "Approved") {
-        counts.approved++;
-      } else if (status === "Pending") {
-        counts.pending++;
-      } else if (status === "Rejected") {
-        counts.rejected++;
-      }
-    });
-
-    return {
-      all: requests.length,
-      ...counts,
-    };
-  }, [requests]);
-
-  const filteredRequests = requests.filter((r: any) => {
-    // Tab/status filter (using event.Status preferred)
-    if (selectedTab && selectedTab !== "all") {
-      const s = normalizeStatus(r);
-
-      if (selectedTab === "approved" && s !== "Approved") return false;
-      if (selectedTab === "pending" && s !== "Pending") return false;
-      if (selectedTab === "rejected" && s !== "Rejected") return false;
-    }
-
-    // Quick filter (from toolbar)
-    if (quickFilter) {
-      const ev = r.event || {};
-
-      // Category
-      if (quickFilter.category && quickFilter.category !== "all") {
-        const rawCategory = ev.Category || ev.categoryType || ev.category || "";
-        const catKey = String(rawCategory || "").toLowerCase();
-        let categoryLabel = "Event";
-
-        if (catKey.includes("blood")) categoryLabel = "Blood Drive";
-        else if (catKey.includes("training")) categoryLabel = "Training";
-        else if (catKey.includes("advocacy")) categoryLabel = "Advocacy";
-
-        if (categoryLabel !== quickFilter.category) return false;
-      }
-
-      // Date Range
-      if (quickFilter.startDate && quickFilter.endDate) {
-        const start = parseDate(quickFilter.startDate);
-        const end = parseDate(quickFilter.endDate);
-        const evStart = parseDate(ev.Start_Date || ev.date);
-
-        if (start && end && evStart) {
-          // Reset times for comparison (inclusive)
-          start.setHours(0, 0, 0, 0);
-          end.setHours(23, 59, 59, 999);
-          if (evStart < start || evStart > end) return false;
-        }
-      }
-
-      // Province
-      if (quickFilter.province) {
-        const pId = String(quickFilter.province);
-        const evPId = String(r.province || ev.province || "");
-
-        if (evPId && evPId !== pId) return false;
-      }
-
-      // District
-      if (quickFilter.district) {
-        const dId = String(quickFilter.district);
-        const evDId = String(r.district?._id || r.district || ev.district?._id || ev.district || "");
-
-        if (evDId && evDId !== dId) return false;
-      }
-
-      // Municipality
-      if (quickFilter.municipality) {
-        const mId = String(quickFilter.municipality);
-        const evMId = String(r.municipality || ev.municipality || "");
-
-        if (evMId && evMId !== mId) return false;
-      }
-    }
-
-    // Search query (global search box) - match title or requester or coordinator
-    if (searchQuery && searchQuery.trim()) {
-      const q = searchQuery.trim().toLowerCase();
-      const ev = r.event || {};
-      const title = (ev.Event_Title || ev.title || "").toString().toLowerCase();
-      // requester name - check who actually created the request
-      let requestee = "";
-
-      if (
-        r.made_by_role === "Stakeholder" &&
-        r.stakeholder &&
-        r.stakeholder.staff
-      ) {
-        const s = r.stakeholder.staff;
-
-        requestee = `${s.First_Name || ""} ${s.Last_Name || ""}`
-          .trim()
-          .toLowerCase();
-      } else if (
-        (r.made_by_role === "Coordinator" ||
-          r.made_by_role === "SystemAdmin") &&
-        r.coordinator &&
-        r.coordinator.staff
-      ) {
-        const s = r.coordinator.staff;
-
-        requestee = `${s.First_Name || ""} ${s.Last_Name || ""}`
-          .trim()
-          .toLowerCase();
-      } else if (r.stakeholder && r.stakeholder.staff) {
-        // Fallback: stakeholder data exists
-        const s = r.stakeholder.staff;
-
-        requestee = `${s.First_Name || ""} ${s.Last_Name || ""}`
-          .trim()
-          .toLowerCase();
-      } else if (r.coordinator && r.coordinator.staff) {
-        // Final fallback: coordinator data
-        const s = r.coordinator.staff;
-
-        requestee = `${s.First_Name || ""} ${s.Last_Name || ""}`
-          .trim()
-          .toLowerCase();
-      } else if (r.MadeByStakeholderID || ev.MadeByStakeholderID) {
-        requestee = (r.MadeByStakeholderID || ev.MadeByStakeholderID)
-          .toString()
-          .toLowerCase();
-      }
-      if (!(title.includes(q) || requestee.includes(q))) return false;
-    }
-
-    // Advanced filter: title, requester, date
-    if (advancedFilter) {
-      const ev = r.event || {};
-
-      if (advancedFilter.title) {
-        const t = (ev.Event_Title || ev.title || "").toString().toLowerCase();
-
-        if (!t.includes(String(advancedFilter.title).toLowerCase()))
-          return false;
-      }
-      if (advancedFilter.requester) {
-        let requestee = "";
-
-        if (
-          r.made_by_role === "Stakeholder" &&
-          r.stakeholder &&
-          r.stakeholder.staff
-        ) {
-          const s = r.stakeholder.staff;
-
-          requestee = `${s.First_Name || ""} ${s.Last_Name || ""}`
-            .trim()
-            .toLowerCase();
-        } else if (
-          (r.made_by_role === "Coordinator" ||
-            r.made_by_role === "SystemAdmin") &&
-          r.coordinator &&
-          r.coordinator.staff
-        ) {
-          const s = r.coordinator.staff;
-
-          requestee = `${s.First_Name || ""} ${s.Last_Name || ""}`
-            .trim()
-            .toLowerCase();
-        } else if (r.stakeholder && r.stakeholder.staff) {
-          // Fallback: stakeholder data exists
-          const s = r.stakeholder.staff;
-
-          requestee = `${s.First_Name || ""} ${s.Last_Name || ""}`
-            .trim()
-            .toLowerCase();
-        } else if (r.coordinator && r.coordinator.staff) {
-          // Final fallback: coordinator data
-          const s = r.coordinator.staff;
-
-          requestee = `${s.First_Name || ""} ${s.Last_Name || ""}`
-            .trim()
-            .toLowerCase();
-        } else if (r.MadeByStakeholderID || ev.MadeByStakeholderID) {
-          requestee = (r.MadeByStakeholderID || ev.MadeByStakeholderID)
-            .toString()
-            .toLowerCase();
-        }
-        if (!requestee.includes(String(advancedFilter.requester).toLowerCase()))
-          return false;
-      }
-      if (advancedFilter.coordinator) {
-        const cId = String(advancedFilter.coordinator);
-        const rCId = String(r.coordinator_id || "");
-
-        if (rCId && rCId !== cId) return false;
-      }
-      if (advancedFilter.stakeholder) {
-        const sId = String(advancedFilter.stakeholder);
-        const rSId = String(r.stakeholder_id || "");
-
-        if (rSId && rSId !== sId) return false;
-      }
-      if (advancedFilter.start) {
-        try {
-          const filterDate = parseDate(advancedFilter.start);
-          const evStart = parseDate(ev.Start_Date);
-
-          if (!evStart || !filterDate) return false;
-          if (
-            !(
-              evStart.getFullYear() === filterDate.getFullYear() &&
-              evStart.getMonth() === filterDate.getMonth() &&
-              evStart.getDate() === filterDate.getDate()
-            )
-          )
-            return false;
-        } catch (e) {
-          // ignore malformed date filter
-        }
-      }
-    }
-
-    return true;
-  });
+  // Memoize filtered requests (currently just requests, but ready for client-side filtering if needed)
+  const filteredRequests = useMemo(() => requests, [requests]);
 
   // Client-side pagination calculations
   // When server returns paged results, use server's total count; otherwise
   // base totals on the client-filtered list.
-  const totalRequests = isServerPaged
-    ? totalRequestsCount
-    : filteredRequests.length;
-  const totalPages = Math.max(1, Math.ceil(totalRequests / pageSize));
+  const totalRequests = useMemo(() => {
+    return isServerPaged ? totalRequestsCount : filteredRequests.length;
+  }, [isServerPaged, totalRequestsCount, filteredRequests.length]);
+
+  const totalPages = useMemo(() => {
+    return Math.max(1, Math.ceil(totalRequests / pageSize));
+  }, [totalRequests, pageSize]);
+
   const paginatedRequests = useMemo(() => {
     if (isServerPaged) return filteredRequests; // server provided a page (we still apply the client filter to be safe)
     const startIndex = (currentPage - 1) * pageSize;
@@ -1146,8 +1748,8 @@ export default function CampaignPage() {
 
       {/* Topbar Component */}
       <Topbar
-        userEmail={currentUserEmail || "bmc@gmail.com"}
-        userName={currentUserName || "Bicol Medical Center"}
+        userEmail={currentUserEmail || "unite@health.tech"}
+        userName={currentUserName || "unite user"}
         onSearch={handleSearch}
         onUserClick={handleUserClick}
       />
@@ -1167,6 +1769,8 @@ export default function CampaignPage() {
         onDistrictFetch={fetchDistricts}
         onQuickFilter={handleQuickFilter}
         onTabChange={handleTabChange}
+        onRefresh={handleRefreshRequests}
+        isRefreshing={isRefreshing}
         totalPages={totalPages}
         totalRequests={totalRequests}
       />
@@ -1198,10 +1802,11 @@ export default function CampaignPage() {
               {/* Quick/Advanced filters are shown via toolbar dropdowns */}
 
               {paginatedRequests.map((req, index) => {
+                // New API returns event fields directly on request, not nested in event object
                 const event = req.event || {};
-                const title = event.Event_Title || event.title || "Untitled";
-                // Requestee name: check who actually created the request based on made_by_role
-                let requestee = req.createdByName || "Unknown";
+                const title = req.Event_Title || event.Event_Title || event.title || "Untitled";
+                // Requestee name: check who actually created the request (from requester field)
+                let requestee = req.requester?.name || req.createdByName || "Unknown";
                 let creatorDistrict = null;
 
                 // If creatorDistrict is still not set, try to get district based on stakeholder/coordinator presence
@@ -1226,6 +1831,8 @@ export default function CampaignPage() {
                 }
 
                 const rawCategory =
+                  req.Category ||
+                  req.category ||
                   event.Category ||
                   event.categoryType ||
                   event.category ||
@@ -1246,27 +1853,34 @@ export default function CampaignPage() {
                     .join(" ");
                 }
                 // Map status to Approved/Pending/Rejected/Cancelled
-                const statusRaw = event.Status || req.Status || "Pending";
-                const status = statusRaw.includes("Reject")
+                // New API uses 'status' field (lowercase), old API used 'Status' (uppercase)
+                const statusRaw = req.status || req.Status || event.Status || event.status || "pending-review";
+                const status = statusRaw.includes("reject") || statusRaw.includes("Reject")
                   ? "Rejected"
-                  : statusRaw.includes("Approved") ||
-                      statusRaw.includes("Complete") ||
-                      statusRaw.includes("Completed")
+                  : statusRaw.includes("approv") || statusRaw.includes("Approv") ||
+                      statusRaw.includes("complete") || statusRaw.includes("Complete") ||
+                      statusRaw.includes("completed") || statusRaw.includes("Completed")
                     ? "Approved"
-                    : statusRaw.includes("Cancel") ||
-                        statusRaw.includes("Cancelled")
+                    : statusRaw.includes("cancel") || statusRaw.includes("Cancel") ||
+                        statusRaw.includes("cancelled") || statusRaw.includes("Cancelled")
                       ? "Cancelled"
                       : "Pending";
 
-                const location = event.Location || event.location || "";
+                const location = req.Location || event.Location || event.location || "";
 
-                // Format date - prefer Start_Date and End_Date
-                const start: Date | undefined = event.Start_Date
-                  ? new Date(event.Start_Date)
-                  : undefined;
-                const end: Date | undefined = event.End_Date
-                  ? new Date(event.End_Date)
-                  : undefined;
+                // Format date - prefer Date or Start_Date from request, fallback to event
+                const start: Date | undefined = req.Date
+                  ? new Date(req.Date)
+                  : req.Start_Date
+                    ? new Date(req.Start_Date)
+                    : event.Start_Date
+                      ? new Date(event.Start_Date)
+                      : undefined;
+                const end: Date | undefined = req.End_Date
+                  ? new Date(req.End_Date)
+                  : event.End_Date
+                    ? new Date(event.End_Date)
+                    : undefined;
 
                 const formatDateRange = (s?: Date, e?: Date) => {
                   if (!s) return "";
@@ -1296,7 +1910,9 @@ export default function CampaignPage() {
 
                 const dateStr = start
                   ? formatDateRange(start, end)
-                  : event.date || "";
+                  : req.Date
+                    ? new Date(req.Date).toLocaleString()
+                    : event.date || "";
 
                 // Compute district display: use the creator's district (stakeholder or coordinator)
                 const makeOrdinal = (n: number | string) => {
@@ -1331,13 +1947,19 @@ export default function CampaignPage() {
                   } else {
                     displayDistrict = String(dn);
                   }
-                } else if (event.District || req.district) {
-                  displayDistrict = event.District || req.district || "";
+                } else if (req.district) {
+                  // district is an ObjectId reference, we'll need to resolve it via locations provider
+                  displayDistrict = req.district || "";
+                } else if (event.District) {
+                  displayDistrict = event.District || "";
                 }
 
+                // Use request ID as key to ensure React tracks updates properly
+                const requestKey = req.Request_ID || req.RequestId || req._id || req.requestId || `request-${index}`;
+                
                 return (
                   <EventCard
-                    key={index}
+                    key={requestKey}
                     category={category}
                     date={dateStr}
                     district={displayDistrict}
@@ -1362,6 +1984,9 @@ export default function CampaignPage() {
                     ) =>
                       handleRescheduleEvent(req, currentDate, newDateISO, note)
                     }
+                    onAcceptEvent={(note?: string) => handleAcceptEvent(req, note)}
+                    onConfirmEvent={() => handleConfirmEvent(req)}
+                    onRejectEvent={(reqObj: any, note?: string) => handleRejectEvent(reqObj, note)}
                     onViewEvent={() => handleOpenView(req)}
                   />
                 );
@@ -1372,32 +1997,26 @@ export default function CampaignPage() {
 
           {/* Overlay area positioned relative to wrapper. This keeps spinner / no-results
               centered in the visible viewport regardless of inner scroll position. */}
-          {isLoadingRequests && (
+          {isLoadingRequests && requests.length === 0 && (
             <div className="absolute inset-0 flex items-center justify-center bg-white/60 backdrop-blur-sm z-20 pointer-events-none">
-              <svg
-                className="animate-spin h-12 w-12 text-default-600"
-                fill="none"
-                viewBox="0 0 24 24"
-                xmlns="http://www.w3.org/2000/svg"
-              >
-                <circle
-                  className="opacity-25"
-                  cx="12"
-                  cy="12"
-                  r="10"
-                  stroke="currentColor"
-                  strokeWidth="4"
-                />
-                <path
-                  className="opacity-75"
-                  d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z"
-                  fill="currentColor"
-                />
-              </svg>
+              <div className="flex items-center justify-center gap-2">
+                <Spinner size="sm" />
+                <span className="text-sm text-default-600">Loading requests...</span>
+              </div>
             </div>
           )}
 
-          {!isLoadingRequests && requests.length === 0 && (
+          {/* Show loading indicator at bottom when loading more (pagination) */}
+          {isLoadingRequests && requests.length > 0 && (
+            <div className="flex items-center justify-center py-4">
+              <div className="flex items-center justify-center gap-2">
+                <Spinner size="sm" />
+                <span className="text-sm text-default-600">Loading more...</span>
+              </div>
+            </div>
+          )}
+
+          {!isLoadingRequests && requests.length === 0 && !requestsError && (
             <div className="absolute inset-0 flex items-center justify-center z-10 pointer-events-none">
               <div className="text-sm text-default-600">No request found</div>
             </div>
@@ -1443,8 +2062,15 @@ export default function CampaignPage() {
           setEditModalOpen(false);
           setEditRequest(null);
         }}
-        onSaved={async () => {
-          await fetchRequests();
+        onSaved={async (requestId?: string, updateData?: any) => {
+          // Optimistically update the local state immediately
+          if (requestId && updateData) {
+            optimisticallyUpdateRequest(requestId, updateData);
+          }
+          
+          // Invalidate cache and fetch fresh data from server
+          invalidateCache(/event-requests/);
+          await fetchRequests({ forceRefresh: true });
         }}
       />
 

@@ -3,6 +3,7 @@ import React, { useState } from "react";
 import { Button, ButtonGroup } from "@heroui/button";
 import { Input } from "@heroui/input";
 import { DatePicker } from "@heroui/date-picker";
+import { Tooltip } from "@heroui/tooltip";
 import {
   Modal,
   ModalContent,
@@ -32,13 +33,14 @@ import {
 } from "@/components/campaign/event-creation-modal";
 
 interface CalendarToolbarProps {
-  onExport?: () => void;
+  onExport?: (exportType: string) => void;
   onQuickFilter?: (filter?: any) => void;
   onAdvancedFilter?: (filter?: any) => void;
   onCreateEvent?: (eventType: string, eventData: any) => void;
   showCreate?: boolean;
   showExport?: boolean;
   isMobile?: boolean;
+  isExporting?: boolean;
 }
 
 export default function CalendarToolbar({
@@ -49,6 +51,7 @@ export default function CalendarToolbar({
   showCreate = true,
   showExport = true,
   isMobile = false,
+  isExporting = false,
 }: CalendarToolbarProps) {
   const [selectedEventType, setSelectedEventType] = useState(
     new Set(["blood-drive"]),
@@ -160,17 +163,42 @@ export default function CalendarToolbar({
   return (
     <div className="flex flex-wrap items-center gap-2">
       {showExport && (
-        <Button
-          className="border-default-200 bg-white font-medium text-xs"
-          radius="md"
-          size="sm"
-          startContent={<Download className="w-3 h-3 sm:w-4 sm:h-4" />}
-          variant="bordered"
-          onPress={onExport}
-        >
-          <span className="hidden sm:inline">Export</span>
-          <span className="sm:hidden">Export</span>
-        </Button>
+        <Dropdown>
+          <DropdownTrigger>
+            <Button
+              isLoading={isExporting}
+              className="border-default-200 bg-white font-medium text-xs"
+              radius="md"
+              size="sm"
+              startContent={!isExporting && <Download className="w-3 h-3 sm:w-4 sm:h-4" />}
+              variant="bordered"
+            >
+              <span className="hidden sm:inline">Export</span>
+              <span className="sm:hidden">Export</span>
+            </Button>
+          </DropdownTrigger>
+          <DropdownMenu
+            aria-label="Export options"
+            onAction={(key) => onExport?.(key as string)}
+          >
+            <DropdownSection title="Export Format">
+              <DropdownItem
+                key="visual"
+                description="Export calendar as it appears on screen"
+                startContent={<Download className="w-4 h-4" />}
+              >
+                Visual View (PDF)
+              </DropdownItem>
+              <DropdownItem
+                key="organized"
+                description="Export events in organized list format"
+                startContent={<Download className="w-4 h-4" />}
+              >
+                Organized List (PDF)
+              </DropdownItem>
+            </DropdownSection>
+          </DropdownMenu>
+        </Dropdown>
       )}
 
       <Dropdown>
@@ -230,60 +258,66 @@ export default function CalendarToolbar({
         </Button>
       )}
 
-      {showCreate && (
+      {showCreate !== false && (
         <>
-          <ButtonGroup radius="md" size="sm" variant="solid">
-            <Button
-              color="primary"
-              startContent={<Ticket className="w-3 h-3 sm:w-4 sm:h-4" />}
-              onPress={handleCreateEventClick}
-            >
-              <span className="hidden sm:inline">{currentEventLabel}</span>
-              <span className="sm:hidden">Create</span>
-            </Button>
-            <Dropdown placement="bottom-end">
-              <DropdownTrigger>
-                <Button isIconOnly color="primary">
-                  <ChevronDown className="w-3 h-3 sm:w-4 sm:h-4" />
-                </Button>
-              </DropdownTrigger>
-              <DropdownMenu
-                disallowEmptySelection
-                aria-label="Event type options"
-                className="max-w-2xl"
-                selectedKeys={selectedEventType}
-                selectionMode="single"
-                onSelectionChange={(keys: any) => {
-                  try {
-                    const arr = Array.from(keys as Iterable<any>);
-
-                    setSelectedEventType(new Set(arr.map(String)));
-                  } catch {
-                    setSelectedEventType(new Set());
-                  }
-                }}
+          <Tooltip
+            content={showCreate ? undefined : "You don't have permission to create events or requests"}
+            isDisabled={showCreate}
+          >
+            <ButtonGroup radius="md" size="sm" variant="solid">
+              <Button
+                color="primary"
+                startContent={<Ticket className="w-3 h-3 sm:w-4 sm:h-4" />}
+                onPress={handleCreateEventClick}
+                isDisabled={!showCreate}
               >
-                <DropdownItem
-                  key="blood-drive"
-                  description={eventDescriptionsMap["blood-drive"]}
+                <span className="hidden sm:inline">{currentEventLabel}</span>
+                <span className="sm:hidden">Create</span>
+              </Button>
+              <Dropdown placement="bottom-end">
+                <DropdownTrigger>
+                  <Button isIconOnly color="primary" isDisabled={!showCreate}>
+                    <ChevronDown className="w-3 h-3 sm:w-4 sm:h-4" />
+                  </Button>
+                </DropdownTrigger>
+                <DropdownMenu
+                  disallowEmptySelection
+                  aria-label="Event type options"
+                  className="max-w-2xl"
+                  selectedKeys={selectedEventType}
+                  selectionMode="single"
+                  onSelectionChange={(keys: any) => {
+                    try {
+                      const arr = Array.from(keys as Iterable<any>);
+
+                      setSelectedEventType(new Set(arr.map(String)));
+                    } catch {
+                      setSelectedEventType(new Set());
+                    }
+                  }}
                 >
-                  {eventLabelsMap["blood-drive"]}
-                </DropdownItem>
-                <DropdownItem
-                  key="training"
-                  description={eventDescriptionsMap["training"]}
-                >
-                  {eventLabelsMap["training"]}
-                </DropdownItem>
-                <DropdownItem
-                  key="advocacy"
-                  description={eventDescriptionsMap["advocacy"]}
+                  <DropdownItem
+                    key="blood-drive"
+                    description={eventDescriptionsMap["blood-drive"]}
+                  >
+                    {eventLabelsMap["blood-drive"]}
+                  </DropdownItem>
+                  <DropdownItem
+                    key="training"
+                    description={eventDescriptionsMap["training"]}
+                  >
+                    {eventLabelsMap["training"]}
+                  </DropdownItem>
+                  <DropdownItem
+                    key="advocacy"
+                    description={eventDescriptionsMap["advocacy"]}
                 >
                   {eventLabelsMap["advocacy"]}
                 </DropdownItem>
               </DropdownMenu>
             </Dropdown>
-          </ButtonGroup>
+            </ButtonGroup>
+          </Tooltip>
 
           {/* Creation modals */}
           <CreateTrainingEventModal
@@ -320,12 +354,12 @@ export default function CalendarToolbar({
       )}
 
       {/* Advanced Filter Modal (matches Campaign Toolbar) */}
-        {!isMobile && (
-          <Modal
-            isOpen={isAdvancedModalOpen}
-            placement="center"
-            size="md"
-            onClose={() => setIsAdvancedModalOpen(false)}
+      {!isMobile && (
+        <Modal
+          isOpen={isAdvancedModalOpen}
+          placement="center"
+          size="md"
+          onClose={() => setIsAdvancedModalOpen(false)}
           >
             <ModalContent>
               <ModalHeader>
@@ -413,7 +447,7 @@ export default function CalendarToolbar({
               </ModalFooter>
             </ModalContent>
           </Modal>
-        )}
+      )}
     </div>
   );
 }

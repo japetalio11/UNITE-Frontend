@@ -145,30 +145,24 @@ export default function EventRescheduleModal({
             : new Date(rescheduledDate).toISOString();
 
       const body: any = {
-        action: "Rescheduled",
+        action: "reschedule",
         note: note.trim(),
-        rescheduledDate: newDateISO,
+        proposedDate: newDateISO,
       };
       let res;
 
       if (token) {
         res = await fetchWithAuth(
-          `${API_BASE}/api/requests/${encodeURIComponent(requestId)}/admin-action`,
+          `${API_BASE}/api/event-requests/${encodeURIComponent(requestId)}/actions`,
           { method: "POST", body: JSON.stringify(body) },
         );
       } else {
-        // legacy fallback when token absent
-        const legacyBody = {
-          adminId: user?.id || user?.Admin_ID || null,
-          ...body,
-        };
-
         res = await fetch(
-          `${API_BASE}/api/requests/${encodeURIComponent(requestId)}/admin-action`,
+          `${API_BASE}/api/event-requests/${encodeURIComponent(requestId)}/actions`,
           {
             method: "POST",
             headers,
-            body: JSON.stringify(legacyBody),
+            body: JSON.stringify(body),
             credentials: "include",
           },
         );

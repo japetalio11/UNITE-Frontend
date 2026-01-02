@@ -256,7 +256,7 @@ export default function EditEventModal({
 
         if (token) {
           // send only updateData; server will determine actor from token
-          res = await fetchWithAuth(`${API_URL}/api/requests/${requestId}`, {
+          res = await fetchWithAuth(`${API_URL}/api/event-requests/${requestId}`, {
             method: "PUT",
             body: JSON.stringify(updateData),
           });
@@ -269,7 +269,7 @@ export default function EditEventModal({
               : { coordinatorId: user.id }),
           };
 
-          res = await fetch(`${API_URL}/api/requests/${requestId}`, {
+          res = await fetch(`${API_URL}/api/event-requests/${requestId}`, {
             method: "PUT",
             headers,
             body: JSON.stringify(legacyBody),
@@ -416,24 +416,24 @@ export default function EditEventModal({
         if (requestId) {
           if (token) {
             res = await fetchWithAuth(
-              `${API_URL}/api/requests/${encodeURIComponent(requestId)}`,
+              `${API_URL}/api/event-requests/${encodeURIComponent(requestId)}`,
               { method: "PUT", body: JSON.stringify(body) },
             );
           } else {
             res = await fetch(
-              `${API_URL}/api/requests/${encodeURIComponent(requestId)}`,
+              `${API_URL}/api/event-requests/${encodeURIComponent(requestId)}`,
               { method: "PUT", headers, body: JSON.stringify(body) },
             );
           }
         } else {
           // No requestId: create a new request (POST)
           if (token) {
-            res = await fetchWithAuth(`${API_URL}/api/requests`, {
+            res = await fetchWithAuth(`${API_URL}/api/event-requests`, {
               method: "POST",
               body: JSON.stringify(body),
             });
           } else {
-            res = await fetch(`${API_URL}/api/requests`, {
+            res = await fetch(`${API_URL}/api/event-requests`, {
               method: "POST",
               headers,
               body: JSON.stringify(body),

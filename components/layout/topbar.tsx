@@ -22,8 +22,8 @@ interface TopbarProps {
 }
 
 export default function Topbar({
-  userName = "Bicol Medical Center",
-  userEmail = "bmc@gmail.com",
+  userName = "unite user",
+  userEmail = "unite@health.tech",
   userAvatar = "",
   onUserClick,
   onSearch,
