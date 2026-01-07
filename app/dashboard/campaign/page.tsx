@@ -479,32 +479,18 @@ export default function CampaignPage() {
     return user?.authority ?? info.raw?.authority ?? 20;
   };
 
-  // Fetch calendar events based on user authority level
+  // Fetch calendar events (all events regardless of current user)
   const fetchCalendarEvents = async (): Promise<void> => {
     try {
-      const authority = getUserAuthority();
       const token =
         localStorage.getItem("unite_token") ||
         sessionStorage.getItem("unite_token");
       const headers: any = { "Content-Type": "application/json" };
-      
       if (token) headers["Authorization"] = `Bearer ${token}`;
 
-      // Select endpoint based on authority level
-      // Admin (>= 80): Use /api/events/all for all events
-      // Coordinator (60-79) and Stakeholder (<= 59): Use /api/me/events for personalized events
-      let endpoint: string;
-      if (authority >= 80) {
-        endpoint = `${API_URL}/api/events/all`;
-      } else {
-        endpoint = `${API_URL}/api/me/events`;
-      }
+      const endpoint = `${API_URL}/api/events/all`;
 
-      debug("[Campaign] Fetching calendar events:", {
-        authority,
-        endpoint,
-        isAdmin: authority >= 80,
-      });
+      debug("[Campaign] Fetching calendar events (all):", { endpoint });
 
       const res = await fetch(endpoint, {
         headers,
@@ -512,43 +498,32 @@ export default function CampaignPage() {
       });
 
       if (!res.ok) {
-        // If authenticated endpoint fails, fallback to public events
-        if (authority < 80) {
-          debug("[Campaign] Authenticated endpoint failed, falling back to public events");
-          const fallbackRes = await fetch(`${API_URL}/api/public/events`);
-          const fallbackBody = await fallbackRes.json();
-          
-          if (fallbackRes.ok && Array.isArray(fallbackBody.data)) {
-            const list = fallbackBody.data.map((e: any) => ({
-              Event_ID: e.Event_ID,
-              Title: e.Title,
-              Start_Date: e.Start_Date,
-              Category: e.Category,
-            }));
-            setPublicEvents(list);
-          }
-          return;
+        debug("[Campaign] /api/events/all failed, falling back to public events", { status: res.status });
+        const fallbackRes = await fetch(`${API_URL}/api/public/events`);
+        const fallbackBody = await fallbackRes.json();
+
+        if (fallbackRes.ok && Array.isArray(fallbackBody.data)) {
+          const list = fallbackBody.data.map((e: any) => ({
+            Event_ID: e.Event_ID,
+            Title: e.Title,
+            Start_Date: e.Start_Date,
+            Category: e.Category,
+          }));
+          setPublicEvents(list);
         }
-        throw new Error(`Failed to fetch calendar events (${res.status} ${res.statusText})`);
+        return;
       }
 
       const body = await res.json();
-
-      // Handle different response formats
-      // /api/events/all returns { success: true, data: [...] }
-      // /api/me/events returns { success: true, data: [...] }
-      // /api/public/events returns { data: [...] }
       let eventsList: any[] = [];
-      
-      if (body.success && Array.isArray(body.data)) {
+      if (body && body.success && Array.isArray(body.data)) {
         eventsList = body.data;
-      } else if (Array.isArray(body.data)) {
+      } else if (body && Array.isArray(body.data)) {
         eventsList = body.data;
       } else if (Array.isArray(body)) {
         eventsList = body;
       }
 
-      // Map to calendar format used by CampaignCalendar
       const list = eventsList.map((e: any) => ({
         Event_ID: e.Event_ID,
         Title: e.Event_Title || e.Title,
@@ -556,21 +531,14 @@ export default function CampaignPage() {
         Category: e.Category || e.category,
       }));
 
-      debug("[Campaign] Fetched calendar events:", {
-        authority,
-        count: list.length,
-        endpoint,
-      });
-
-      // Store events in React state for the calendar
+      debug("[Campaign] Fetched calendar events (all):", { count: list.length, endpoint });
       setPublicEvents(list);
     } catch (e) {
       console.error("[Campaign] Error fetching calendar events:", e);
-      // On error, try to fallback to public events
       try {
         const fallbackRes = await fetch(`${API_URL}/api/public/events`);
         const fallbackBody = await fallbackRes.json();
-        
+
         if (fallbackRes.ok && Array.isArray(fallbackBody.data)) {
           const list = fallbackBody.data.map((e: any) => ({
             Event_ID: e.Event_ID,
@@ -581,7 +549,6 @@ export default function CampaignPage() {
           setPublicEvents(list);
         }
       } catch (fallbackError) {
-        // Ignore fallback failures - calendar will just be empty
         debug("[Campaign] Fallback to public events also failed");
       }
     }
