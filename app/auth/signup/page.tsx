@@ -2,11 +2,11 @@
 
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-// use native inputs here for tighter visual control
+import { Input } from "@heroui/input";
 import { Button } from "@heroui/button";
 import { Link } from "@heroui/link";
-import { Check } from "@gravity-ui/icons";
 import { Select, SelectItem } from "@heroui/select";
+import { Check } from "@gravity-ui/icons";
 
 export default function SignUp() {
   const router = useRouter();
@@ -50,9 +50,6 @@ export default function SignUp() {
 
   const update = (patch: Partial<typeof formData>) =>
     setFormData((p) => ({ ...p, ...patch }));
-
-  const inputClass =
-    "text-sm h-10 bg-white border border-gray-200 rounded-lg placeholder-gray-400 px-3 shadow-sm";
 
   // Helper to move priority-named items to the top of a list while preserving
   // the relative order of the remaining items.
@@ -166,10 +163,6 @@ export default function SignUp() {
     }
   }, [formData.District, API_URL]);
 
-  const submitToServer = async () => {
-    // Not used anymore - registration completes on verification page
-  };
-
   const sendVerificationCode = async () => {
     if (!formData.Email.trim()) return;
     setValidatingCode(true);
@@ -251,91 +244,118 @@ export default function SignUp() {
     <div className="w-full max-w-[400px] mx-auto">
       {step < 4 && (
         <div className="space-y-1 mb-8">
-          <h1 className="text-2xl font-semibold text-danger-600">Sign Up</h1>
-          <p className="text-sm text-gray-600">
+          <h1 className="text-2xl font-semibold text-danger">Sign Up</h1>
+          <p className="text-sm text-default-800">
             Enter your details to get started
           </p>
         </div>
       )}
-      <form className="space-y-4" onSubmit={handleFormSubmit}>
+      <form className="space-y-6" onSubmit={handleFormSubmit}>
         <div className="relative min-h-[380px] pb-40">
-          {/* Step boxes are absolutely positioned and animated via translate + opacity */}
-
           {/* Step 1 - Identity */}
           <div
             className={`absolute inset-0 ${step === 0 ? "block" : "hidden"}`}
           >
-            <div className="space-y-3 pb-20">
+            <div className="space-y-6 pb-20">
               <div>
                 <label
-                  className="text-sm font-medium block mb-1"
-
+                  className="text-sm font-medium mb-1.5 block"
                   htmlFor="first-name"
                 >
-                  First name <span className="text-danger-500">*</span>
+                  First name <span className="text-danger ml-1">*</span>
                 </label>
-                <input
-                  className={`${inputClass} w-full`}
+                <Input
                   id="first-name"
                   value={formData.First_Name}
+                  variant="bordered"
+                  classNames={{
+                    input: "text-sm",
+                    inputWrapper: "border-default-200 hover:border-default-400",
+                  }}
+                  size="md"
                   onChange={(e) => update({ First_Name: e.target.value })}
+                  isDisabled={isLoading}
                 />
               </div>
               <div>
                 <label
-                  className="text-sm font-medium block mb-1"
+                  className="text-sm font-medium mb-1.5 block"
                   htmlFor="middle-name"
                 >
                   Middle name
                 </label>
-                <input
-                  className={`${inputClass} w-full`}
+                <Input
                   id="middle-name"
                   value={formData.Middle_Name}
+                  variant="bordered"
+                  classNames={{
+                    input: "text-sm",
+                    inputWrapper: "border-default-200 hover:border-default-400",
+                  }}
+                  size="md"
                   onChange={(e) => update({ Middle_Name: e.target.value })}
+                  isDisabled={isLoading}
                 />
               </div>
               <div>
                 <label
-                  className="text-sm font-medium block mb-1"
+                  className="text-sm font-medium mb-1.5 block"
                   htmlFor="last-name"
                 >
-                  Last name <span className="text-danger-500">*</span>
+                  Last name <span className="text-danger ml-1">*</span>
                 </label>
-                <input
-                  className={`${inputClass} w-full`}
+                <Input
                   id="last-name"
                   value={formData.Last_Name}
+                  variant="bordered"
+                  classNames={{
+                    input: "text-sm",
+                    inputWrapper: "border-default-200 hover:border-default-400",
+                  }}
+                  size="md"
                   onChange={(e) => update({ Last_Name: e.target.value })}
+                  isDisabled={isLoading}
                 />
               </div>
               <div>
                 <label
-                  className="text-sm font-medium block mb-1"
+                  className="text-sm font-medium mb-1.5 block"
                   htmlFor="phone-number"
                 >
-                  Phone number <span className="text-danger-500">*</span>
+                  Phone number <span className="text-danger ml-1">*</span>
                 </label>
-                <input
-                  className={`${inputClass} w-full`}
+                <Input
                   id="phone-number"
                   value={formData.Phone_Number}
+                  variant="bordered"
+                  classNames={{
+                    input: "text-sm",
+                    inputWrapper: "border-default-200 hover:border-default-400",
+                  }}
+                  size="md"
                   onChange={(e) => update({ Phone_Number: e.target.value })}
+                  isDisabled={isLoading}
                 />
               </div>
               <div>
                 <label
-                  className="text-sm font-medium block mb-1"
+                  className="text-sm font-medium mb-1.5 block"
                   htmlFor="email"
                 >
-                  Email <span className="text-danger-500">*</span>
+                  Email <span className="text-danger ml-1">*</span>
                 </label>
-                <input
-                  className={`${inputClass} w-full`}
+                <Input
                   id="email"
                   type="email"
                   value={formData.Email}
+                  variant="bordered"
+                  classNames={{
+                    input: "text-sm",
+                    inputWrapper: "border-default-200 hover:border-default-400",
+                  }}
+                  size="md"
                   onChange={(e) => update({ Email: e.target.value })}
+                  isDisabled={isLoading}
                 />
               </div>
             </div>
@@ -345,21 +365,24 @@ export default function SignUp() {
           <div
             className={`absolute inset-0 ${step === 1 ? "block" : "hidden"}`}
           >
-            <div className="space-y-3 pb-20">
+            <div className="space-y-6 pb-20">
               <div>
-                <label className="text-sm font-medium block mb-1" htmlFor="role">Role <span className="text-danger-500">*</span></label>
+                <label className="text-sm font-medium mb-1.5 block" htmlFor="role">Role <span className="text-danger ml-1">*</span></label>
                 <Select
                   id="role"
-                  className="h-10"
                   placeholder="Select Role"
                   selectedKeys={formData.roleId ? [formData.roleId] : []}
                   radius="md"
-                  size="sm"
+                  size="md"
                   variant="bordered"
+                  classNames={{
+                    trigger: "border-default-200 hover:border-default-400 data-[hover=true]:border-default-400",
+                  }}
                   onChange={(e) => {
                     const val = e.target.value;
                     update({ roleId: val });
                   }}
+                  isDisabled={isLoading}
                 >
                   {roles.map((role) => (
                     <SelectItem key={role._id}>{role.name}</SelectItem>
@@ -367,19 +390,22 @@ export default function SignUp() {
                 </Select>
               </div>
               <div>
-                <label className="text-sm font-medium block mb-1" htmlFor="organization">Organization <span className="text-danger-500">*</span></label>
+                <label className="text-sm font-medium mb-1.5 block" htmlFor="organization">Organization <span className="text-danger ml-1">*</span></label>
                 <Select
                   id="organization"
-                  className="h-10"
                   placeholder="Select Organization"
                   selectedKeys={formData.organizationId ? [formData.organizationId] : []}
                   radius="md"
-                  size="sm"
+                  size="md"
                   variant="bordered"
+                  classNames={{
+                    trigger: "border-default-200 hover:border-default-400 data-[hover=true]:border-default-400",
+                  }}
                   onChange={(e) => {
                     const val = e.target.value;
                     update({ organizationId: val });
                   }}
+                  isDisabled={isLoading}
                 >
                   {organizations.map((org) => (
                     <SelectItem key={org._id}>{org.name}</SelectItem>
@@ -393,21 +419,24 @@ export default function SignUp() {
           <div
             className={`absolute inset-0 ${step === 2 ? "block" : "hidden"}`}
           >
-            <div className="space-y-3 pb-20">
+            <div className="space-y-6 pb-20">
               <div>
-                <label className="text-sm font-medium block mb-1" htmlFor="province">Province <span className="text-danger-500">*</span></label>
+                <label className="text-sm font-medium mb-1.5 block" htmlFor="province">Province <span className="text-danger ml-1">*</span></label>
                 <Select
                   id="province"
-                  className="h-10"
                   placeholder="Select Province"
                   selectedKeys={formData.Province ? [formData.Province] : []}
                   radius="md"
-                  size="sm"
+                  size="md"
                   variant="bordered"
+                  classNames={{
+                    trigger: "border-default-200 hover:border-default-400 data-[hover=true]:border-default-400",
+                  }}
                   onChange={(e) => {
                     const val = e.target.value;
                     update({ Province: val, District: "", Municipality: "" });
                   }}
+                  isDisabled={isLoading}
                 >
                   {provinces.map((prov) => (
                     <SelectItem key={prov._id}>{prov.name}</SelectItem>
@@ -415,16 +444,18 @@ export default function SignUp() {
                 </Select>
               </div>
               <div>
-                <label className="text-sm font-medium block mb-1" htmlFor="district">District / City <span className="text-danger-500">*</span></label>
+                <label className="text-sm font-medium mb-1.5 block" htmlFor="district">District / City <span className="text-danger ml-1">*</span></label>
                 <Select
                   id="district"
-                  className="h-10"
                   placeholder="Select District / Category"
                   selectedKeys={formData.District ? [formData.District] : []}
                   radius="md"
-                  size="sm"
+                  size="md"
                   variant="bordered"
-                  isDisabled={!formData.Province}
+                  classNames={{
+                    trigger: "border-default-200 hover:border-default-400 data-[hover=true]:border-default-400",
+                  }}
+                  isDisabled={!formData.Province || isLoading}
                   onChange={(e) => {
                     const val = e.target.value;
                     update({ District: val, Municipality: "" });
@@ -436,16 +467,18 @@ export default function SignUp() {
                 </Select>
               </div>
               <div>
-                <label className="text-sm font-medium block mb-1" htmlFor="municipality">Municipality / City <span className="text-danger-500">*</span></label>
+                <label className="text-sm font-medium mb-1.5 block" htmlFor="municipality">Municipality / City <span className="text-danger ml-1">*</span></label>
                 <Select
                   id="municipality"
-                  className="h-10"
                   placeholder="Select City / Municipality / Type"
                   selectedKeys={formData.Municipality ? [formData.Municipality] : []}
                   radius="md"
-                  size="sm"
+                  size="md"
                   variant="bordered"
-                  isDisabled={!formData.District}
+                  classNames={{
+                    trigger: "border-default-200 hover:border-default-400 data-[hover=true]:border-default-400",
+                  }}
+                  isDisabled={!formData.District || isLoading}
                   onChange={(e) => update({ Municipality: e.target.value })}
                 >
                   {municipalities.map((mun) => (
@@ -455,21 +488,26 @@ export default function SignUp() {
               </div>
               <div>
                 <label
-                  className="text-sm font-medium block mb-1"
-                  htmlFor="organization"
+                  className="text-sm font-medium mb-1.5 block"
+                  htmlFor="organization-institution"
                 >
                   Organization / Institution
                 </label>
-                <input
-                  className={`${inputClass} w-full`}
-                  id="organization"
+                <Input
+                  id="organization-institution"
                   value={formData.Organization_Institution}
+                  variant="bordered"
+                  classNames={{
+                    input: "text-sm",
+                    inputWrapper: "border-default-200 hover:border-default-400",
+                  }}
+                  size="md"
                   onChange={(e) =>
                     update({ Organization_Institution: e.target.value })
                   }
+                  isDisabled={isLoading}
                 />
               </div>
-              {/* removed Field input as requested */}
             </div>
           </div>
 
@@ -477,18 +515,17 @@ export default function SignUp() {
           <div className={`absolute inset-0 ${step === 3 ? "block" : "hidden"}`}>
             <div className="pb-20">
               <div className="space-y-4">
-                <h2 className="text-3xl font-semibold text-danger-600">Enter your code</h2>
-                <p className="text-sm text-gray-500">Enter the code sent to your email {formData.Email ? formData.Email.replace(/(.{1})(.*)(@.*)/, (m,p1,p2,p3)=> p1 + '*'.repeat(Math.max(0,p2.length)) + p3) : ''}</p>
+                <h2 className="text-3xl font-semibold text-danger">Enter your code</h2>
+                <p className="text-sm text-default-800">Enter the code sent to your email {formData.Email ? formData.Email.replace(/(.{1})(.*)(@.*)/, (m,p1,p2,p3)=> p1 + '*'.repeat(Math.max(0,p2.length)) + p3) : ''}</p>
 
                 <div className="mt-4 p-4 bg-white rounded-md">
-
                   <div className="mt-4 flex items-center justify-center gap-3">
                     {Array.from({ length: 6 }).map((_, i) => {
                       const digit = formData.Verification_Code?.[i] || "";
                       return (
                         <div key={i} className="flex items-center">
                           <input
-                            className="w-12 h-12 text-center border border-gray-200 rounded-md text-lg bg-white"
+                            className="w-12 h-12 text-center border border-default-200 rounded-md text-lg bg-white hover:border-default-400 focus:border-danger focus:outline-none focus:ring-1 focus:ring-danger"
                             maxLength={1}
                             value={digit}
                             onChange={(e) => {
@@ -532,16 +569,16 @@ export default function SignUp() {
                               }
                             }}
                           />
-                          {i === 2 && <div className="mx-2 text-xl text-gray-400">-</div>}
+                          {i === 2 && <div className="mx-2 text-xl text-default-400">-</div>}
                         </div>
                       );
                     })}
                   </div>
 
-                  <div className="mt-4 text-sm text-gray-600 text-center">
+                  <div className="mt-4 text-sm text-default-800 text-center">
                     <span>Didn't receive a code? </span>
                     <button
-                      className="text-sm font-medium text-danger-600 underline"
+                      className="text-sm font-medium text-danger underline"
                       type="button"
                       onClick={() => {
                         setError(null);
@@ -554,24 +591,22 @@ export default function SignUp() {
                   </div>
 
                   <div className="mt-6 space-y-3">
-                    <button
-                      className="w-full bg-danger-600 hover:bg-danger-700 text-white py-3 rounded-full"
+                    <Button
+                      className="w-full text-white"
+                      color="danger"
                       type="button"
                       onClick={() => {
                         if (!emailSent) sendVerificationCode();
                         else verifyCode();
                       }}
-                      disabled={!formData.Email.trim() || validatingCode || (emailSent && emailVerified)}
+                      isDisabled={!formData.Email.trim() || validatingCode || (emailSent && emailVerified)}
+                      isLoading={validatingCode}
                     >
-                      <span className="flex items-center justify-center gap-2">
-                        {validatingCode && (
-                          <span className="inline-block h-4 w-4 border-2 border-white border-t-transparent rounded-full animate-spin" aria-hidden="true" />
-                        )}
-                        {validatingCode ? (emailSent ? "Verifying..." : "Sending...") : !emailSent ? "Send Verification Code" : emailVerified ? "Code Verified" : "Verify"}
-                      </span>
-                    </button>
-                    <button
-                      className="w-full px-4 py-2 border border-gray-200 rounded-lg text-sm"
+                      {!emailSent ? "Send Verification Code" : emailVerified ? "Code Verified" : "Verify"}
+                    </Button>
+                    <Button
+                      className="w-full border border-default-200 bg-transparent text-default-800 hover:bg-default-100"
+                      variant="bordered"
                       type="button"
                       onClick={(e) => {
                         e.preventDefault();
@@ -581,7 +616,7 @@ export default function SignUp() {
                       }}
                     >
                       Back
-                    </button>
+                    </Button>
                   </div>
                 </div>
               </div>
@@ -592,14 +627,15 @@ export default function SignUp() {
           <div className={`absolute inset-0 ${step === 4 ? "block" : "hidden"}`}>
             <div className="flex items-center justify-center min-h-[380px]">
               <div className="max-w-md w-full text-center px-4">
-                <h2 className="text-3xl font-semibold text-danger-600 mb-4">Thank you</h2>
-                <p className="text-sm text-gray-600 mb-4">Your signup request has been submitted and is pending approval.</p>
-                <p className="text-sm text-gray-500 mb-6">We are currently reviewing your request and will notify you via email once your account has been confirmed and approved.</p>
-                <p className="text-sm text-gray-500 mb-6">After approval, you will receive an email with a link to activate your account and set your password.</p>
-                <p className="text-sm text-gray-500 mb-6">We appreciate your interest in UNITE and look forward to working with you as part of our ecosystem.</p>
+                <h2 className="text-3xl font-semibold text-danger mb-4">Thank you</h2>
+                <p className="text-sm text-default-800 mb-4">Your signup request has been submitted and is pending approval.</p>
+                <p className="text-sm text-default-600 mb-6">We are currently reviewing your request and will notify you via email once your account has been confirmed and approved.</p>
+                <p className="text-sm text-default-600 mb-6">After approval, you will receive an email with a link to activate your account and set your password.</p>
+                <p className="text-sm text-default-600 mb-6">We appreciate your interest in UNITE and look forward to working with you as part of our ecosystem.</p>
                 <div className="mb-6">
                   <Button
-                    className="w-full bg-danger-600 hover:bg-danger-700 text-white py-3 rounded-full"
+                    className="w-full text-white"
+                    color="danger"
                     onClick={() => {
                       // final complete registration action: show success modal
                       setShowModal(true);
@@ -619,8 +655,9 @@ export default function SignUp() {
         {step !== 3 && step !== 4 && (
           <div className="flex items-center gap-3">
             {step > 0 ? (
-              <button
-                className="px-4 py-2 border border-gray-200 rounded-lg text-sm"
+              <Button
+                className="border border-default-200 bg-transparent text-default-800 hover:bg-default-100"
+                variant="bordered"
                 type="button"
                 onClick={(e) => {
                   e.preventDefault();
@@ -630,14 +667,14 @@ export default function SignUp() {
                 }}
               >
                 Back
-              </button>
+              </Button>
             ) : (
               <div />
             )}
             <div className="flex-1">
               <Button
-                className="w-full bg-danger-600 hover:bg-danger-700 text-white"
-                color="primary"
+                className="w-full text-white"
+                color="danger"
                 isLoading={isLoading}
                 size="md"
                 type="submit"
@@ -649,10 +686,10 @@ export default function SignUp() {
         )}
       </form>
 
-      <div className="mt-6 text-center text-sm text-gray-600">
+      <div className="mt-6 text-center text-sm text-default-800">
         Already have an account?{" "}
         <Link
-          className="text-danger-600 hover:underline font-medium"
+          className="text-danger font-medium hover:opacity-80 transition-opacity"
           href="/auth/signin"
         >
           Sign in
@@ -666,14 +703,15 @@ export default function SignUp() {
               <div className="mx-auto flex items-center justify-center h-12 w-12 rounded-full bg-green-100 mb-4">
                 <Check className="h-6 w-6 text-green-600" />
               </div>
-              <h3 className="text-lg font-semibold text-gray-900 mb-2">
+              <h3 className="text-lg font-semibold text-default-900 mb-2">
                 Registration Successful!
               </h3>
-              <p className="text-sm text-gray-600 mb-6">
+              <p className="text-sm text-default-800 mb-6">
                 Your sign-up request has been submitted successfully. It is now pending coordinator approval. You will be notified via email once it's approved, and you'll receive a link to activate your account and set your password.
               </p>
               <Button
-                className="w-full bg-danger-600 hover:bg-danger-700 text-white"
+                className="w-full text-white"
+                color="danger"
                 onClick={() => {
                   setShowModal(false);
                   router.push("/");
